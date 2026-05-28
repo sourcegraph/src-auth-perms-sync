@@ -1,0 +1,10 @@
+globs:
+  - "**/*.md"
+ignores:
+  - ".venv/**"
+  - "build/**"
+  - "dist/**"
+  - "node_modules/**"
+config:
+  MD013:
+    line_length: 100

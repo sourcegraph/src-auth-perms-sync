@@ -1,0 +1,314 @@
+name: Build customer release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag to publish, for example v0.1.0"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.event.inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  wheelhouse:
+    name: ${{ matrix.platform }}-py311 wheelhouse
+    runs-on: ${{ matrix.runs_on }}
+    strategy:
+      fail-fast: false
+      # The first matrix leg creates the release; later legs upload more assets.
+      max-parallel: 1
+      matrix:
+        include:
+          - platform: linux-x86_64
+            runs_on: ubuntu-24.04
+            asset_basename: auth-perms-sync-linux-x64
+            target_description: Linux x64
+            expected_machine: x86_64
+          - platform: macos-arm64
+            runs_on: macos-26
+            asset_basename: auth-perms-sync-macos-arm64
+            target_description: macOS arm64
+            expected_machine: arm64
+    env:
+      ASSET_BASENAME: ${{ matrix.asset_basename }}
+      PACKAGE_NAME: auth-perms-sync
+      PYTHON_VERSION: "3.11"
+      TARGET_DESCRIPTION: ${{ matrix.target_description }}
+      UV_VERSION: "0.11.7"
+
+    steps:
+      - name: Check out release ref
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install build tools
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install "uv==${UV_VERSION}"
+
+      - name: Validate release inputs
+        id: release
+        run: |
+          release_tag="${{ github.event.inputs.tag || github.ref_name }}"
+          if [[ ! "${release_tag}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error title=Invalid release tag::Use a vMAJOR.MINOR.PATCH tag, got '${release_tag}'."
+            exit 1
+          fi
+          if ! git rev-parse --verify --quiet "refs/tags/${release_tag}" >/dev/null; then
+            echo "::error title=Missing tag::Tag '${release_tag}' was not fetched. Create and push it before running this workflow."
+            exit 1
+          fi
+
+          project_version=$(uv run --frozen python - <<'PY'
+          import tomllib
+
+          with open("pyproject.toml", "rb") as pyproject_file:
+              print(tomllib.load(pyproject_file)["project"]["version"])
+          PY
+          )
+          if [[ "v${project_version}" != "${release_tag}" ]]; then
+            echo "::error title=Version mismatch::pyproject.toml version '${project_version}' does not match tag '${release_tag}'."
+            exit 1
+          fi
+
+          echo "tag=${release_tag}" >> "${GITHUB_OUTPUT}"
+
+      - name: Validate package
+        run: |
+          actual_machine=$(uv run --frozen python - <<'PY'
+          import platform
+
+          print(platform.machine())
+          PY
+          )
+          if [[ "${actual_machine}" != "${{ matrix.expected_machine }}" ]]; then
+            echo "::error title=Wrong runner architecture::Expected ${{ matrix.expected_machine }}, got ${actual_machine}."
+            exit 1
+          fi
+
+          uv lock --check
+          uv run --frozen ruff check auth_perms_sync/
+          uv run --frozen ruff format --check auth_perms_sync/
+          uv run --frozen pyright
+          uv run --frozen auth-perms-sync --help >/tmp/auth-perms-sync-help.txt
+
+      - name: Build wheelhouse tarball
+        id: build
+        run: |
+          release_tag="${{ steps.release.outputs.tag }}"
+          release_dir="build/release/${ASSET_BASENAME}"
+          wheelhouse_dir="${release_dir}/wheelhouse"
+          dist_dir="build/release/dist"
+          requirements_file="build/release/requirements.txt"
+          runtime_requirements_file="build/release/runtime-requirements.txt"
+          asset_path="build/release/${ASSET_BASENAME}.tar.gz"
+          checksum_path="${asset_path}.sha256"
+
+          rm -rf build/release
+          mkdir -p "${wheelhouse_dir}" "${dist_dir}"
+
+          uv build --wheel git-subtree/src-py-lib --out-dir "${wheelhouse_dir}" --no-create-gitignore
+          uv build --wheel --out-dir "${dist_dir}" --no-create-gitignore
+          project_wheels=("${dist_dir}"/*.whl)
+          if [[ "${#project_wheels[@]}" -ne 1 ]]; then
+            echo "::error title=Unexpected wheel count::Expected one project wheel, found ${#project_wheels[@]}."
+            exit 1
+          fi
+          project_wheel_path="${project_wheels[0]}"
+          project_wheel_name="$(basename "${project_wheel_path}")"
+          if [[ ! -f "${project_wheel_path}" ]]; then
+            echo "::error title=Missing project wheel::Expected ${project_wheel_path} to exist."
+            exit 1
+          fi
+
+          uv export \
+            --no-dev \
+            --no-emit-project \
+            --no-hashes \
+            --no-header \
+            --no-annotate \
+            --frozen \
+            --output-file "${requirements_file}"
+
+          grep -v '^\./git-subtree/src-py-lib$' "${requirements_file}" > "${runtime_requirements_file}"
+
+          python -m pip wheel \
+            --only-binary=:all: \
+            --wheel-dir "${wheelhouse_dir}" \
+            --requirement "${runtime_requirements_file}"
+
+          cp "${project_wheel_path}" "${wheelhouse_dir}/"
+          src_py_lib_wheels=("${wheelhouse_dir}"/src_py_lib-*.whl)
+          if [[ "${#src_py_lib_wheels[@]}" -ne 1 ]]; then
+            echo "::error title=Unexpected src-py-lib wheel count::Expected one src-py-lib wheel, found ${#src_py_lib_wheels[@]}."
+            exit 1
+          fi
+          src_py_lib_wheel_path="${src_py_lib_wheels[0]}"
+          src_py_lib_wheel_name="$(basename "${src_py_lib_wheel_path}")"
+
+          cat > "${wheelhouse_dir}/INSTALL.txt" <<EOF
+          # Auth perms sync ${release_tag} offline install
+
+          This wheelhouse targets ${TARGET_DESCRIPTION} with Python 3.11.
+
+          tar -xzf ${ASSET_BASENAME}.tar.gz
+          python3.11 -m venv .venv
+          . .venv/bin/activate
+          pip install --no-index --find-links ./wheelhouse ${PACKAGE_NAME}
+          auth-perms-sync --help
+
+          Connected install, for environments that can reach GitHub and PyPI:
+
+          pip install \
+            "https://github.com/sourcegraph/auth-perms-sync/releases/download/${release_tag}/${src_py_lib_wheel_name}" \
+            "https://github.com/sourcegraph/auth-perms-sync/releases/download/${release_tag}/${project_wheel_name}"
+          EOF
+
+          (cd "${wheelhouse_dir}" && shasum -a 256 *.whl > WHEELS.sha256)
+
+          test -f "${project_wheel_path}"
+          test -f "${wheelhouse_dir}"/auth_perms_sync-*.whl
+          test -f "${wheelhouse_dir}"/src_py_lib-*.whl
+          if find "${wheelhouse_dir}" -type f \
+            ! -name '*.whl' \
+            ! -name INSTALL.txt \
+            ! -name WHEELS.sha256 \
+            | grep .; then
+            echo "::error title=Unexpected wheelhouse content::Wheelhouse contains non-wheel payloads."
+            exit 1
+          fi
+
+          tar -C "${release_dir}" -czf "${asset_path}" wheelhouse
+          (
+            cd "$(dirname "${asset_path}")"
+            shasum -a 256 "$(basename "${asset_path}")" > "$(basename "${checksum_path}")"
+          )
+
+          echo "asset_path=${asset_path}" >> "${GITHUB_OUTPUT}"
+          echo "checksum_path=${checksum_path}" >> "${GITHUB_OUTPUT}"
+          echo "project_wheel_path=${project_wheel_path}" >> "${GITHUB_OUTPUT}"
+          echo "project_wheel_name=${project_wheel_name}" >> "${GITHUB_OUTPUT}"
+          echo "src_py_lib_wheel_path=${src_py_lib_wheel_path}" >> "${GITHUB_OUTPUT}"
+          echo "src_py_lib_wheel_name=${src_py_lib_wheel_name}" >> "${GITHUB_OUTPUT}"
+
+      - name: Validate offline install from tarball
+        run: |
+          validation_dir=$(mktemp -d)
+          tar -xzf "${{ steps.build.outputs.asset_path }}" -C "${validation_dir}"
+
+          python3.11 -m venv "${validation_dir}/.venv"
+          . "${validation_dir}/.venv/bin/activate"
+
+          PIP_CACHE_DIR="${validation_dir}/pip-cache" \
+            GIT_ALLOW_PROTOCOL=file \
+            pip install \
+            --no-cache-dir \
+            --no-index \
+            --find-links "${validation_dir}/wheelhouse" \
+            "${PACKAGE_NAME}"
+          auth-perms-sync --help >/tmp/auth-perms-sync-release-help.txt
+
+      - name: Write release notes
+        id: notes
+        run: |
+          release_tag="${{ steps.release.outputs.tag }}"
+          project_wheel_name="${{ steps.build.outputs.project_wheel_name }}"
+          src_py_lib_wheel_name="${{ steps.build.outputs.src_py_lib_wheel_name }}"
+          notes_path="build/release/release-notes.md"
+          cat > "${notes_path}" <<EOF
+          ## Customer install
+
+          ### Restricted/offline Linux x64 + Python 3.11 install
+
+          Download \`auth-perms-sync-linux-x64.tar.gz\`, then run:
+
+          \`\`\`sh
+          tar -xzf auth-perms-sync-linux-x64.tar.gz
+          python3.11 -m venv .venv
+          . .venv/bin/activate
+          pip install --no-index --find-links ./wheelhouse ${PACKAGE_NAME}
+          auth-perms-sync --help
+          \`\`\`
+
+          ### Restricted/offline macOS arm64 + Python 3.11 install
+
+          Download \`auth-perms-sync-macos-arm64.tar.gz\`, then run:
+
+          \`\`\`sh
+          tar -xzf auth-perms-sync-macos-arm64.tar.gz
+          python3.11 -m venv .venv
+          . .venv/bin/activate
+          pip install --no-index --find-links ./wheelhouse ${PACKAGE_NAME}
+          auth-perms-sync --help
+          \`\`\`
+
+          The tarball includes this project, \`src-py-lib\`, and all runtime wheels.
+          Verify the download with the matching \`.sha256\` file.
+
+          ### Connected install
+
+          \`\`\`sh
+          pip install \
+            "https://github.com/sourcegraph/auth-perms-sync/releases/download/${release_tag}/${src_py_lib_wheel_name}" \
+            "https://github.com/sourcegraph/auth-perms-sync/releases/download/${release_tag}/${project_wheel_name}"
+          \`\`\`
+          EOF
+          echo "path=${notes_path}" >> "${GITHUB_OUTPUT}"
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ env.ASSET_BASENAME }}
+          path: |
+            ${{ steps.build.outputs.asset_path }}
+            ${{ steps.build.outputs.checksum_path }}
+            ${{ steps.build.outputs.project_wheel_path }}
+            ${{ steps.build.outputs.src_py_lib_wheel_path }}
+            ${{ steps.notes.outputs.path }}
+
+      - name: Publish GitHub release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          release_tag="${{ steps.release.outputs.tag }}"
+          asset_path="${{ steps.build.outputs.asset_path }}"
+          checksum_path="${{ steps.build.outputs.checksum_path }}"
+          project_wheel_path="${{ steps.build.outputs.project_wheel_path }}"
+          src_py_lib_wheel_path="${{ steps.build.outputs.src_py_lib_wheel_path }}"
+          notes_path="${{ steps.notes.outputs.path }}"
+
+          if gh release view "${release_tag}" >/dev/null 2>&1; then
+            gh release edit "${release_tag}" --title "${release_tag}" --notes-file "${notes_path}"
+            gh release upload "${release_tag}" "${asset_path}" "${checksum_path}" "${project_wheel_path}" "${src_py_lib_wheel_path}" --clobber
+          else
+            gh release create "${release_tag}" \
+              "${asset_path}" \
+              "${checksum_path}" \
+              "${project_wheel_path}" \
+              "${src_py_lib_wheel_path}" \
+              --title "${release_tag}" \
+              --notes-file "${notes_path}" \
+              --verify-tag
+          fi

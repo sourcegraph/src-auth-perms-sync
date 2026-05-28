@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
+
+run() {
+  printf '\n==> %s\n' "$*"
+  "$@"
+}
+
+printf 'Checking repository before commit in %s\n' "$repo_root"
+
+run git status --short
+run git diff --check -- . ":(exclude)git-subtree/src-py-lib"
+run git diff --cached --check -- . ":(exclude)git-subtree/src-py-lib"
+run git diff --cached --stat
+run git diff --stat
+run dev/check-src-py-lib-subtree.sh --staged
+
+run uv run ruff check auth_perms_sync/
+run uv run ruff format auth_perms_sync/ --check
+run uv run pyright
+run uv run python -m unittest discover -s tests
+run uv run auth-perms-sync --help
+
+printf '\nPre-commit quality checks passed.\n'

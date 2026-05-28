@@ -1,0 +1,1 @@
+"""Repo-permission sync workflow."""

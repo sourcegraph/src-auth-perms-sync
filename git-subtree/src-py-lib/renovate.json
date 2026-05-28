@@ -1,0 +1,14 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "local>sourcegraph/renovate-config"
+  ],
+  "packageRules": [
+    {
+      "matchPackageNames": [
+        "python"
+      ],
+      "allowedVersions": "<3.12"
+    }
+  ]
+}

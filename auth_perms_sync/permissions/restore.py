@@ -1,0 +1,906 @@
+"""Repo permission restore workflows."""
+
+from __future__ import annotations
+
+import logging
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, cast
+
+import src_py_lib as src
+
+from ..shared import backups
+from ..shared import sourcegraph as shared_sourcegraph
+from ..shared import types as shared_types
+from . import apply as permissions_apply
+from . import snapshot as permission_snapshot
+from . import types as permission_types
+from .workflow import (
+    snapshot_path as snapshot_artifact_path,
+)
+from .workflow import (
+    write_snapshot_diff_file,
+    write_snapshot_pair,
+    write_user_scoped_snapshot_diff_file,
+)
+
+log = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class _RestoreSnapshotState:
+    """Target and live snapshots needed for a full restore."""
+
+    target_snapshot: permission_snapshot.Snapshot
+    current_snapshot: permission_snapshot.Snapshot
+    users: list[permission_snapshot.SnapshotUser]
+
+
+@dataclass(frozen=True)
+class _RestorePlan:
+    """Per-repo overwrite plan for a full restore."""
+
+    overwrites: list[permission_types.RepositoryUsernameOverwrite]
+    snapshot_repo_count: int
+    extra_repo_count: int
+    skipped_repo_count: int
+
+
+@dataclass(frozen=True)
+class _UserScopedRestoreState:
+    """Target and live snapshots needed for a user-scoped restore."""
+
+    target_snapshot: permission_snapshot.UserScopedSnapshot
+    current_snapshot: permission_snapshot.UserScopedSnapshot
+    snapshot_users: list[permission_snapshot.SnapshotUser]
+
+
+@dataclass(frozen=True)
+class _UserScopedRestorePlan:
+    """Add/remove plan for a user-scoped restore."""
+
+    additions: list[permissions_apply.PermissionAddition]
+    removals: list[permissions_apply.PermissionRemoval]
+
+
+@dataclass(frozen=True)
+class _UserScopedRestoreMutationResult:
+    """Mutation results for both user-scoped restore phases."""
+
+    additions: shared_types.MutationCounts
+    removals: shared_types.MutationCounts
+
+
+def cmd_restore_user_scoped(
+    client: src.SourcegraphClient,
+    snapshot_path: Path,
+    dry_run: bool,
+    parallelism: int,
+    bind_id_mode: str,
+    do_backup: bool,
+    target_snapshot: permission_snapshot.UserScopedSnapshot | None = None,
+    worker_pool: ThreadPoolExecutor | None = None,
+) -> None:
+    """Restore explicit permissions for the users present in a scoped snapshot."""
+    with src.event(
+        "cmd_restore_user_scoped",
+        snapshot_path=str(snapshot_path),
+        dry_run=dry_run,
+        parallelism=parallelism,
+        do_backup=do_backup,
+    ):
+        if target_snapshot is None:
+            target_snapshot = permission_snapshot.read_user_scoped_snapshot(snapshot_path)
+        _validate_user_scoped_restore_snapshot_context(
+            client,
+            target_snapshot,
+            snapshot_path,
+            bind_id_mode,
+        )
+        snapshot_state = _capture_user_scoped_restore_state(
+            client,
+            snapshot_path,
+            target_snapshot,
+            parallelism,
+            bind_id_mode,
+            worker_pool,
+        )
+        plan = _plan_user_scoped_restore(
+            snapshot_state.current_snapshot,
+            snapshot_state.target_snapshot,
+        )
+        _log_user_scoped_restore_plan(snapshot_state, plan)
+
+        timestamp = backups.backup_timestamp()
+        command_name = _user_scoped_restore_command_name(dry_run)
+        if dry_run or do_backup:
+            _write_user_scoped_restore_initial_artifacts(
+                client,
+                snapshot_path,
+                timestamp,
+                command_name,
+                snapshot_state.current_snapshot,
+                snapshot_state.target_snapshot,
+                dry_run,
+            )
+
+        if dry_run:
+            log.info("Dry run complete. Pass --apply to mutate state.")
+            return
+        if not plan.additions and not plan.removals:
+            _finish_empty_user_scoped_restore_plan(
+                client,
+                snapshot_path,
+                timestamp,
+                command_name,
+                snapshot_state.current_snapshot,
+                do_backup,
+            )
+            return
+
+        mutations = _apply_user_scoped_restore(client, plan, parallelism, worker_pool)
+
+        if do_backup:
+            _finish_user_scoped_restore_apply_with_backup(
+                client,
+                snapshot_path,
+                timestamp,
+                command_name,
+                snapshot_state,
+                parallelism,
+                bind_id_mode,
+                worker_pool,
+            )
+
+        _raise_for_failed_user_scoped_restore(mutations)
+        _log_user_scoped_restore_done(mutations)
+
+
+def _snapshot_users_from_user_scoped_snapshot(
+    snapshot: permission_snapshot.UserScopedSnapshot,
+) -> list[permission_snapshot.SnapshotUser]:
+    return [
+        {"id": user_snapshot["id"], "username": username}
+        for username, user_snapshot in sorted(snapshot["users"].items())
+    ]
+
+
+def _plan_user_scoped_restore(
+    current_snapshot: permission_snapshot.UserScopedSnapshot,
+    target_snapshot: permission_snapshot.UserScopedSnapshot,
+) -> _UserScopedRestorePlan:
+    additions: list[permissions_apply.PermissionAddition] = []
+    removals: list[permissions_apply.PermissionRemoval] = []
+    for username, target_user in target_snapshot["users"].items():
+        current_user = current_snapshot["users"].get(username)
+        current_repos = {
+            repository["id"]: repository["name"]
+            for repository in (current_user["explicit_repositories"] if current_user else [])
+        }
+        target_repos = {
+            repository["id"]: repository["name"]
+            for repository in target_user["explicit_repositories"]
+        }
+        for repo_id in sorted(
+            set(target_repos) - set(current_repos),
+            key=lambda value: target_repos[value],
+        ):
+            additions.append(
+                permissions_apply.PermissionAddition(
+                    user_id=target_user["id"],
+                    username=username,
+                    repo_id=repo_id,
+                    repo_name=target_repos[repo_id],
+                )
+            )
+        for repo_id in sorted(
+            set(current_repos) - set(target_repos),
+            key=lambda value: current_repos[value],
+        ):
+            removals.append(
+                permissions_apply.PermissionRemoval(
+                    user_id=target_user["id"],
+                    username=username,
+                    repo_id=repo_id,
+                    repo_name=current_repos[repo_id],
+                )
+            )
+    return _UserScopedRestorePlan(additions=additions, removals=removals)
+
+
+def _user_scoped_restore_command_name(dry_run: bool) -> str:
+    return "restore-scoped-dry-run" if dry_run else "restore-scoped-apply"
+
+
+def _validate_user_scoped_restore_snapshot_context(
+    client: src.SourcegraphClient,
+    target_snapshot: permission_snapshot.UserScopedSnapshot,
+    snapshot_path: Path,
+    bind_id_mode: str,
+) -> None:
+    """Warn when a user-scoped restore target differs from the current context."""
+    if target_snapshot["bindID_mode"] != bind_id_mode:
+        log.warning(
+            "Snapshot bindID_mode=%s differs from live bindID_mode=%s — "
+            "captured usernames may not resolve to the same users.",
+            target_snapshot["bindID_mode"],
+            bind_id_mode,
+        )
+    if target_snapshot["endpoint"] != client.endpoint:
+        log.warning(
+            "Snapshot endpoint=%s differs from live endpoint=%s — restoring "
+            "across instances. Proceeding anyway; review the plan diff.",
+            target_snapshot["endpoint"],
+            client.endpoint,
+        )
+
+
+def _capture_user_scoped_restore_state(
+    client: src.SourcegraphClient,
+    snapshot_path: Path,
+    target_snapshot: permission_snapshot.UserScopedSnapshot,
+    parallelism: int,
+    bind_id_mode: str,
+    worker_pool: ThreadPoolExecutor | None = None,
+) -> _UserScopedRestoreState:
+    """Capture live state for the users present in a scoped snapshot."""
+    snapshot_users = _snapshot_users_from_user_scoped_snapshot(target_snapshot)
+    current_snapshot = permission_snapshot.build_user_scoped_snapshot(
+        client,
+        snapshot_users,
+        parallelism,
+        bind_id_mode,
+        snapshot_path,
+        worker_pool=worker_pool,
+    )
+    return _UserScopedRestoreState(
+        target_snapshot=target_snapshot,
+        current_snapshot=current_snapshot,
+        snapshot_users=snapshot_users,
+    )
+
+
+def _log_user_scoped_restore_plan(
+    snapshot_state: _UserScopedRestoreState,
+    plan: _UserScopedRestorePlan,
+) -> None:
+    log.info(
+        "Scoped restore plan: %d grant(s) to add, %d grant(s) to remove.",
+        len(plan.additions),
+        len(plan.removals),
+    )
+    log.info(
+        "Diff (current → scoped snapshot):\n%s",
+        permission_snapshot.render_user_scoped_diff(
+            snapshot_state.current_snapshot,
+            snapshot_state.target_snapshot,
+        ),
+    )
+
+
+def _write_user_scoped_restore_initial_artifacts(
+    client: src.SourcegraphClient,
+    snapshot_path: Path,
+    timestamp: str,
+    command_name: str,
+    current_snapshot: permission_snapshot.UserScopedSnapshot,
+    target_snapshot: permission_snapshot.UserScopedSnapshot,
+    dry_run: bool,
+) -> None:
+    """Write before-snapshot and optional dry-run target artifacts."""
+    before_restore_path = snapshot_artifact_path(
+        snapshot_path,
+        timestamp,
+        client.endpoint,
+        command_name,
+        "before",
+    )
+    after_restore_path = snapshot_artifact_path(
+        snapshot_path,
+        timestamp,
+        client.endpoint,
+        command_name,
+        "after",
+    )
+    permission_snapshot.write_user_scoped_snapshot(before_restore_path, current_snapshot)
+    log.info("Wrote scoped restore before-snapshot: %s", before_restore_path)
+    if not dry_run:
+        return
+
+    permission_snapshot.write_user_scoped_snapshot(after_restore_path, target_snapshot)
+    diff_path = write_user_scoped_snapshot_diff_file(
+        snapshot_path,
+        timestamp,
+        client.endpoint,
+        command_name,
+        current_snapshot,
+        target_snapshot,
+    )
+    log.info("Wrote scoped restore after-snapshot: %s diff=%s", after_restore_path, diff_path)
+
+
+def _finish_empty_user_scoped_restore_plan(
+    client: src.SourcegraphClient,
+    snapshot_path: Path,
+    timestamp: str,
+    command_name: str,
+    current_snapshot: permission_snapshot.UserScopedSnapshot,
+    do_backup: bool,
+) -> None:
+    log.info("Scoped restore target already matches current state — nothing to apply.")
+    if not do_backup:
+        return
+
+    after_restore_path = snapshot_artifact_path(
+        snapshot_path,
+        timestamp,
+        client.endpoint,
+        command_name,
+        "after",
+    )
+    permission_snapshot.write_user_scoped_snapshot(after_restore_path, current_snapshot)
+    diff_path = write_user_scoped_snapshot_diff_file(
+        snapshot_path,
+        timestamp,
+        client.endpoint,
+        command_name,
+        current_snapshot,
+        current_snapshot,
+    )
+    log.info("Wrote scoped restore after-snapshot: %s diff=%s", after_restore_path, diff_path)
+
+
+def _apply_user_scoped_restore_removals(
+    client: src.SourcegraphClient,
+    removals: list[permissions_apply.PermissionRemoval],
+    parallelism: int,
+    worker_pool: ThreadPoolExecutor | None = None,
+) -> shared_types.MutationCounts:
+    if not removals:
+        return shared_types.MutationCounts()
+
+    log.info(
+        "Applying %d removeRepositoryPermissionForUser mutation(s) with parallelism=%d ...",
+        len(removals),
+        parallelism,
+    )
+    with src.stage("apply_removals"):
+        return permissions_apply.apply_removals(
+            client,
+            removals,
+            parallelism=parallelism,
+            worker_pool=worker_pool,
+        )
+
+
+def _apply_user_scoped_restore_additions(
+    client: src.SourcegraphClient,
+    additions: list[permissions_apply.PermissionAddition],
+    parallelism: int,
+    worker_pool: ThreadPoolExecutor | None = None,
+) -> shared_types.MutationCounts:
+    if not additions:
+        return shared_types.MutationCounts()
+
+    log.info(
+        "Applying %d addRepositoryPermissionForUser mutation(s) with parallelism=%d ...",
+        len(additions),
+        parallelism,
+    )
+    with src.stage("apply_additions"):
+        return permissions_apply.apply_additions(
+            client,
+            additions,
+            parallelism=parallelism,
+            worker_pool=worker_pool,
+        )
+
+
+def _apply_user_scoped_restore(
+    client: src.SourcegraphClient,
+    plan: _UserScopedRestorePlan,
+    parallelism: int,
+    worker_pool: ThreadPoolExecutor | None = None,
+) -> _UserScopedRestoreMutationResult:
+    """Apply scoped restore removals before additions."""
+    removals = _apply_user_scoped_restore_removals(
+        client,
+        plan.removals,
+        parallelism,
+        worker_pool,
+    )
+    additions = _apply_user_scoped_restore_additions(
+        client,
+        plan.additions,
+        parallelism,
+        worker_pool,
+    )
+    return _UserScopedRestoreMutationResult(additions=additions, removals=removals)
+
+
+def _finish_user_scoped_restore_apply_with_backup(
+    client: src.SourcegraphClient,
+    snapshot_path: Path,
+    timestamp: str,
+    command_name: str,
+    snapshot_state: _UserScopedRestoreState,
+    parallelism: int,
+    bind_id_mode: str,
+    worker_pool: ThreadPoolExecutor | None = None,
+) -> None:
+    """Capture scoped post-restore state and validate against the target."""
+    after_restore_snapshot = permission_snapshot.build_user_scoped_snapshot(
+        client,
+        snapshot_state.snapshot_users,
+        parallelism,
+        bind_id_mode,
+        snapshot_path,
+        worker_pool=worker_pool,
+    )
+    after_restore_path = snapshot_artifact_path(
+        snapshot_path,
+        timestamp,
+        client.endpoint,
+        command_name,
+        "after",
+    )
+    permission_snapshot.write_user_scoped_snapshot(after_restore_path, after_restore_snapshot)
+    diff_path = write_user_scoped_snapshot_diff_file(
+        snapshot_path,
+        timestamp,
+        client.endpoint,
+        command_name,
+        snapshot_state.current_snapshot,
+        after_restore_snapshot,
+    )
+    log.info("Wrote scoped restore after-snapshot: %s diff=%s", after_restore_path, diff_path)
+    residual = permission_snapshot.render_user_scoped_diff(
+        after_restore_snapshot,
+        snapshot_state.target_snapshot,
+    )
+    if residual != "No changes.":
+        log.warning(
+            "VALIDATION: scoped restore does NOT match target snapshot. Residual diff:\n%s",
+            residual,
+        )
+    else:
+        log.info("VALIDATION OK: scoped restore matches the target snapshot.")
+
+
+def _raise_for_failed_user_scoped_restore(
+    mutations: _UserScopedRestoreMutationResult,
+) -> None:
+    failed = mutations.removals.failed + mutations.additions.failed
+    canceled = mutations.removals.canceled + mutations.additions.canceled
+    if not (failed or canceled):
+        return
+    log.error(
+        "SCOPED RESTORE FAILED: %d mutation(s) failed, %d canceled by circuit breaker.",
+        failed,
+        canceled,
+    )
+    raise SystemExit(1)
+
+
+def _log_user_scoped_restore_done(mutations: _UserScopedRestoreMutationResult) -> None:
+    log.info(
+        "Scoped restore done. add=%d remove=%d succeeded.",
+        mutations.additions.succeeded,
+        mutations.removals.succeeded,
+    )
+
+
+def _restore_command_name(dry_run: bool) -> str:
+    return "restore-dry-run" if dry_run else "restore-apply"
+
+
+def _validate_restore_snapshot_context(
+    client: src.SourcegraphClient,
+    target_snapshot: permission_snapshot.Snapshot,
+    snapshot_path: Path,
+    bind_id_mode: str,
+) -> None:
+    """Warn when a full restore target differs from the current context."""
+    log.info(
+        "Received snapshot %s (captured_at=%s endpoint=%s bindID_mode=%s %d repo(s) %d grant(s)).",
+        snapshot_path,
+        target_snapshot["captured_at"],
+        target_snapshot["endpoint"],
+        target_snapshot["bindID_mode"],
+        target_snapshot["stats"]["repos_with_explicit_grants"],
+        target_snapshot["stats"]["total_grants"],
+    )
+    if target_snapshot["bindID_mode"] != bind_id_mode:
+        log.warning(
+            "Snapshot bindID_mode=%s differs from live bindID_mode=%s — "
+            "captured bindIDs may not resolve to the same users. Proceeding "
+            "anyway; review the plan diff carefully.",
+            target_snapshot["bindID_mode"],
+            bind_id_mode,
+        )
+    if target_snapshot["endpoint"] != client.endpoint:
+        log.warning(
+            "Snapshot endpoint=%s differs from live endpoint=%s — restoring "
+            "across instances. Proceeding anyway; review the plan diff.",
+            target_snapshot["endpoint"],
+            client.endpoint,
+        )
+
+
+def _capture_restore_snapshot_state(
+    client: src.SourcegraphClient,
+    snapshot_path: Path,
+    target_snapshot: permission_snapshot.Snapshot,
+    parallelism: int,
+    bind_id_mode: str,
+    worker_pool: ThreadPoolExecutor | None = None,
+) -> _RestoreSnapshotState:
+    """Capture the live full-instance state needed to plan a restore."""
+    total_users = shared_sourcegraph.count_users(client)
+    log.info(
+        "Streaming %d users from %s and capturing current explicit-permissions "
+        "state in parallel ...",
+        total_users,
+        client.endpoint,
+    )
+    users: list[shared_types.User] = []
+    current_snapshot = permission_snapshot.build_snapshot(
+        client,
+        shared_sourcegraph.list_users_streaming(client, collect_into=users),
+        parallelism,
+        bind_id_mode,
+        snapshot_path,
+        total_users=total_users,
+        worker_pool=worker_pool,
+    )
+    log.info(
+        "Received %d total users; current state: %d repo(s) with explicit "
+        "grants, %d total grant(s).",
+        len(users),
+        current_snapshot["stats"]["repos_with_explicit_grants"],
+        current_snapshot["stats"]["total_grants"],
+    )
+    return _RestoreSnapshotState(
+        target_snapshot=target_snapshot,
+        current_snapshot=current_snapshot,
+        users=permission_snapshot.compact_snapshot_users(users),
+    )
+
+
+def _plan_full_restore(snapshot_state: _RestoreSnapshotState) -> _RestorePlan:
+    """Build only the per-repo overwrite plans needed to match the snapshot."""
+    target_repos = snapshot_state.target_snapshot["repos"]
+    current_repos = snapshot_state.current_snapshot["repos"]
+    overwrites: list[permission_types.RepositoryUsernameOverwrite] = []
+    skipped_repo_count = 0
+    for repo_id, repo_snapshot in target_repos.items():
+        target_usernames = repo_snapshot["explicit_permissions_users"]
+        current_repo = current_repos.get(repo_id)
+        current_usernames = current_repo["explicit_permissions_users"] if current_repo else []
+        if current_usernames == target_usernames or sorted(current_usernames) == target_usernames:
+            skipped_repo_count += 1
+            continue
+        overwrites.append(
+            permission_types.RepositoryUsernameOverwrite(
+                repository_id=repo_id,
+                repository_name=repo_snapshot["name"],
+                usernames=tuple(target_usernames),
+            )
+        )
+    extra_repo_ids = set(current_repos) - set(target_repos)
+    for repo_id in sorted(extra_repo_ids):
+        overwrites.append(
+            permission_types.RepositoryUsernameOverwrite(
+                repository_id=repo_id,
+                repository_name=current_repos[repo_id]["name"],
+                usernames=(),
+            )
+        )
+    return _RestorePlan(
+        overwrites=overwrites,
+        snapshot_repo_count=len(target_repos),
+        extra_repo_count=len(extra_repo_ids),
+        skipped_repo_count=skipped_repo_count,
+    )
+
+
+def _finish_empty_restore_plan(
+    client: src.SourcegraphClient,
+    snapshot_path: Path,
+    current_snapshot: permission_snapshot.Snapshot,
+    dry_run: bool,
+    do_backup: bool,
+) -> None:
+    """Handle a restore where live explicit grants already match the target."""
+    log.info("Nothing to restore: current explicit-permissions state already matches snapshot.")
+    if not (dry_run or do_backup):
+        return
+
+    timestamp = backups.backup_timestamp()
+    command_name = _restore_command_name(dry_run)
+    before_restore_path, after_restore_path, diff_path = write_snapshot_pair(
+        snapshot_path,
+        timestamp,
+        client.endpoint,
+        command_name,
+        current_snapshot,
+        current_snapshot,
+    )
+    run_mode = "dry-run" if dry_run else "apply"
+    log.info(
+        "Wrote restore %s snapshots: before=%s after=%s diff=%s.",
+        run_mode,
+        before_restore_path,
+        after_restore_path,
+        diff_path,
+    )
+
+
+def _log_full_restore_plan(snapshot_state: _RestoreSnapshotState, plan: _RestorePlan) -> None:
+    log.info(
+        "Restore plan: %d mutation(s) (%d snapshot repo(s), %d unchanged skipped, "
+        "%d extra repo(s) to wipe).",
+        len(plan.overwrites),
+        plan.snapshot_repo_count,
+        plan.skipped_repo_count,
+        plan.extra_repo_count,
+    )
+    log.info(
+        "Diff (current → snapshot):\n%s",
+        permission_snapshot.render_snapshot_diff(
+            snapshot_state.current_snapshot,
+            snapshot_state.target_snapshot,
+        ),
+    )
+
+
+def _finish_restore_dry_run(
+    client: src.SourcegraphClient,
+    snapshot_path: Path,
+    snapshot_state: _RestoreSnapshotState,
+) -> None:
+    """Write dry-run restore artifacts and stop before mutation."""
+    timestamp = backups.backup_timestamp()
+    before_restore_path, after_restore_path, diff_path = write_snapshot_pair(
+        snapshot_path,
+        timestamp,
+        client.endpoint,
+        "restore-dry-run",
+        snapshot_state.current_snapshot,
+        snapshot_state.target_snapshot,
+    )
+    log.info(
+        "Wrote restore dry-run snapshots: before=%s after=%s diff=%s.",
+        before_restore_path,
+        after_restore_path,
+        diff_path,
+    )
+    log.info("Dry run complete. Pass --apply to mutate state.")
+
+
+def _write_restore_apply_before_snapshot(
+    snapshot_path: Path,
+    timestamp: str,
+    endpoint: str,
+    current_snapshot: permission_snapshot.Snapshot,
+) -> Path:
+    """Persist the pre-restore state so the restore is reversible."""
+    before_restore_path = snapshot_artifact_path(
+        snapshot_path,
+        timestamp,
+        endpoint,
+        "restore-apply",
+        "before",
+    )
+    permission_snapshot.write_snapshot(before_restore_path, current_snapshot)
+    log.info(
+        "Wrote pre-restore snapshot: %s (%d repo(s) with explicit grants, %d total grant(s)).",
+        before_restore_path,
+        current_snapshot["stats"]["repos_with_explicit_grants"],
+        current_snapshot["stats"]["total_grants"],
+    )
+    return before_restore_path
+
+
+def _apply_restore_overwrites(
+    client: src.SourcegraphClient,
+    overwrites: list[permission_types.RepositoryUsernameOverwrite],
+    parallelism: int,
+    worker_pool: ThreadPoolExecutor | None = None,
+) -> shared_types.MutationCounts:
+    """Apply the full restore overwrite plans."""
+    log.info(
+        "Applying %d setRepositoryPermissionsForUsers mutation(s) with parallelism=%d ...",
+        len(overwrites),
+        parallelism,
+    )
+    with src.stage("apply"):
+        mutations = permissions_apply.apply_username_overwrites(
+            client,
+            overwrites,
+            parallelism=parallelism,
+            worker_pool=worker_pool,
+        )
+    log.info(
+        "Restore done. %d succeeded, %d failed, %d canceled.",
+        mutations.succeeded,
+        mutations.failed,
+        mutations.canceled,
+    )
+    return mutations
+
+
+def _record_restore_event_fields(
+    command_event: dict[str, Any],
+    snapshot_state: _RestoreSnapshotState,
+    plan: _RestorePlan,
+    mutations: shared_types.MutationCounts,
+) -> None:
+    command_event["plan_size"] = len(plan.overwrites)
+    command_event["snapshot_repos"] = plan.snapshot_repo_count
+    command_event["repos_short_circuited"] = plan.skipped_repo_count
+    command_event["snapshot_grants"] = snapshot_state.target_snapshot["stats"]["total_grants"]
+    command_event["mutations_succeeded"] = mutations.succeeded
+    command_event["mutations_failed"] = mutations.failed
+    command_event["mutations_canceled"] = mutations.canceled
+
+
+def _finish_restore_apply_with_backup(
+    client: src.SourcegraphClient,
+    snapshot_path: Path,
+    timestamp: str,
+    snapshot_state: _RestoreSnapshotState,
+    parallelism: int,
+    bind_id_mode: str,
+    worker_pool: ThreadPoolExecutor | None = None,
+) -> None:
+    """Capture post-restore state, write artifacts, and validate residual diff."""
+    log.info("Capturing post-restore snapshot for %d users ...", len(snapshot_state.users))
+    after_restore_snapshot = permission_snapshot.build_snapshot(
+        client,
+        snapshot_state.users,
+        parallelism,
+        bind_id_mode,
+        snapshot_path,
+        total_users=len(snapshot_state.users),
+        worker_pool=worker_pool,
+    )
+    after_restore_path = snapshot_artifact_path(
+        snapshot_path,
+        timestamp,
+        client.endpoint,
+        "restore-apply",
+        "after",
+    )
+    permission_snapshot.write_snapshot(after_restore_path, after_restore_snapshot)
+    diff_path = write_snapshot_diff_file(
+        snapshot_path,
+        timestamp,
+        client.endpoint,
+        "restore-apply",
+        snapshot_state.current_snapshot,
+        after_restore_snapshot,
+    )
+    log.info(
+        "Wrote post-restore snapshot: %s diff=%s "
+        "(%d repo(s) with explicit grants, %d total grant(s)).",
+        after_restore_path,
+        diff_path,
+        after_restore_snapshot["stats"]["repos_with_explicit_grants"],
+        after_restore_snapshot["stats"]["total_grants"],
+    )
+    residual = permission_snapshot.render_snapshot_diff(
+        after_restore_snapshot,
+        snapshot_state.target_snapshot,
+    )
+    if residual != "No changes.":
+        log.warning(
+            "VALIDATION: post-restore state does NOT match the target "
+            "snapshot exactly. Residual diff (post-restore → snapshot):\n%s",
+            residual,
+        )
+    else:
+        log.info("VALIDATION OK: post-restore state matches the snapshot exactly.")
+
+
+def _raise_for_failed_restore(mutations: shared_types.MutationCounts, overwrite_count: int) -> None:
+    if not (mutations.failed or mutations.canceled):
+        return
+    log.error(
+        "RESTORE FAILED: %d mutation(s) failed, %d canceled by "
+        "circuit breaker (out of %d planned). Review the log file "
+        "and the pre-/post-restore snapshots for details.",
+        mutations.failed,
+        mutations.canceled,
+        overwrite_count,
+    )
+    raise SystemExit(1)
+
+
+def cmd_restore(
+    client: src.SourcegraphClient,
+    snapshot_path: Path,
+    dry_run: bool,
+    parallelism: int,
+    bind_id_mode: str,
+    do_backup: bool,
+    worker_pool: ThreadPoolExecutor | None = None,
+) -> None:
+    """Restore explicit-permissions state on the instance to match a snapshot."""
+    target_snapshot = permission_snapshot.read_snapshot_file(snapshot_path)
+    if target_snapshot.get("snapshot_kind") == permission_snapshot.USER_SCOPED_SNAPSHOT_KIND:
+        cmd_restore_user_scoped(
+            client,
+            snapshot_path,
+            dry_run,
+            parallelism,
+            bind_id_mode,
+            do_backup,
+            target_snapshot=cast(permission_snapshot.UserScopedSnapshot, target_snapshot),
+            worker_pool=worker_pool,
+        )
+        return
+    target_full_snapshot = cast(permission_snapshot.Snapshot, target_snapshot)
+
+    with src.event(
+        "cmd_restore",
+        snapshot_path=str(snapshot_path),
+        dry_run=dry_run,
+        parallelism=parallelism,
+        do_backup=do_backup,
+    ) as command_event:
+        _validate_restore_snapshot_context(
+            client,
+            target_full_snapshot,
+            snapshot_path,
+            bind_id_mode,
+        )
+        snapshot_state = _capture_restore_snapshot_state(
+            client,
+            snapshot_path,
+            target_full_snapshot,
+            parallelism,
+            bind_id_mode,
+            worker_pool,
+        )
+        plan = _plan_full_restore(snapshot_state)
+        if not plan.overwrites:
+            _finish_empty_restore_plan(
+                client,
+                snapshot_path,
+                snapshot_state.current_snapshot,
+                dry_run,
+                do_backup,
+            )
+            return
+
+        _log_full_restore_plan(snapshot_state, plan)
+        if dry_run:
+            _finish_restore_dry_run(client, snapshot_path, snapshot_state)
+            return
+
+        timestamp = backups.backup_timestamp()
+        if do_backup:
+            _write_restore_apply_before_snapshot(
+                snapshot_path,
+                timestamp,
+                client.endpoint,
+                snapshot_state.current_snapshot,
+            )
+
+        mutations = _apply_restore_overwrites(client, plan.overwrites, parallelism, worker_pool)
+        _record_restore_event_fields(command_event, snapshot_state, plan, mutations)
+
+        if do_backup:
+            _finish_restore_apply_with_backup(
+                client,
+                snapshot_path,
+                timestamp,
+                snapshot_state,
+                parallelism,
+                bind_id_mode,
+                worker_pool,
+            )
+
+        _raise_for_failed_restore(mutations, len(plan.overwrites))

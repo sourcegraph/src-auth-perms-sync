@@ -1,0 +1,19 @@
+# Ignore
+__pycache__/
+.ruff_cache
+.venv
+*.egg-info
+*.env
+*.gql
+*.py[oc]
+*.yaml
+auth-perms-sync-runs/
+build/
+dist/
+notes/
+wheels/
+
+# Allow
+!.env.example
+!git-subtree/**
+!maps-example.yaml

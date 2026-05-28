@@ -1,0 +1,39 @@
+# Auth provider → code host connection mapping rules
+# Maintain this file using auth-providers.yaml and code-hosts.yaml as references.
+# Those files are generated under auth-perms-sync-runs/<endpoint>/.
+
+maps:
+
+- name: All users from Line of Business 1 - User Group 1 get access to all repos synced from service account 1
+  users:
+    authProvider:
+      samlGroup: LOB1-GROUP1
+  repos:
+    codeHostConnection:
+      config:
+        username: LOB1-SA1
+
+- name: All users from Line of Business 1 - User Group 2 get access to all repos synced from service account 2
+  users:
+    authProvider:
+      samlGroup: LOB1-GROUP2
+  repos:
+    codeHostConnection:
+      config:
+        username: LOB1-SA2
+
+- name: All Okta SAML users get access to all Bitbucket repos
+  users:
+    authProvider:
+      configID: okta
+      type: saml
+  repos:
+    codeHostConnection:
+      kind: BITBUCKETSERVER
+
+- name: All builtin users get access to all repos under the github.com/example org, from any code host connection
+  users:
+    authProvider:
+      type: builtin
+  repos:
+    regex: https://github.com/example/.*
