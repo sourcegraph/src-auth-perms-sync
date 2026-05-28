@@ -7,11 +7,9 @@ __pycache__/
 *.gql
 *.py[oc]
 *.yaml
-auth-perms-sync-runs/
 src-auth-perms-sync-runs/
 build/
 dist/
-notes/
 wheels/
 
 # Allow
