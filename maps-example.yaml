@@ -1,6 +1,6 @@
 # Auth provider → code host connection mapping rules
 # Maintain this file using auth-providers.yaml and code-hosts.yaml as references.
-# Those files are generated under auth-perms-sync-runs/<endpoint>/.
+# Those files are generated under src-auth-perms-sync-runs/<endpoint>/.
 
 maps:
 

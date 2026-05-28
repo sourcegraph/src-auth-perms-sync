@@ -181,7 +181,7 @@ def snapshot_path(
     """Return a path inside the run's artifact directory.
 
     Example: maps.yaml + endpoint + timestamp + set-apply + before →
-    auth-perms-sync-runs/sourcegraph.example.com/runs/2026-04-27-01-54-23-set-apply/before.json.
+    src-auth-perms-sync-runs/sourcegraph.example.com/runs/2026-04-27-01-54-23-set-apply/before.json.
     """
     return backups.backup_path(input_path.name, timestamp, endpoint, command, state)
 

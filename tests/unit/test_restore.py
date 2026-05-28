@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import unittest
 
-from auth_perms_sync.permissions import restore as permission_restore
-from auth_perms_sync.permissions import snapshot as permission_snapshot
-from auth_perms_sync.shared import id_codec
+from src_auth_perms_sync.permissions import restore as permission_restore
+from src_auth_perms_sync.permissions import snapshot as permission_snapshot
+from src_auth_perms_sync.shared import id_codec
 
 
 class RestoreTests(unittest.TestCase):

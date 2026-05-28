@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Run auth-perms-sync command permutations and assert expected outcomes.
+"""Run src-auth-perms-sync command permutations and assert expected outcomes.
 
 This is an integration smoke runner for a real Sourcegraph test instance. It
-uses the same CLI entrypoint an operator uses (`uv run auth-perms-sync`) and
+uses the same CLI entrypoint an operator uses (`uv run src-auth-perms-sync`) and
 checks both process exit codes and structured `run` log records.
 
 The script runs every case: read-only, dry-run, invalid-argument, no-op apply,
@@ -32,7 +32,7 @@ from urllib.parse import urlsplit
 
 LOG_PATH_PATTERN = re.compile(r"Writing log events to (.+?/log\.json)\.")
 DEFAULT_FUTURE_DATE = "2099-01-01"
-REMOVED_AUTH_PERMS_SYNC_ENVIRONMENT_PREFIX = "AUTH_PERMS_SYNC_"
+REMOVED_SRC_AUTH_PERMS_SYNC_ENVIRONMENT_PREFIX = "SRC_AUTH_PERMS_SYNC_"
 DEFAULT_SAMPLE_INTERVAL_SECONDS = 1.0
 DEFAULT_REPEAT_COUNT = 1
 WORKLOAD_FIELDS = (
@@ -363,9 +363,9 @@ def main() -> None:
 
     environment = command_environment(arguments)
     if not arguments.user:
-        arguments.user = environment.get("AUTH_PERMS_SYNC_TEST_USER") or environment.get("USER")
+        arguments.user = environment.get("SRC_AUTH_PERMS_SYNC_TEST_USER") or environment.get("USER")
     if not arguments.user:
-        raise SystemExit("--user is required when AUTH_PERMS_SYNC_TEST_USER and USER are unset")
+        raise SystemExit("--user is required when SRC_AUTH_PERMS_SYNC_TEST_USER and USER are unset")
     endpoint = environment.get("SRC_ENDPOINT")
     access_token = environment.get("SRC_ACCESS_TOKEN")
     if not endpoint:
@@ -412,7 +412,7 @@ def main() -> None:
 
 def run_variants(arguments: argparse.Namespace) -> list[RunVariant]:
     """Return the executable variants to measure."""
-    candidate_command = arguments.candidate_command or arguments.auth_perms_sync_command
+    candidate_command = arguments.candidate_command or arguments.src_auth_perms_sync_command
     candidate = RunVariant("candidate", tuple(shlex.split(candidate_command)))
     if not candidate.executable:
         raise SystemExit("candidate command cannot be empty")
@@ -426,16 +426,16 @@ def run_variants(arguments: argparse.Namespace) -> list[RunVariant]:
 
 def parse_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Run auth-perms-sync command permutations against a test instance.",
+        description="Run src-auth-perms-sync command permutations against a test instance.",
     )
     parser.add_argument(
-        "--auth-perms-sync-command",
-        default="uv run auth-perms-sync",
+        "--src-auth-perms-sync-command",
+        default="uv run src-auth-perms-sync",
         help="Candidate command used to invoke the CLI (default: %(default)s)",
     )
     parser.add_argument(
         "--candidate-command",
-        help="Candidate command to compare; overrides --auth-perms-sync-command",
+        help="Candidate command to compare; overrides --src-auth-perms-sync-command",
     )
     parser.add_argument(
         "--baseline-command",
@@ -464,7 +464,7 @@ def parse_arguments() -> argparse.Namespace:
         "--user",
         help=(
             "Sourcegraph user for user-scoped get/set/restore permutations "
-            "(default: AUTH_PERMS_SYNC_TEST_USER or USER)"
+            "(default: SRC_AUTH_PERMS_SYNC_TEST_USER or USER)"
         ),
     )
     parser.add_argument(
@@ -568,7 +568,7 @@ def command_environment(arguments: argparse.Namespace) -> dict[str, str]:
     """Return a deterministic child environment for CLI config parsing."""
     environment = {**dotenv_values(Path(arguments.env_file)), **os.environ}
     for name in list(environment):
-        if name.startswith(REMOVED_AUTH_PERMS_SYNC_ENVIRONMENT_PREFIX):
+        if name.startswith(REMOVED_SRC_AUTH_PERMS_SYNC_ENVIRONMENT_PREFIX):
             del environment[name]
     if arguments.endpoint:
         environment["SRC_ENDPOINT"] = arguments.endpoint
@@ -775,7 +775,7 @@ def read_only_cases(arguments: argparse.Namespace) -> list[CommandCase]:
         CommandCase(
             name="help",
             arguments=("--help",),
-            must_contain=("usage: auth-perms-sync", "--set [FILE]"),
+            must_contain=("usage: src-auth-perms-sync", "--set [FILE]"),
             must_not_contain=("--repositories-created-after", "--get-schema"),
         ),
         CommandCase(

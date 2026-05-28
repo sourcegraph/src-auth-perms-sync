@@ -10,10 +10,10 @@ from types import SimpleNamespace
 from typing import Any
 from unittest.mock import patch
 
-from auth_perms_sync.permissions import snapshot as permission_snapshot
-from auth_perms_sync.permissions import sourcegraph as permissions_sourcegraph
-from auth_perms_sync.permissions import workflow as permission_workflow
-from auth_perms_sync.shared import backups, id_codec
+from src_auth_perms_sync.permissions import snapshot as permission_snapshot
+from src_auth_perms_sync.permissions import sourcegraph as permissions_sourcegraph
+from src_auth_perms_sync.permissions import workflow as permission_workflow
+from src_auth_perms_sync.shared import backups, id_codec
 
 
 class SnapshotTests(unittest.TestCase):

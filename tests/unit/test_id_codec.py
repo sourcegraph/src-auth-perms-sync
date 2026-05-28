@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from auth_perms_sync.shared import id_codec
+from src_auth_perms_sync.shared import id_codec
 
 
 class IdCodecTests(unittest.TestCase):

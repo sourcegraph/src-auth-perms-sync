@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 
-from auth_perms_sync.shared import backups
+from src_auth_perms_sync.shared import backups
 
 
 class BackupPathTests(unittest.TestCase):

@@ -26,7 +26,7 @@ fi
 
 reject_change() {
   cat <<EOF >&2
-Do not edit ${subtree_path} directly in auth-perms-sync.
+Do not edit ${subtree_path} directly in src-auth-perms-sync.
 
 Make changes in sourcegraph/src-py-lib first, merge them upstream, then update this repo with:
 

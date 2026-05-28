@@ -53,7 +53,7 @@ def auth_provider_to_yaml(
 
     `site_config_entry`, when provided, is the matching `auth.providers[*]`
     JSONC entry (already stripped of redacted/secret fields by
-    `auth_perms_sync/shared/site_config.py`). Any
+    `src_auth_perms_sync/shared/site_config.py`). Any
     fields it carries that aren't already emitted from GraphQL are
     surfaced verbatim, so operators see the full provider config in the
     YAML — e.g. `identityProviderMetadataURL`, `serviceProviderIssuer`,
@@ -195,7 +195,7 @@ def external_service_to_yaml(service: permission_types.ExternalService) -> dict[
 def dump_auth_providers_yaml(path: Path, providers: list[dict[str, Any]]) -> None:
     header = (
         "# Sourcegraph auth provider configs.\n"
-        "# Generated/refreshed by:  auth-perms-sync --get\n"
+        "# Generated/refreshed by:  src-auth-perms-sync --get\n"
         "# Use these values when writing maps.yaml rules under `users.authProvider`.\n"
         "# This file is read-only reference data; edit maps.yaml, not this file.\n"
     )
@@ -205,7 +205,7 @@ def dump_auth_providers_yaml(path: Path, providers: list[dict[str, Any]]) -> Non
 def dump_code_hosts_yaml(path: Path, code_hosts: list[dict[str, Any]]) -> None:
     header = (
         "# Sourcegraph code host connection configs.\n"
-        "# Generated/refreshed by:  auth-perms-sync --get\n"
+        "# Generated/refreshed by:  src-auth-perms-sync --get\n"
         "# Use these values when writing maps.yaml rules under `repos.codeHostConnection`.\n"
         "# Secrets from ExternalService.config are stripped.\n"
         "# This file is read-only reference data; edit maps.yaml, not this file.\n"

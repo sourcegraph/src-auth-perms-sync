@@ -10,7 +10,7 @@ from contextvars import ContextVar
 from pathlib import Path
 from urllib.parse import urlsplit
 
-ARTIFACTS_DIR_NAME = "auth-perms-sync-runs"
+ARTIFACTS_DIR_NAME = "src-auth-perms-sync-runs"
 LOG_FILE_NAME = "log.json"
 RUNS_DIR_NAME = "runs"
 

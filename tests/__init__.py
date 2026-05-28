@@ -1,1 +1,1 @@
-"""Tests for auth-perms-sync."""
+"""Tests for src-auth-perms-sync."""

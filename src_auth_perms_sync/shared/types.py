@@ -21,7 +21,7 @@ class ExternalAccount(TypedDict):
     clientID: str
     # Provider-specific JSON; for SAML this is the gosaml2 AssertionInfo
     # (Assertions[].AttributeStatement.Attributes[].{Name,Values[].Value}).
-    # See `auth_perms_sync/shared/saml_groups.py` for the parser. Site-admin only;
+    # See `src_auth_perms_sync/shared/saml_groups.py` for the parser. Site-admin only;
     # null for accounts where the server does not expose it.
     accountData: NotRequired[dict[str, Any] | None]
 

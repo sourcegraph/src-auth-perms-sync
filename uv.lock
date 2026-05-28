@@ -25,7 +25,7 @@ wheels = [
 ]
 
 [[package]]
-name = "auth-perms-sync"
+name = "src-auth-perms-sync"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [

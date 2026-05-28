@@ -6,7 +6,7 @@ from pathlib import Path
 
 import yaml
 
-from auth_perms_sync.permissions import maps
+from src_auth_perms_sync.permissions import maps
 
 
 class MapsTests(unittest.TestCase):

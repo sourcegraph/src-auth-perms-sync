@@ -10,21 +10,21 @@ from unittest import mock
 
 from src_py_lib.utils import config as shared_config
 
-from auth_perms_sync import cli
-from auth_perms_sync.shared import backups
+from src_auth_perms_sync import cli
+from src_auth_perms_sync.shared import backups
 
 
-def make_config(**updates: object) -> cli.AuthPermissionsSyncConfig:
-    base_config = cli.AuthPermissionsSyncConfig(
+def make_config(**updates: object) -> cli.SrcAuthPermissionsSyncConfig:
+    base_config = cli.SrcAuthPermissionsSyncConfig(
         src_endpoint="https://sourcegraph.example.com",
         src_access_token="secret",
     )
     return base_config.model_copy(update=updates)
 
 
-def load_config_from_env(**env: str) -> cli.AuthPermissionsSyncConfig:
+def load_config_from_env(**env: str) -> cli.SrcAuthPermissionsSyncConfig:
     return shared_config.load_config(
-        cli.AuthPermissionsSyncConfig,
+        cli.SrcAuthPermissionsSyncConfig,
         env_file=None,
         env={
             "SRC_ENDPOINT": "https://sourcegraph.example.com",
@@ -149,7 +149,7 @@ class CliConfigTests(unittest.TestCase):
         cli.validate_config(make_config(set_path=Path("maps.yaml")))
 
     def test_created_after_config_accepts_yyyy_mm_dd_date_arguments(self) -> None:
-        config = load_config_from_env(AUTH_PERMS_SYNC_CREATED_AFTER="2026-01-01")
+        config = load_config_from_env(SRC_AUTH_PERMS_SYNC_CREATED_AFTER="2026-01-01")
 
         self.assertEqual("2026-01-01", config.created_after)
         cli.validate_config(make_config(get=True, created_after="2026-01-01"))
@@ -167,7 +167,7 @@ class CliConfigTests(unittest.TestCase):
                 self.subTest(invalid_value=invalid_value),
                 self.assertRaisesRegex(shared_config.ConfigError, "String should match pattern"),
             ):
-                load_config_from_env(AUTH_PERMS_SYNC_CREATED_AFTER=invalid_value)
+                load_config_from_env(SRC_AUTH_PERMS_SYNC_CREATED_AFTER=invalid_value)
 
     def test_validate_config_rejects_multiple_set_modes(self) -> None:
         self.assert_config_error(
@@ -239,7 +239,7 @@ class CliConfigTests(unittest.TestCase):
         )
 
     def assert_config_error(
-        self, config: cli.AuthPermissionsSyncConfig, expected_message: str
+        self, config: cli.SrcAuthPermissionsSyncConfig, expected_message: str
     ) -> None:
         captured_stderr = io.StringIO()
         with (

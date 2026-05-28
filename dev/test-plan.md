@@ -1,8 +1,8 @@
-# Large-scale test plan for `auth-perms-sync`
+# Large-scale test plan for `src-auth-perms-sync`
 
 ## Known constraints
 
-1. **`auth-perms-sync` snapshot/diff/expected-set state is fully in-memory.**
+1. **`src-auth-perms-sync` snapshot/diff/expected-set state is fully in-memory.**
    Snapshot cost scales with the **number of explicit grants**, not with the
    number of synced repos. A `1M repos × 10K users = 10⁹ grants` literal
    one-shot run will OOM on `build_snapshot` long before it stresses
@@ -48,13 +48,13 @@
 ## Measurement plan
 
 The script already emits the right primitives in
-`auth-perms-sync-runs/<endpoint>/runs/<run-id>/log.json`.
+`src-auth-perms-sync-runs/<endpoint>/runs/<run-id>/log.json`.
 Use `jq` and Python for post-run analysis; do not modify the script.
 
 ### Per-run assertions (correctness gates, fail the test on violation)
 
 ```bash
-F=auth-perms-sync-runs/<endpoint>/runs/<RUN_ID>/log.json
+F=src-auth-perms-sync-runs/<endpoint>/runs/<RUN_ID>/log.json
 # Every event() emits paired phase=="start"/"end" records; aggregations
 # below filter on phase=="end" so they only see completed operations
 # (start records have no duration_ms / status / mutation counters).
@@ -94,8 +94,8 @@ jq -r 'select(.event=="paginate_page" and .phase=="end") |
 ```bash
 for P in 1 16 64 128 256; do
   ulimit -n 8192
-  uv run auth-perms-sync --set full-00.yaml --apply --parallelism $P --no-backup
-  cp auth-perms-sync-runs/<endpoint>/runs/*/log.json results/sweep-p$P.jsonl
+  uv run src-auth-perms-sync --set full-00.yaml --apply --parallelism $P --no-backup
+  cp src-auth-perms-sync-runs/<endpoint>/runs/*/log.json results/sweep-p$P.jsonl
 done
 ```
 
@@ -196,7 +196,7 @@ part to rebuild.
    giant-payload / failure / race configs.
 3. A `runner.sh` that drives scenarios a → g in order, gates on the
    per-run assertions in §5, and copies
-   `auth-perms-sync-runs/<endpoint>/runs/<run-id>/log.json` plus
+   `src-auth-perms-sync-runs/<endpoint>/runs/<run-id>/log.json` plus
    same-directory snapshots into a timestamped
    `results/<scenario>/` dir.
 4. `analyze.py` that consumes a `results/<scenario>/` dir and emits a

@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import unittest
 
-from auth_perms_sync.shared import saml_groups
-from auth_perms_sync.shared import types as shared_types
+from src_auth_perms_sync.shared import saml_groups
+from src_auth_perms_sync.shared import types as shared_types
 
 
 class SamlGroupTests(unittest.TestCase):

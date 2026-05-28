@@ -18,7 +18,7 @@ jobs:
     name: Build and test
     runs-on: ubuntu-24.04
     env:
-      PACKAGE_NAME: auth-perms-sync
+      PACKAGE_NAME: src-auth-perms-sync
       PYTHON_VERSION: "3.11"
       UV_VERSION: "0.11.7"
 
@@ -50,10 +50,10 @@ jobs:
         run: uv lock --check
 
       - name: Lint
-        run: uv run --frozen ruff check auth_perms_sync/ tests/
+        run: uv run --frozen ruff check src_auth_perms_sync/ tests/
 
       - name: Check formatting
-        run: uv run --frozen ruff format --check auth_perms_sync/ tests/
+        run: uv run --frozen ruff format --check src_auth_perms_sync/ tests/
 
       - name: Type check
         run: uv run --frozen pyright
@@ -62,7 +62,7 @@ jobs:
         run: uv run --frozen python -m unittest discover -s tests
 
       - name: Smoke test source checkout CLI
-        run: uv run --frozen auth-perms-sync --help >/tmp/auth-perms-sync-help.txt
+        run: uv run --frozen src-auth-perms-sync --help >/tmp/src-auth-perms-sync-help.txt
 
       - name: Build wheel
         run: |
@@ -74,12 +74,12 @@ jobs:
           python -m venv build/ci-venv
           . build/ci-venv/bin/activate
           python -m pip install --upgrade pip
-          python -m pip install dist/src_py_lib-*.whl dist/auth_perms_sync-*.whl
-          auth-perms-sync --help >/tmp/auth-perms-sync-installed-help.txt
-          python -m auth_perms_sync --help >/tmp/auth-perms-sync-module-help.txt
+          python -m pip install dist/src_py_lib-*.whl dist/src_auth_perms_sync-*.whl
+          src-auth-perms-sync --help >/tmp/src-auth-perms-sync-installed-help.txt
+          python -m src_auth_perms_sync --help >/tmp/src-auth-perms-sync-module-help.txt
 
       - name: Upload wheel artifact
         uses: actions/upload-artifact@v7
         with:
-          name: auth-perms-sync-wheel
+          name: src-auth-perms-sync-wheel
           path: dist/*.whl

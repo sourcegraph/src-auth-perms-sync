@@ -27,7 +27,7 @@ mixing edits in one dirty working tree.
 From the main checkout:
 
 ```sh
-git worktree add ../auth-perms-sync-backup-diffs \
+git worktree add ../src-auth-perms-sync-backup-diffs \
   -b amp/backup-diff-files \
   HEAD
 ```
@@ -35,7 +35,7 @@ git worktree add ../auth-perms-sync-backup-diffs \
 Then work from the new directory:
 
 ```sh
-cd ../auth-perms-sync-backup-diffs
+cd ../src-auth-perms-sync-backup-diffs
 ```
 
 If the task should start from a remote branch instead of the current commit,
@@ -46,7 +46,7 @@ replace `HEAD` with that branch, for example `origin/split-main-into-modules`.
 Open the task worktree directly:
 
 ```sh
-code ../auth-perms-sync-backup-diffs
+code ../src-auth-perms-sync-backup-diffs
 ```
 
 VS Code treats it like a normal repo checkout. The Source Control view shows the
@@ -64,7 +64,7 @@ Good parallelism:
 
 Risky parallelism:
 
-- Two agents refactor `auth_perms_sync/cli.py` at the same time.
+- Two agents refactor `src_auth_perms_sync/cli.py` at the same time.
 - One branch renames functions while another branch edits their call sites.
 - Two branches change the same GraphQL mutation flow.
 
@@ -82,7 +82,7 @@ Resolve any conflicts in the task worktree, run validation, then continue.
 After the branch is merged or no longer needed:
 
 ```sh
-git worktree remove ../auth-perms-sync-backup-diffs
+git worktree remove ../src-auth-perms-sync-backup-diffs
 git branch -d amp/backup-diff-files
 ```
 

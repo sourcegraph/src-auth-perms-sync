@@ -141,7 +141,7 @@ def cmd_get(
         # SAML-only: tally distinct users per (serviceID, clientID, group)
         # by parsing each user's SAML AssertionInfo `accountData`. Surfaced
         # in the YAML so operators can size groups before authoring a
-        # `authProvider.samlGroup` mapping rule. See `auth_perms_sync/shared/saml_groups.py`.
+        # `authProvider.samlGroup` mapping rule. See `src_auth_perms_sync/shared/saml_groups.py`.
         saml_group_counts = saml_groups.count_users_per_saml_group(
             users, attribute_names_by_provider
         )

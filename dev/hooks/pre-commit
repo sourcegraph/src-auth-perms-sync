@@ -18,10 +18,10 @@ run git diff --cached --stat
 run git diff --stat
 run dev/check-src-py-lib-subtree.sh --staged
 
-run uv run ruff check auth_perms_sync/
-run uv run ruff format auth_perms_sync/ --check
+run uv run ruff check src_auth_perms_sync/
+run uv run ruff format src_auth_perms_sync/ --check
 run uv run pyright
 run uv run python -m unittest discover -s tests
-run uv run auth-perms-sync --help
+run uv run src-auth-perms-sync --help
 
 printf '\nPre-commit quality checks passed.\n'

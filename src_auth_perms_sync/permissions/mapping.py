@@ -5,11 +5,11 @@ containing one or more matchers (today: `authProvider`,
 `codeHostConnection`, and `regex`). Within a matcher, the supplied
 keys AND together against the discovered auth-provider / external-
 service entries. Across mapping rules, `cmd_set` unions the per-repo
-user sets at apply time — see `auth_perms_sync/permissions/types.py` for the rationale.
+user sets at apply time — see `src_auth_perms_sync/permissions/types.py` for the rationale.
 
 Adding a new matcher type:
 
-  1. Add the TypedDict in `auth_perms_sync/permissions/types.py`.
+  1. Add the TypedDict in `src_auth_perms_sync/permissions/types.py`.
   2. Add it as a sibling key on `UsersFilter` or `ReposFilter`.
   3. Add a branch in `resolve_users` / `resolve_repos` below.
   4. Add structural validation in `validate_mapping_rules`.
@@ -218,7 +218,7 @@ def resolve_users(
 
     `saml_groups_attribute_names` overrides the default `"groups"` SAML
     assertion attribute name per (serviceID, clientID) — see
-    `auth_perms_sync/shared/saml_groups.py`. When
+    `src_auth_perms_sync/shared/saml_groups.py`. When
     `None`, every SAML provider falls back to the default. Only
     consulted by the `authProvider.samlGroup` sub-field.
 

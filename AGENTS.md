@@ -15,16 +15,16 @@ npx --no-install markdownlint-cli2 *.md
 ### Python files
 
 # Lint + auto-fix safe issues
-uv run ruff check auth_perms_sync/ --fix
+uv run ruff check src_auth_perms_sync/ --fix
 
 # Format
-uv run ruff format auth_perms_sync/
+uv run ruff format src_auth_perms_sync/
 
 # Type check
 uv run pyright
 
 # Basic test
-uv run auth-perms-sync --help
+uv run src-auth-perms-sync --help
 ```
 
 ## Testing
@@ -32,9 +32,9 @@ uv run auth-perms-sync --help
 - First run a dry-run (default behaviour, without `--apply` flag) against a Sourcegraph instance
 
 ```sh
-uv run auth-perms-sync [--get]
-uv run auth-perms-sync --set maps.yaml --full
-uv run auth-perms-sync --restore backups/<source>/<run>/before.json
+uv run src-auth-perms-sync [--get]
+uv run src-auth-perms-sync --set maps.yaml --full
+uv run src-auth-perms-sync --restore backups/<source>/<run>/before.json
 ```
 
 - Read the output, and evaluate the expected changes
@@ -43,7 +43,7 @@ uv run auth-perms-sync --restore backups/<source>/<run>/before.json
   - Read and evaluate the output for expected changes
   - Run with the `--restore` flag against the test instance
   - Always inspect the before / after snapshots in
-    `auth-perms-sync-runs/<endpoint>/backups/` afterward to confirm the diff matches what you expected
+    `src-auth-perms-sync-runs/<endpoint>/backups/` afterward to confirm the diff matches what you expected
 
 ## Hard invariants — do not break
 
@@ -83,7 +83,7 @@ organization sync maps SAML groups to Sourcegraph org membership. Read
 
 ## Layout
 
-CLI lives in `auth_perms_sync/`; invoke with `uv run auth-perms-sync`.
+CLI lives in `src_auth_perms_sync/`; invoke with `uv run src-auth-perms-sync`.
 Strict pyright covers the package. Root modules are entrypoints only:
 
 - `cli.py` — `main()`, arg parsing, owns the CLI description.

@@ -34,17 +34,17 @@ jobs:
         include:
           - platform: linux-x86_64
             runs_on: ubuntu-24.04
-            asset_basename: auth-perms-sync-linux-x64
+            asset_basename: src-auth-perms-sync-linux-x64
             target_description: Linux x64
             expected_machine: x86_64
           - platform: macos-arm64
             runs_on: macos-26
-            asset_basename: auth-perms-sync-macos-arm64
+            asset_basename: src-auth-perms-sync-macos-arm64
             target_description: macOS arm64
             expected_machine: arm64
     env:
       ASSET_BASENAME: ${{ matrix.asset_basename }}
-      PACKAGE_NAME: auth-perms-sync
+      PACKAGE_NAME: src-auth-perms-sync
       PYTHON_VERSION: "3.11"
       TARGET_DESCRIPTION: ${{ matrix.target_description }}
       UV_VERSION: "0.11.7"
@@ -109,10 +109,10 @@ jobs:
           fi
 
           uv lock --check
-          uv run --frozen ruff check auth_perms_sync/
-          uv run --frozen ruff format --check auth_perms_sync/
+          uv run --frozen ruff check src_auth_perms_sync/
+          uv run --frozen ruff format --check src_auth_perms_sync/
           uv run --frozen pyright
-          uv run --frozen auth-perms-sync --help >/tmp/auth-perms-sync-help.txt
+          uv run --frozen src-auth-perms-sync --help >/tmp/src-auth-perms-sync-help.txt
 
       - name: Build wheelhouse tarball
         id: build
@@ -169,7 +169,7 @@ jobs:
           src_py_lib_wheel_name="$(basename "${src_py_lib_wheel_path}")"
 
           cat > "${wheelhouse_dir}/INSTALL.txt" <<EOF
-          # Auth perms sync ${release_tag} offline install
+          # src-auth-perms-sync ${release_tag} offline install
 
           This wheelhouse targets ${TARGET_DESCRIPTION} with Python 3.11.
 
@@ -177,19 +177,19 @@ jobs:
           python3.11 -m venv .venv
           . .venv/bin/activate
           pip install --no-index --find-links ./wheelhouse ${PACKAGE_NAME}
-          auth-perms-sync --help
+          src-auth-perms-sync --help
 
           Connected install, for environments that can reach GitHub and PyPI:
 
           pip install \
-            "https://github.com/sourcegraph/auth-perms-sync/releases/download/${release_tag}/${src_py_lib_wheel_name}" \
-            "https://github.com/sourcegraph/auth-perms-sync/releases/download/${release_tag}/${project_wheel_name}"
+            "https://github.com/sourcegraph/src-auth-perms-sync/releases/download/${release_tag}/${src_py_lib_wheel_name}" \
+            "https://github.com/sourcegraph/src-auth-perms-sync/releases/download/${release_tag}/${project_wheel_name}"
           EOF
 
           (cd "${wheelhouse_dir}" && shasum -a 256 *.whl > WHEELS.sha256)
 
           test -f "${project_wheel_path}"
-          test -f "${wheelhouse_dir}"/auth_perms_sync-*.whl
+          test -f "${wheelhouse_dir}"/src_auth_perms_sync-*.whl
           test -f "${wheelhouse_dir}"/src_py_lib-*.whl
           if find "${wheelhouse_dir}" -type f \
             ! -name '*.whl' \
@@ -228,7 +228,7 @@ jobs:
             --no-index \
             --find-links "${validation_dir}/wheelhouse" \
             "${PACKAGE_NAME}"
-          auth-perms-sync --help >/tmp/auth-perms-sync-release-help.txt
+          src-auth-perms-sync --help >/tmp/src-auth-perms-sync-release-help.txt
 
       - name: Write release notes
         id: notes
@@ -242,26 +242,26 @@ jobs:
 
           ### Restricted/offline Linux x64 + Python 3.11 install
 
-          Download \`auth-perms-sync-linux-x64.tar.gz\`, then run:
+          Download \`src-auth-perms-sync-linux-x64.tar.gz\`, then run:
 
           \`\`\`sh
-          tar -xzf auth-perms-sync-linux-x64.tar.gz
+          tar -xzf src-auth-perms-sync-linux-x64.tar.gz
           python3.11 -m venv .venv
           . .venv/bin/activate
           pip install --no-index --find-links ./wheelhouse ${PACKAGE_NAME}
-          auth-perms-sync --help
+          src-auth-perms-sync --help
           \`\`\`
 
           ### Restricted/offline macOS arm64 + Python 3.11 install
 
-          Download \`auth-perms-sync-macos-arm64.tar.gz\`, then run:
+          Download \`src-auth-perms-sync-macos-arm64.tar.gz\`, then run:
 
           \`\`\`sh
-          tar -xzf auth-perms-sync-macos-arm64.tar.gz
+          tar -xzf src-auth-perms-sync-macos-arm64.tar.gz
           python3.11 -m venv .venv
           . .venv/bin/activate
           pip install --no-index --find-links ./wheelhouse ${PACKAGE_NAME}
-          auth-perms-sync --help
+          src-auth-perms-sync --help
           \`\`\`
 
           The tarball includes this project, \`src-py-lib\`, and all runtime wheels.
@@ -271,8 +271,8 @@ jobs:
 
           \`\`\`sh
           pip install \
-            "https://github.com/sourcegraph/auth-perms-sync/releases/download/${release_tag}/${src_py_lib_wheel_name}" \
-            "https://github.com/sourcegraph/auth-perms-sync/releases/download/${release_tag}/${project_wheel_name}"
+            "https://github.com/sourcegraph/src-auth-perms-sync/releases/download/${release_tag}/${src_py_lib_wheel_name}" \
+            "https://github.com/sourcegraph/src-auth-perms-sync/releases/download/${release_tag}/${project_wheel_name}"
           \`\`\`
           EOF
           echo "path=${notes_path}" >> "${GITHUB_OUTPUT}"
