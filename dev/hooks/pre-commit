@@ -14,11 +14,10 @@ run() {
 printf 'Checking repository before commit in %s\n' "$repo_root"
 
 run git status --short
-run git diff --check -- . ":(exclude)git-subtree/src-py-lib"
-run git diff --cached --check -- . ":(exclude)git-subtree/src-py-lib"
+run git diff --check
+run git diff --cached --check
 run git diff --cached --stat
 run git diff --stat
-run dev/check-src-py-lib-subtree.sh --staged
 
 run uv run ruff check .
 run uv run ruff format . --check

@@ -50,20 +50,17 @@ packages = ["src/src_auth_perms_sync"]
 
 [tool.pyright]
 include = ["src", "tests", "dev"]
-exclude = ["git-subtree", "src-auth-perms-sync-runs", ".venv", "build", "dist"]
+exclude = ["src-auth-perms-sync-runs", ".venv", "build", "dist"]
 typeCheckingMode = "strict"
 pythonVersion = "3.11"
 
 [tool.ruff]
 target-version = "py311"
 line-length = 100
-extend-exclude = ["git-subtree", "src-auth-perms-sync-runs"]
+extend-exclude = ["src-auth-perms-sync-runs"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "SIM"]
 
 [tool.uv]
 package = true
-
-[tool.uv.sources]
-src-py-lib = { path = "git-subtree/src-py-lib" }

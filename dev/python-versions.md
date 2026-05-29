@@ -14,8 +14,8 @@ Keep these in sync when changing the baseline:
 - `README.md` install commands
 - `src-py-lib`'s matching Python support and published version in `pyproject.toml`
 
-Do not change `requires-python` until both this repo and `src-py-lib` are tested
-with the target version and matching customer wheelhouses can be built.
+Do not change `requires-python` until this repo and its PyPI dependencies are
+tested with the target version and matching customer wheelhouses can be built.
 
 ## Renovate notes
 

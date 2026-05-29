@@ -532,10 +532,9 @@ def _plan_additions_for_user(
             desired_repos[repository["id"]] = repository
 
     if existing_repo_ids is None:
-        existing_repo_ids = {
-            repository["id"]
-            for repository in permissions_sourcegraph.list_user_explicit_repos(client, user["id"])
-        }
+        existing_repo_ids = set(
+            permissions_sourcegraph.list_user_explicit_repo_ids(client, user["id"])
+        )
     additions = [
         permissions_apply.PermissionAddition(
             user_id=user["id"],

@@ -192,14 +192,13 @@ def capture_explicit_grants(
     that need the user-count statistic don't have to materialize the
     iterator twice or measure it themselves.
     """
-    # Invert directly as each per-user fetch completes. This avoids
-    # retaining a second, per-user copy of every repository grant before
-    # building the repo-centric snapshot.
-    repos_out: dict[str, RepoSnapshot] = {}
+    # Invert directly as each per-user fetch completes. Store only repo IDs
+    # first, then hydrate each unique repo name once after all users complete.
+    usernames_by_repository_id: dict[str, list[str]] = {}
 
     def _fetch(
         batch_users: list[SnapshotUserInput],
-    ) -> tuple[dict[str, list[permission_types.Repository]], int]:
+    ) -> tuple[dict[str, list[str]], int]:
         # High-frequency (one per user-batch):
         #   - log the whole event (start + end) at DEBUG; failures still
         #     get bumped to ERROR by the event() helper
@@ -213,7 +212,7 @@ def capture_explicit_grants(
             user_count=len(batch_users),
         ) as fetch_event:
             try:
-                repos_by_user_id = permissions_sourcegraph.list_users_explicit_repos(
+                repository_ids_by_user_id = permissions_sourcegraph.list_users_explicit_repo_ids(
                     client,
                     [user["id"] for user in batch_users],
                     batch_size=explicit_permissions_batch_size,
@@ -226,24 +225,29 @@ def capture_explicit_grants(
                     len(batch_users),
                     exception,
                 )
-                repos_by_user_id, failures = _fetch_one_user_at_a_time(batch_users)
-            repos_by_username = {
-                user["username"]: repos_by_user_id.get(user["id"], []) for user in batch_users
+                repository_ids_by_user_id, failures = _fetch_one_user_at_a_time(batch_users)
+            repository_ids_by_username = {
+                user["username"]: repository_ids_by_user_id.get(user["id"], [])
+                for user in batch_users
             }
-            fetch_event["repo_count"] = sum(len(repos) for repos in repos_by_username.values())
+            fetch_event["repo_count"] = sum(
+                len(repository_ids) for repository_ids in repository_ids_by_username.values()
+            )
             fetch_event["per_user_failures"] = failures
-            return repos_by_username, failures
+            return repository_ids_by_username, failures
 
     def _fetch_one_user_at_a_time(
         batch_users: list[SnapshotUserInput],
-    ) -> tuple[dict[str, list[permission_types.Repository]], int]:
-        repos_by_user_id: dict[str, list[permission_types.Repository]] = {}
+    ) -> tuple[dict[str, list[str]], int]:
+        repository_ids_by_user_id: dict[str, list[str]] = {}
         failures = 0
         for user in batch_users:
             try:
-                repos_by_user_id[user["id"]] = permissions_sourcegraph.list_user_explicit_repos(
-                    client,
-                    user["id"],
+                repository_ids_by_user_id[user["id"]] = (
+                    permissions_sourcegraph.list_user_explicit_repo_ids(
+                        client,
+                        user["id"],
+                    )
                 )
             except Exception as exception:
                 failures += 1
@@ -252,8 +256,8 @@ def capture_explicit_grants(
                     user["username"],
                     exception,
                 )
-                repos_by_user_id[user["id"]] = []
-        return repos_by_user_id, failures
+                repository_ids_by_user_id[user["id"]] = []
+        return repository_ids_by_user_id, failures
 
     with src.event(
         "capture_explicit_grants",
@@ -298,15 +302,14 @@ def capture_explicit_grants(
                 submitted_batch = futures.pop(future)
                 completed += len(submitted_batch)
                 try:
-                    repos_by_username, failures = future.result()
+                    repository_ids_by_username, failures = future.result()
                     capture_failures += failures
-                    for username, repos in repos_by_username.items():
-                        for repo in repos:
-                            entry = repos_out.setdefault(
-                                repo["id"],
-                                {"name": repo["name"], "explicit_permissions_users": []},
-                            )
-                            entry["explicit_permissions_users"].append(username)
+                    for username, repository_ids in repository_ids_by_username.items():
+                        for repository_id in repository_ids:
+                            usernames_by_repository_id.setdefault(
+                                repository_id,
+                                [],
+                            ).append(username)
                 except Exception as exception:
                     # Don't blow up the whole capture; warn so the operator
                     # can see the users whose grants were treated as empty.
@@ -369,10 +372,41 @@ def capture_explicit_grants(
         capture_event["max_pending_batches"] = max_pending_batches
 
     # Stable sort: users alphabetical within each repo.
-    for entry in repos_out.values():
-        entry["explicit_permissions_users"].sort()
+    for usernames in usernames_by_repository_id.values():
+        usernames.sort()
+
+    with src.event(
+        "hydrate_explicit_repository_names",
+        repository_count=len(usernames_by_repository_id),
+    ) as hydrate_event:
+        repositories_by_id = permissions_sourcegraph.list_repositories_by_ids(
+            client,
+            usernames_by_repository_id.keys(),
+        )
+        hydrate_event["hydrated_repository_count"] = len(repositories_by_id)
+
+    repos_out: dict[str, RepoSnapshot] = {}
+    for repository_id, usernames in usernames_by_repository_id.items():
+        repos_out[repository_id] = {
+            "name": _snapshot_repository_name(repositories_by_id, repository_id),
+            "explicit_permissions_users": usernames,
+        }
 
     return repos_out, submitted_user_count
+
+
+def _snapshot_repository_name(
+    repositories_by_id: dict[str, permission_types.Repository],
+    repository_id: str,
+) -> str:
+    repository = repositories_by_id.get(repository_id)
+    if repository is not None:
+        return repository["name"]
+    try:
+        decoded_repository_id = id_codec.decode_repository_id(repository_id)
+        return f"<repository id={decoded_repository_id}>"
+    except ValueError:
+        return f"<repository id={repository_id}>"
 
 
 def build_snapshot(

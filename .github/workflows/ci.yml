@@ -29,12 +29,6 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Guard src-py-lib subtree
-        if: github.event_name == 'pull_request'
-        env:
-          ALLOW_SRC_PY_LIB_SUBTREE_CHANGE: ${{ contains(github.event.pull_request.labels.*.name, 'src-py-lib subtree') && '1' || '' }}
-        run: ./dev/check-src-py-lib-subtree.sh --branch '${{ github.event.pull_request.base.sha }}'
-
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
@@ -65,16 +59,14 @@ jobs:
         run: uv run --frozen src-auth-perms-sync --help >/tmp/src-auth-perms-sync-help.txt
 
       - name: Build wheel
-        run: |
-          uv build --wheel git-subtree/src-py-lib --out-dir dist --no-create-gitignore
-          uv build --wheel --out-dir dist --no-create-gitignore
+        run: uv build --wheel --out-dir dist --no-create-gitignore
 
       - name: Smoke test installed wheel
         run: |
           python -m venv build/ci-venv
           . build/ci-venv/bin/activate
           python -m pip install --upgrade pip
-          python -m pip install dist/src_py_lib-*.whl dist/src_auth_perms_sync-*.whl
+          python -m pip install dist/src_auth_perms_sync-*.whl
           src-auth-perms-sync --help >/tmp/src-auth-perms-sync-installed-help.txt
           python -m src_auth_perms_sync --help >/tmp/src-auth-perms-sync-module-help.txt
 

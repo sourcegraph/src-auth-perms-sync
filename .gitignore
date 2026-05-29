@@ -1,6 +1,7 @@
 # Ignore
 __pycache__
 .DS_Store
+.playwright-mcp
 .pypirc
 .pyright
 .pytest_cache
@@ -19,5 +20,4 @@ wheels/
 # Allow
 !.env.example
 !.markdownlint-cli2.yaml
-!git-subtree/**
 !maps-example.yaml

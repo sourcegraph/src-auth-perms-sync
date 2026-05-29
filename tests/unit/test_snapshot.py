@@ -28,27 +28,43 @@ class SnapshotTests(unittest.TestCase):
             {"id": "user-2", "username": "alice"},
             {"id": "user-3", "username": "bob"},
         ]
-        repos_by_user_id: dict[str, list[permission_types.Repository]] = {
-            "user-1": [
-                {"id": repo_one_id, "name": "github.com/sourcegraph/one"},
-                {"id": repo_two_id, "name": "github.com/sourcegraph/two"},
-            ],
-            "user-2": [{"id": repo_one_id, "name": "github.com/sourcegraph/one"}],
+        repository_ids_by_user_id: dict[str, list[str]] = {
+            "user-1": [repo_one_id, repo_two_id],
+            "user-2": [repo_one_id],
             "user-3": [],
         }
+        repositories_by_id: dict[str, permission_types.Repository] = {
+            repo_one_id: {"id": repo_one_id, "name": "github.com/sourcegraph/one"},
+            repo_two_id: {"id": repo_two_id, "name": "github.com/sourcegraph/two"},
+        }
+        hydrated_repository_ids: list[str] = []
 
-        def list_repos(
+        def list_repo_ids(
             _client: src.SourcegraphClient,
             user_ids: Sequence[str],
             *,
             batch_size: int,
-        ) -> dict[str, list[permission_types.Repository]]:
-            return {user_id: repos_by_user_id[user_id] for user_id in user_ids}
+        ) -> dict[str, list[str]]:
+            return {user_id: repository_ids_by_user_id[user_id] for user_id in user_ids}
 
-        with patch.object(
-            permission_snapshot.permissions_sourcegraph,
-            "list_users_explicit_repos",
-            side_effect=list_repos,
+        def list_repositories_by_ids(
+            _client: src.SourcegraphClient,
+            repository_ids: Iterable[str],
+        ) -> dict[str, permission_types.Repository]:
+            hydrated_repository_ids.extend(repository_ids)
+            return repositories_by_id
+
+        with (
+            patch.object(
+                permission_snapshot.permissions_sourcegraph,
+                "list_users_explicit_repo_ids",
+                side_effect=list_repo_ids,
+            ),
+            patch.object(
+                permission_snapshot.permissions_sourcegraph,
+                "list_repositories_by_ids",
+                side_effect=list_repositories_by_ids,
+            ),
         ):
             repos, user_count = permission_snapshot.capture_explicit_grants(
                 cast(src.SourcegraphClient, object()),
@@ -59,6 +75,7 @@ class SnapshotTests(unittest.TestCase):
             )
 
         self.assertEqual(3, user_count)
+        self.assertEqual([repo_one_id, repo_two_id], hydrated_repository_ids)
         self.assertEqual(
             {
                 repo_one_id: {
@@ -85,19 +102,24 @@ class SnapshotTests(unittest.TestCase):
             pending_counts.append(len(futures_list))
             return real_wait(futures_list, **kwargs)
 
-        def list_repos(
+        def list_repo_ids(
             _client: src.SourcegraphClient,
             user_ids: Sequence[str],
             *,
             batch_size: int,
-        ) -> dict[str, list[permission_types.Repository]]:
+        ) -> dict[str, list[str]]:
             return {user_id: [] for user_id in user_ids}
 
         with (
             patch.object(
                 permission_snapshot.permissions_sourcegraph,
-                "list_users_explicit_repos",
-                side_effect=list_repos,
+                "list_users_explicit_repo_ids",
+                side_effect=list_repo_ids,
+            ),
+            patch.object(
+                permission_snapshot.permissions_sourcegraph,
+                "list_repositories_by_ids",
+                return_value={},
             ),
             patch.object(permission_snapshot, "wait", side_effect=recording_wait),
         ):
@@ -128,17 +150,31 @@ class SnapshotTests(unittest.TestCase):
         }
         calls: list[tuple[str, src.JSONDict, bool]] = []
         responses: list[src.JSONDict] = [
-            {
-                "user0": self.user_explicit_repos_page([repo_one], has_next_page=False),
-                "user1": self.user_explicit_repos_page(
-                    [repo_two],
-                    has_next_page=True,
-                    end_cursor="cursor-two",
-                ),
-            },
-            {
-                "user0": self.user_explicit_repos_page([repo_three], has_next_page=False),
-            },
+            cast(
+                src.JSONDict,
+                {
+                    "user0": self.user_explicit_repos_page([repo_one], has_next_page=False),
+                    "user1": self.user_explicit_repos_page(
+                        [repo_two],
+                        has_next_page=True,
+                        end_cursor="cursor-two",
+                    ),
+                },
+            ),
+            cast(
+                src.JSONDict,
+                {
+                    "user0": self.user_explicit_repos_page([repo_three], has_next_page=False),
+                },
+            ),
+            cast(
+                src.JSONDict,
+                {
+                    "repo0": repo_one,
+                    "repo1": repo_two,
+                    "repo2": repo_three,
+                },
+            ),
         ]
 
         class FakeGraphQLClient:
@@ -155,12 +191,16 @@ class SnapshotTests(unittest.TestCase):
                 calls.append((query, dict(variables), follow_pages))
                 return responses.pop(0)
 
+        def graphql(query: str, variables: object = None) -> src.JSONDict:
+            return FakeGraphQLClient().execute(query, cast(src.JSONDict, variables or {}))
+
         client = cast(
             src.SourcegraphClient,
             SimpleNamespace(
                 endpoint="https://sourcegraph.example.com",
                 token="secret",
                 http=object(),
+                graphql=graphql,
             ),
         )
         with patch.object(permissions_sourcegraph.src, "GraphQLClient", FakeGraphQLClient):
@@ -179,6 +219,8 @@ class SnapshotTests(unittest.TestCase):
         )
         self.assertIn("user0: node(id: $user0)", calls[0][0])
         self.assertIn("user1: node(id: $user1)", calls[0][0])
+        self.assertNotIn("repository {", calls[0][0])
+        self.assertNotIn("updatedAt", calls[0][0])
         self.assertFalse(calls[0][2])
         self.assertEqual("user-1", calls[0][1]["user0"])
         self.assertEqual("user-2", calls[0][1]["user1"])
@@ -187,6 +229,10 @@ class SnapshotTests(unittest.TestCase):
         self.assertFalse(calls[1][2])
         self.assertEqual("user-2", calls[1][1]["user0"])
         self.assertEqual("cursor-two", calls[1][1]["after0"])
+        self.assertIn("repo0: node(id: $repo0)", calls[2][0])
+        self.assertEqual(repo_one["id"], calls[2][1]["repo0"])
+        self.assertEqual(repo_two["id"], calls[2][1]["repo1"])
+        self.assertEqual(repo_three["id"], calls[2][1]["repo2"])
 
     def test_write_snapshot_uses_username_list_for_explicit_permissions(self) -> None:
         snapshot = self.make_snapshot()
@@ -330,10 +376,7 @@ class SnapshotTests(unittest.TestCase):
             {
                 "permissionsInfo": {
                     "repositories": {
-                        "nodes": [
-                            {"repository": repository, "updatedAt": "2026-05-27T00:00:00Z"}
-                            for repository in repositories
-                        ],
+                        "nodes": [{"id": repository["id"]} for repository in repositories],
                         "pageInfo": {"hasNextPage": has_next_page, "endCursor": end_cursor},
                     }
                 }

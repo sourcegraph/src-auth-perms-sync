@@ -1,11 +1,5 @@
 # AGENTS.md
 
-## git subtrees
-
-- Do not edit files under git-subtree/, within this repo
-- Find their original repo, make the change there, then update the subtree ref
-  in this repo
-
 ## Linting
 
 ```bash

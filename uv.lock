@@ -337,7 +337,7 @@ dev = [
 requires-dist = [
     { name = "json5", specifier = ">=0.14.0" },
     { name = "pyyaml", specifier = ">=6.0.3" },
-    { name = "src-py-lib", directory = "git-subtree/src-py-lib" },
+    { name = "src-py-lib", specifier = "==0.1.1" },
 ]
 
 [package.metadata.requires-dev]
@@ -349,25 +349,16 @@ dev = [
 
 [[package]]
 name = "src-py-lib"
-version = "0.1.0"
-source = { directory = "git-subtree/src-py-lib" }
+version = "0.1.1"
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "httpx" },
     { name = "pydantic" },
     { name = "python-dotenv" },
 ]
-
-[package.metadata]
-requires-dist = [
-    { name = "httpx", specifier = ">=0.28,<1" },
-    { name = "pydantic", specifier = ">=2,<3" },
-    { name = "python-dotenv", specifier = ">=1.2,<2" },
-]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "pyright", specifier = ">=1.1.409" },
-    { name = "ruff", specifier = ">=0.7.0" },
+sdist = { url = "https://files.pythonhosted.org/packages/af/66/5f31e15424d5f4e1f0074e4e5ce30a3ea879693a71dfd9e016552b9d64fd/src_py_lib-0.1.1.tar.gz", hash = "sha256:b73dece6b9e1d24992df7a5272c2ad2a3f9b491bcf002891d3b2632ce4d39aa7", size = 62598, upload-time = "2026-05-29T00:37:40.513Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/8f/64/a627e17fcf0c9e307d109453f3890d306ffc36c03a5ca21bc0759aa790ef/src_py_lib-0.1.1-py3-none-any.whl", hash = "sha256:d40d0cac7f3fadc7793aae96a98f6639d6a6f5a16fdd7456d99a50f30ea46301", size = 39082, upload-time = "2026-05-29T00:37:39.436Z" },
 ]
 
 [[package]]

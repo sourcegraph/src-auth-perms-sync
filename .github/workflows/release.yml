@@ -151,16 +151,8 @@ jobs:
             --frozen \
             --output-file "${requirements_file}"
 
-          src_py_lib_version="$(awk -F '"' '/^version = / { print $2; exit }' git-subtree/src-py-lib/pyproject.toml)"
-          if [[ -z "${src_py_lib_version}" ]]; then
-            echo "::error title=Missing src-py-lib version::Could not read git-subtree/src-py-lib/pyproject.toml."
-            exit 1
-          fi
-          awk \
-            -v "src_py_lib_requirement=src-py-lib==${src_py_lib_version}" \
-            '{ print ($0 == "./git-subtree/src-py-lib") ? src_py_lib_requirement : $0 }' \
-            "${requirements_file}" > "${runtime_requirements_file}"
-          if grep -q '^\./git-subtree/' "${runtime_requirements_file}"; then
+          cp "${requirements_file}" "${runtime_requirements_file}"
+          if grep -q '^\./' "${runtime_requirements_file}"; then
             echo "::error title=Unexpected local dependency::Runtime requirements must resolve from PyPI."
             exit 1
           fi

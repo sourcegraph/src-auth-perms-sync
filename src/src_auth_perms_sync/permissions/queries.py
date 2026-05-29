@@ -144,8 +144,7 @@ query UserExplicitRepos($id: ID!, $first: Int!, $after: String) {
       permissionsInfo {
         repositories(source: API, first: $first, after: $after) {
           nodes {
-            repository { id name }
-            updatedAt
+            id
           }
           pageInfo { hasNextPage endCursor }
         }
@@ -155,13 +154,13 @@ query UserExplicitRepos($id: ID!, $first: Int!, $after: String) {
 }
 """
 
-QUERY_USER_EXPLICIT_REPO_COUNT = """
-query UserExplicitRepoCount($id: ID!) {
+QUERY_USER_EXPLICIT_REPO_EXISTS = """
+query UserExplicitRepoExists($id: ID!) {
   node(id: $id) {
     ... on User {
       permissionsInfo {
         repositories(source: API, first: 1) {
-          totalCount
+          nodes { id }
         }
       }
     }
