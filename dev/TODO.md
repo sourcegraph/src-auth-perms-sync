@@ -1,5 +1,10 @@
 # TODO
 
+## High priority: Bump src-py-lib after Node ID helper release
+
+- After releasing `src-py-lib` with Sourcegraph Node ID helpers, update
+  `pyproject.toml` and `uv.lock` to depend on that new version.
+
 ## Medium priority: Lightweight incremental updates
 
 - When a new user's account is created, or a new repo is synced from a code host,

@@ -2,76 +2,16 @@ name: CI
 
 on:
   pull_request:
-  push:
-    branches:
-      - main
 
 permissions:
   contents: read
+  pull-requests: read
 
-defaults:
-  run:
-    shell: bash
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  test:
-    name: Build and test
-    runs-on: ubuntu-24.04
-    env:
-      PACKAGE_NAME: src-auth-perms-sync
-      PYTHON_VERSION: "3.11"
-      UV_VERSION: "0.11.7"
-
-    steps:
-      - name: Check out code
-        uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-
-      - name: Set up Python
-        uses: actions/setup-python@v6
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
-          cache: pip
-
-      - name: Install uv
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install "uv==${UV_VERSION}"
-
-      - name: Validate lockfile
-        run: uv lock --check
-
-      - name: Lint
-        run: uv run --frozen ruff check .
-
-      - name: Check formatting
-        run: uv run --frozen ruff format --check .
-
-      - name: Type check
-        run: uv run --frozen pyright
-
-      - name: Run tests
-        run: uv run --frozen python -m unittest discover -s tests
-
-      - name: Smoke test source checkout CLI
-        run: uv run --frozen src-auth-perms-sync --help >/tmp/src-auth-perms-sync-help.txt
-
-      - name: Build wheel
-        run: uv build --wheel --out-dir dist --no-create-gitignore
-
-      - name: Smoke test installed wheel
-        run: |
-          python -m venv build/ci-venv
-          . build/ci-venv/bin/activate
-          python -m pip install --upgrade pip
-          python -m pip install dist/src_auth_perms_sync-*.whl
-          src-auth-perms-sync --help >/tmp/src-auth-perms-sync-installed-help.txt
-          python -m src_auth_perms_sync --help >/tmp/src-auth-perms-sync-module-help.txt
-
-      - name: Upload wheel artifact
-        uses: actions/upload-artifact@v7
-        with:
-          name: src-auth-perms-sync-wheel
-          path: dist/*.whl
+  validate:
+    name: Validate
+    uses: ./.github/workflows/validate.yml

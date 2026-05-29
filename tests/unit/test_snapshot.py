@@ -16,13 +16,13 @@ from src_auth_perms_sync.permissions import snapshot as permission_snapshot
 from src_auth_perms_sync.permissions import sourcegraph as permissions_sourcegraph
 from src_auth_perms_sync.permissions import types as permission_types
 from src_auth_perms_sync.permissions import workflow as permission_workflow
-from src_auth_perms_sync.shared import backups, id_codec
+from src_auth_perms_sync.shared import backups
 
 
 class SnapshotTests(unittest.TestCase):
     def test_capture_explicit_grants_inverts_repos_without_per_user_buffer(self) -> None:
-        repo_one_id = id_codec.encode_repository_id(1)
-        repo_two_id = id_codec.encode_repository_id(2)
+        repo_one_id = src.encode_repository_id(1)
+        repo_two_id = src.encode_repository_id(2)
         users: list[permission_snapshot.SnapshotUser] = [
             {"id": "user-1", "username": "carol"},
             {"id": "user-2", "username": "alice"},
@@ -137,15 +137,15 @@ class SnapshotTests(unittest.TestCase):
 
     def test_list_users_explicit_repos_batches_aliases_and_follows_pages(self) -> None:
         repo_one: permission_types.Repository = {
-            "id": id_codec.encode_repository_id(1),
+            "id": src.encode_repository_id(1),
             "name": "github.com/sourcegraph/one",
         }
         repo_two: permission_types.Repository = {
-            "id": id_codec.encode_repository_id(2),
+            "id": src.encode_repository_id(2),
             "name": "github.com/sourcegraph/two",
         }
         repo_three: permission_types.Repository = {
-            "id": id_codec.encode_repository_id(3),
+            "id": src.encode_repository_id(3),
             "name": "github.com/sourcegraph/three",
         }
         calls: list[tuple[str, src.JSONDict, bool]] = []
@@ -252,7 +252,7 @@ class SnapshotTests(unittest.TestCase):
     def test_snapshot_diff_omits_unchanged_users(self) -> None:
         before = self.make_snapshot()
         after = self.make_snapshot()
-        repo_id = id_codec.encode_repository_id(1)
+        repo_id = src.encode_repository_id(1)
         after["repos"][repo_id]["explicit_permissions_users"] = ["alice", "carol"]
 
         diff = permission_snapshot.build_snapshot_diff(before, after)
@@ -263,8 +263,8 @@ class SnapshotTests(unittest.TestCase):
 
     def test_write_projected_snapshot_keeps_after_repos_out_of_memory(self) -> None:
         before = self.make_snapshot()
-        existing_repo_id = id_codec.encode_repository_id(1)
-        new_repo_id = id_codec.encode_repository_id(2)
+        existing_repo_id = src.encode_repository_id(1)
+        new_repo_id = src.encode_repository_id(2)
         expected_users = {
             existing_repo_id: ("alice", "carol"),
             new_repo_id: ("dana",),
@@ -312,7 +312,7 @@ class SnapshotTests(unittest.TestCase):
         self.assertEqual(1, diff_on_disk["summary"]["grants_removed"])
 
     def test_render_diff_omits_unchanged_users(self) -> None:
-        repo_id = id_codec.encode_repository_id(1)
+        repo_id = src.encode_repository_id(1)
 
         rendered = permission_snapshot.render_diff(
             {
@@ -357,7 +357,7 @@ class SnapshotTests(unittest.TestCase):
                 "total_grants": 2,
             },
             "repos": {
-                id_codec.encode_repository_id(1): {
+                src.encode_repository_id(1): {
                     "name": "github.com/sourcegraph/example",
                     "explicit_permissions_users": ["alice", "bob"],
                 }

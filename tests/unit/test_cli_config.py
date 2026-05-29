@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import contextlib
 import io
-import re
 import tempfile
 import unittest
 from concurrent.futures import ThreadPoolExecutor
@@ -10,7 +9,6 @@ from pathlib import Path
 from typing import cast
 from unittest import mock
 
-import httpx
 import src_py_lib as src
 from src_py_lib.utils import config as shared_config
 
@@ -187,29 +185,32 @@ class CliConfigTests(unittest.TestCase):
 
         self.assertTrue(config.trace)
 
-    def test_trace_sampling_http_client_adds_sampled_traceparent(self) -> None:
-        traceparents: list[str] = []
+    def test_run_with_client_enables_sourcegraph_trace_collection(self) -> None:
+        configuration = make_config(trace=True)
+        command = cli.resolve_command(configuration)
+        captured_clients: list[src.SourcegraphClient] = []
 
-        def handler(request: httpx.Request) -> httpx.Response:
-            traceparents.append(request.headers["traceparent"])
-            return httpx.Response(200, json={"ok": True})
+        def capture_client(
+            _config: cli.SrcAuthPermissionsSyncConfig,
+            _command: cli.ResolvedCommand,
+            client: src.SourcegraphClient,
+            _worker_pool: ThreadPoolExecutor,
+        ) -> None:
+            captured_clients.append(client)
 
-        client = cli.TraceSamplingHTTPClient(
-            max_attempts=1,
-            transport=httpx.MockTransport(handler),
-        )
-        try:
-            self.assertEqual(
-                {"ok": True},
-                client.json("POST", "https://sourcegraph.example.com/.api/graphql"),
+        with (
+            ThreadPoolExecutor(max_workers=1) as worker_pool,
+            mock.patch.object(cli, "run_command", side_effect=capture_client),
+        ):
+            cli.run_with_client(
+                configuration,
+                command,
+                "https://sourcegraph.example.com",
+                worker_pool,
             )
-        finally:
-            client.close()
 
-        self.assertEqual(1, len(traceparents))
-        self.assertRegex(traceparents[0], r"^00-[0-9a-f]{32}-[0-9a-f]{16}-01$")
-        self.assertNotEqual("0" * 32, re.split("-", traceparents[0])[1])
-        self.assertNotEqual("0" * 16, re.split("-", traceparents[0])[2])
+        self.assertEqual(1, len(captured_clients))
+        self.assertTrue(captured_clients[0].trace)
 
     def test_validate_config_rejects_multiple_set_modes(self) -> None:
         self.assert_config_error(

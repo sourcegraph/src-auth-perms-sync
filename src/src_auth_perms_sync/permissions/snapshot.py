@@ -15,7 +15,7 @@ from typing import Any, Literal, TextIO, TypeAlias, TypedDict, cast
 
 import src_py_lib as src
 
-from ..shared import id_codec, run_context
+from ..shared import run_context
 from ..shared import types as shared_types
 from . import sourcegraph as permissions_sourcegraph
 from . import types as permission_types
@@ -403,7 +403,7 @@ def _snapshot_repository_name(
     if repository is not None:
         return repository["name"]
     try:
-        decoded_repository_id = id_codec.decode_repository_id(repository_id)
+        decoded_repository_id = src.decode_repository_id(repository_id)
         return f"<repository id={decoded_repository_id}>"
     except ValueError:
         return f"<repository id={repository_id}>"
@@ -620,7 +620,7 @@ def _write_repo_snapshot_value(output: TextIO, repo: RepoSnapshot, indent: int) 
 def _write_repository_value(output: TextIO, repository: permission_types.Repository) -> None:
     output.write("{")
     output.write('"id": ')
-    json.dump(id_codec.decode_repository_id(repository["id"]), output)
+    json.dump(src.decode_repository_id(repository["id"]), output)
     output.write(', "name": ')
     json.dump(repository["name"], output)
     output.write("}")
@@ -693,7 +693,7 @@ def _write_snapshot_json(
             if wrote_repo:
                 output.write(",")
             output.write("\n    ")
-            json.dump(str(id_codec.decode_repository_id(repo_id)), output)
+            json.dump(str(src.decode_repository_id(repo_id)), output)
             output.write(": ")
             _write_repo_snapshot_value(output, repo, 4)
             wrote_repo = True
@@ -813,7 +813,7 @@ def _encode_full_snapshot_raw(path: Path, raw: dict[str, Any]) -> Snapshot:
         raise SystemExit(f"{path}: snapshot_kind is 'user_scope', expected full repo snapshot.")
     on_disk_repos = cast(dict[str, RepoSnapshot], raw.get("repos", {}))
     raw["repos"] = {
-        id_codec.encode_repository_id(int(repo_id)): repo for repo_id, repo in on_disk_repos.items()
+        src.encode_repository_id(int(repo_id)): repo for repo_id, repo in on_disk_repos.items()
     }
     return cast(Snapshot, raw)
 
@@ -830,7 +830,7 @@ def _encode_user_scoped_snapshot_raw(path: Path, raw: dict[str, Any]) -> UserSco
             "id": user_snapshot["id"],
             "explicit_repositories": [
                 {
-                    "id": id_codec.encode_repository_id(int(repo["id"])),
+                    "id": src.encode_repository_id(int(repo["id"])),
                     "name": cast(str, repo["name"]),
                 }
                 for repo in cast(list[dict[str, Any]], user_snapshot["explicit_repositories"])
@@ -1040,7 +1040,7 @@ def _snapshot_diff_entry(
         _repo_usernames(after_repo),
     )
     return {
-        "id": id_codec.decode_repository_id(repo_id),
+        "id": src.decode_repository_id(repo_id),
         "name": _snapshot_diff_repo_name(before, after_repo_for_id, repo_id),
         "before_count": _permission_count(before_repo),
         "after_count": _permission_count(after_repo),
@@ -1306,7 +1306,7 @@ def render_diff(
     total_added = sum(len(repo_diff["added"]) for repo_diff in diff.values())
     total_removed = sum(len(repo_diff["removed"]) for repo_diff in diff.values())
     for repo_id, repo_diff in sorted_diff[:max_repos]:
-        lines.append(f"=== {repo_diff['name']} (id={id_codec.decode_repository_id(repo_id)}) ===")
+        lines.append(f"=== {repo_diff['name']} (id={src.decode_repository_id(repo_id)}) ===")
         if repo_diff["added"]:
             lines.append(
                 "  + added ({count}): {usernames}".format(
@@ -1499,4 +1499,4 @@ def _snapshot_diff_side(snapshot: Snapshot | UserScopedSnapshot) -> SnapshotDiff
 
 
 def _snapshot_diff_repository(repo_id: str, repo_name: str) -> SnapshotDiffRepository:
-    return {"id": id_codec.decode_repository_id(repo_id), "name": repo_name}
+    return {"id": src.decode_repository_id(repo_id), "name": repo_name}
