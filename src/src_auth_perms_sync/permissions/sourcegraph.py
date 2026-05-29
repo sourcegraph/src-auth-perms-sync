@@ -8,7 +8,6 @@ from typing import Any, cast
 
 import src_py_lib as src
 
-from ..shared import id_codec
 from ..shared import sourcegraph as shared_sourcegraph
 from ..shared import types as shared_types
 from . import queries
@@ -357,7 +356,7 @@ def _repository_or_placeholder(
 
 def _missing_repository(repository_id: str) -> permission_types.Repository:
     try:
-        decoded_repository_id = id_codec.decode_repository_id(repository_id)
+        decoded_repository_id = src.decode_repository_id(repository_id)
         repository_name = f"<repository id={decoded_repository_id}>"
     except ValueError:
         repository_name = f"<repository id={repository_id}>"

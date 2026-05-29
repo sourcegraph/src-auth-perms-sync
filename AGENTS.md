@@ -3,8 +3,11 @@
 ## Linting
 
 ```bash
+### GitHub Actions workflows
+actionlint
+
 ### Markdown files
-npx --yes markdownlint-cli2
+npx --yes markdownlint-cli2@0.22.1
 
 ### Python files
 
@@ -44,6 +47,9 @@ uv run src-auth-perms-sync --restore backups/<source>/<run>/before.json
 - The tagged source commit must already contain the package version it
   releases. Do not make the customer release workflow edit `pyproject.toml`.
 - Prepare the version bump on a branch. Set `VERSION`, then copy / paste:
+- As part of every release bump, find old release-version literals in
+  `AGENTS.md`, `README.md`, and release snippets, and replace them with the
+  new version where they are meant to stay current.
 
 ```bash
 set -euo pipefail
@@ -84,12 +90,13 @@ uv lock
 set -euo pipefail
 
 uv lock --check
+actionlint
 uv run ruff check src/src_auth_perms_sync/ tests/
 uv run ruff format --check src/src_auth_perms_sync/ tests/
 uv run pyright
 uv run python -m unittest discover -s tests
 uv run src-auth-perms-sync --help
-npx --yes markdownlint-cli2
+npx --yes markdownlint-cli2@0.22.1
 uv build --wheel --out-dir /tmp/src-auth-perms-sync-release-check --no-create-gitignore
 rm -rf /tmp/src-auth-perms-sync-release-check
 ```
@@ -229,7 +236,7 @@ Strict pyright covers the package. Root modules are entrypoints only:
 - `cli.py` — `main()`, arg parsing, owns the CLI description.
 - `shared/` — cross-workflow helpers: Sourcegraph auth-provider/user list
   helpers, shared GraphQL operations and TypedDicts, site-config validation,
-  SAML group parsing, and GraphQL ID helpers.
+  and SAML group parsing.
 
 Business workflows live in packages:
 

@@ -1,4 +1,4 @@
-name: Build customer release
+name: Build release
 
 on:
   push:
@@ -13,6 +13,7 @@ on:
 
 permissions:
   contents: write
+  pull-requests: read
 
 concurrency:
   group: release-${{ github.event.inputs.tag || github.ref_name }}
@@ -23,13 +24,18 @@ defaults:
     shell: bash
 
 jobs:
+  validate:
+    name: Validate
+    uses: ./.github/workflows/validate.yml
+    with:
+      ref: ${{ github.event.inputs.tag || github.ref }}
+      build-package: false
+
   wheelhouse:
     name: ${{ matrix.platform }}-py311 wheelhouse
     runs-on: ${{ matrix.runs_on }}
     strategy:
       fail-fast: false
-      # The first matrix leg creates the release; later legs upload more assets.
-      max-parallel: 1
       matrix:
         include:
           - platform: linux-x86_64
@@ -61,12 +67,17 @@ jobs:
         uses: actions/setup-python@v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-          cache: pip
+
+      - name: Cache uv
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/uv
+          key: uv-${{ runner.os }}-py${{ env.PYTHON_VERSION }}-${{ hashFiles('uv.lock') }}
+          restore-keys: |
+            uv-${{ runner.os }}-py${{ env.PYTHON_VERSION }}-
 
       - name: Install build tools
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install "uv==${UV_VERSION}"
+        run: python -m pip install "uv==${UV_VERSION}"
 
       - name: Validate release inputs
         id: release
@@ -103,7 +114,7 @@ jobs:
 
           echo "tag=${release_tag}" >> "${GITHUB_OUTPUT}"
 
-      - name: Validate package
+      - name: Validate runner architecture
         run: |
           actual_machine=$(uv run --frozen python - <<'PY'
           import platform
@@ -115,12 +126,6 @@ jobs:
             echo "::error title=Wrong runner architecture::Expected ${{ matrix.expected_machine }}, got ${actual_machine}."
             exit 1
           fi
-
-          uv lock --check
-          uv run --frozen ruff check src/src_auth_perms_sync/
-          uv run --frozen ruff format --check src/src_auth_perms_sync/
-          uv run --frozen pyright
-          uv run --frozen src-auth-perms-sync --help >/tmp/src-auth-perms-sync-help.txt
 
       - name: Build wheelhouse tarball
         id: build
@@ -153,6 +158,8 @@ jobs:
           project_wheel_name="$(basename "${project_wheel_path}")"
           project_source_distribution_path="${project_source_distributions[0]}"
           project_source_distribution_name="$(basename "${project_source_distribution_path}")"
+          project_wheel_checksum_path="${project_wheel_path}.sha256"
+          project_source_distribution_checksum_path="${project_source_distribution_path}.sha256"
           if [[ ! -f "${project_wheel_path}" ]]; then
             echo "::error title=Missing project wheel::Expected ${project_wheel_path} to exist."
             exit 1
@@ -205,7 +212,7 @@ jobs:
           pip install "https://github.com/sourcegraph/src-auth-perms-sync/releases/download/${release_tag}/${project_wheel_name}"
           EOF
 
-          (cd "${wheelhouse_dir}" && shasum -a 256 *.whl > WHEELS.sha256)
+          (cd "${wheelhouse_dir}" && shasum -a 256 ./*.whl > WHEELS.sha256)
 
           test -f "${project_wheel_path}"
           test -f "${wheelhouse_dir}"/src_auth_perms_sync-*.whl
@@ -219,18 +226,28 @@ jobs:
             exit 1
           fi
 
+          (
+            cd "$(dirname "${project_wheel_path}")"
+            shasum -a 256 "${project_wheel_name}" > "$(basename "${project_wheel_checksum_path}")"
+            shasum -a 256 "${project_source_distribution_name}" > "$(basename "${project_source_distribution_checksum_path}")"
+          )
+
           tar -C "${release_dir}" -czf "${asset_path}" wheelhouse
           (
             cd "$(dirname "${asset_path}")"
             shasum -a 256 "$(basename "${asset_path}")" > "$(basename "${checksum_path}")"
           )
 
-          echo "asset_path=${asset_path}" >> "${GITHUB_OUTPUT}"
-          echo "checksum_path=${checksum_path}" >> "${GITHUB_OUTPUT}"
-          echo "project_wheel_path=${project_wheel_path}" >> "${GITHUB_OUTPUT}"
-          echo "project_wheel_name=${project_wheel_name}" >> "${GITHUB_OUTPUT}"
-          echo "project_source_distribution_path=${project_source_distribution_path}" >> "${GITHUB_OUTPUT}"
-          echo "project_source_distribution_name=${project_source_distribution_name}" >> "${GITHUB_OUTPUT}"
+          {
+            echo "asset_path=${asset_path}"
+            echo "checksum_path=${checksum_path}"
+            echo "project_wheel_path=${project_wheel_path}"
+            echo "project_wheel_name=${project_wheel_name}"
+            echo "project_source_distribution_path=${project_source_distribution_path}"
+            echo "project_source_distribution_name=${project_source_distribution_name}"
+            echo "project_wheel_checksum_path=${project_wheel_checksum_path}"
+            echo "project_source_distribution_checksum_path=${project_source_distribution_checksum_path}"
+          } >> "${GITHUB_OUTPUT}"
 
       - name: Validate offline install from tarball
         run: |
@@ -286,7 +303,7 @@ jobs:
           The tarball includes this project, \`src-py-lib\`, and all runtime wheels.
           Verify the tarball downloads with the matching \`.sha256\` files.
           The GitHub release also includes the same \`${project_wheel_name}\` and
-          \`${project_source_distribution_name}\` files uploaded to PyPI.
+          \`${project_source_distribution_name}\` files uploaded to PyPI, plus matching checksums.
 
           ### Connected PyPI install
 
@@ -309,9 +326,24 @@ jobs:
           path: |
             ${{ steps.build.outputs.asset_path }}
             ${{ steps.build.outputs.checksum_path }}
+
+      - name: Upload project distribution release artifact
+        if: matrix.platform == 'linux-x86_64'
+        uses: actions/upload-artifact@v7
+        with:
+          name: src-auth-perms-sync-project-distributions
+          path: |
             ${{ steps.build.outputs.project_wheel_path }}
             ${{ steps.build.outputs.project_source_distribution_path }}
-            ${{ steps.notes.outputs.path }}
+            ${{ steps.build.outputs.project_wheel_checksum_path }}
+            ${{ steps.build.outputs.project_source_distribution_checksum_path }}
+
+      - name: Upload release notes artifact
+        if: matrix.platform == 'linux-x86_64'
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-notes
+          path: ${{ steps.notes.outputs.path }}
 
       - name: Upload PyPI artifact
         if: matrix.platform == 'linux-x86_64'
@@ -322,20 +354,41 @@ jobs:
             ${{ steps.build.outputs.project_wheel_path }}
             ${{ steps.build.outputs.project_source_distribution_path }}
 
+  github-release:
+    name: Publish GitHub release assets
+    needs: [validate, wheelhouse]
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Download wheelhouse artifacts
+        uses: actions/download-artifact@v7
+        with:
+          pattern: src-auth-perms-sync-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Download release notes
+        uses: actions/download-artifact@v7
+        with:
+          name: release-notes
+          path: release-notes
+
       - name: Publish GitHub release assets
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
-          release_tag="${{ steps.release.outputs.tag }}"
-          asset_path="${{ steps.build.outputs.asset_path }}"
-          checksum_path="${{ steps.build.outputs.checksum_path }}"
-          project_wheel_path="${{ steps.build.outputs.project_wheel_path }}"
-          project_source_distribution_path="${{ steps.build.outputs.project_source_distribution_path }}"
-          notes_path="${{ steps.notes.outputs.path }}"
-          release_assets=("${asset_path}" "${checksum_path}")
+          release_tag="${{ github.event.inputs.tag || github.ref_name }}"
+          notes_path="$(find release-notes -name release-notes.md -print -quit)"
+          mapfile -t release_assets < <(find release-assets -type f | sort)
 
-          if [[ "${{ matrix.platform }}" == "linux-x86_64" ]]; then
-            release_assets+=("${project_wheel_path}" "${project_source_distribution_path}")
+          if [[ -z "${notes_path}" ]]; then
+            echo "::error title=Missing release notes::release-notes.md was not found in release artifact."
+            exit 1
+          fi
+          if [[ "${#release_assets[@]}" -eq 0 ]]; then
+            echo "::error title=Missing release assets::No release assets were downloaded."
+            exit 1
           fi
 
           if gh release view "${release_tag}" >/dev/null 2>&1; then
@@ -351,7 +404,7 @@ jobs:
 
   pypi:
     name: Publish PyPI package
-    needs: wheelhouse
+    needs: [validate, wheelhouse]
     runs-on: ubuntu-24.04
     permissions:
       contents: read

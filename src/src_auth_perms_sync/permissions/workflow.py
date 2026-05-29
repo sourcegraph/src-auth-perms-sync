@@ -9,7 +9,7 @@ from pathlib import Path
 
 import src_py_lib as src
 
-from ..shared import backups, id_codec, saml_groups
+from ..shared import backups, saml_groups
 from ..shared import sourcegraph as shared_sourcegraph
 from ..shared import types as shared_types
 from . import mapping as permissions_mapping
@@ -134,7 +134,7 @@ def load_mapping_context_for_rules(
         client, saml_groups_attribute_name_by_config_id
     )
     services_by_id: dict[int, permission_types.ExternalService] = {
-        id_codec.decode_external_service_id(service["id"]): service for service in services
+        src.decode_external_service_id(service["id"]): service for service in services
     }
     repos_by_external_service_id = load_repos_by_external_service(client, services_by_id)
     all_repos_by_id = index_repos_by_id(repos_by_external_service_id)
@@ -479,7 +479,7 @@ def validate_post_apply(
         log.warning(
             "VALIDATION MISMATCH on repo id=%d: expected %d users, got %d.  "
             "Expected-but-missing: %s.  Actual-but-unexpected: %s.",
-            id_codec.decode_repository_id(repo_id),
+            src.decode_repository_id(repo_id),
             len(expected),
             len(actual),
             only_expected or "(none)",

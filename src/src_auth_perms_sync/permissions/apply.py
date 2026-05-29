@@ -19,7 +19,7 @@ from typing import TypeAlias, cast
 
 import src_py_lib as src
 
-from ..shared import id_codec, run_context
+from ..shared import run_context
 from ..shared import types as shared_types
 from . import queries
 from . import types as permission_types
@@ -222,7 +222,7 @@ def _apply_permission_changes(
                         action,
                         change.username,
                         change.repo_name,
-                        id_codec.decode_repository_id(change.repo_id),
+                        src.decode_repository_id(change.repo_id),
                     )
                 except CancelledError:
                     canceled += 1
@@ -235,7 +235,7 @@ def _apply_permission_changes(
                         action,
                         change.username,
                         change.repo_name,
-                        id_codec.decode_repository_id(change.repo_id),
+                        src.decode_repository_id(change.repo_id),
                         exception,
                     )
 
@@ -362,7 +362,7 @@ def _apply_repo_overwrite_plans(
                         log.info(
                             "  OK %s (id=%d) — %d users.",
                             overwrite.repository_name,
-                            id_codec.decode_repository_id(overwrite.repository_id),
+                            src.decode_repository_id(overwrite.repository_id),
                             len(overwrite.usernames),
                         )
                     except CancelledError:
@@ -376,7 +376,7 @@ def _apply_repo_overwrite_plans(
                         log.error(
                             "  FAIL %s (id=%d): %s",
                             overwrite.repository_name,
-                            id_codec.decode_repository_id(overwrite.repository_id),
+                            src.decode_repository_id(overwrite.repository_id),
                             exception,
                         )
 

@@ -93,7 +93,10 @@ benchmark CSVs in `/tmp` unless a human asks to preserve them.
 To trace the full integration matrix, run the end-to-end script with its own
 `--trace` flag. The runner forwards it to every child CLI invocation, then
 tails each child run log and fetches all traced GraphQL Jaeger traces in the
-background while that child command is still running:
+background while that child command is still running. The runner uses
+`src-py-lib` Config parsing, logging, Sourcegraph endpoint normalization,
+`SourcegraphClient.fetch_jaeger_trace_summary()`, and a shared HTTP pool, so
+trace summary and retry behavior match the CLI's Sourcegraph client:
 
 ```bash
 uv run python dev/test-end-to-end.py \
@@ -106,31 +109,47 @@ uv run python dev/test-end-to-end.py \
 
 Use `--jaeger-trace-limit N` to fetch only the `N` slowest GraphQL traces per
 case, or `--jaeger-trace-limit 0` to disable in-run Jaeger fetching while still
-sending sampled trace headers.
+sending sampled trace headers. The default is to fetch every traced GraphQL
+request.
 
-The runner drains outstanding background collectors once at the end, before it
-writes JSON/CSV results, so Jaeger collection does not add a blocking phase
-between child cases.
+The runner writes trace summaries incrementally as JSON Lines. By default, it
+uses a sibling of `--results-json` or `--results-csv`, named
+`*-jaeger-traces.jsonl`. Override this with `--jaeger-trace-jsonl PATH`.
+
+The shared `src-py-lib` `stream_jaeger_trace_summaries()` helper now fetches in
+parallel for in-process Sourcegraph clients. The end-to-end script still uses a
+bounded global worker pool because the traced requests happen in child
+processes and are discovered by tailing their JSON logs. Tune this with
+`--jaeger-trace-parallelism N` (default 16). The runner drains outstanding
+background collectors once at the end, before it writes JSON/CSV results, so
+Jaeger collection does not add a blocking phase between child cases.
+
+All runner flags are Config-backed. You can set them in the shell or `.env`
+with `SRC_AUTH_PERMS_SYNC_E2E_*` names, plus `SRC_ENDPOINT`,
+`SRC_ACCESS_TOKEN`, and `SRC_AUTH_PERMS_SYNC_TEST_USER`.
 
 For each tested batch size and parallelism, record:
 
 - CLI `capture_explicit_grants` duration from the structured log
-- slowest `http_request` duration and its `traceparent`
+- slowest `http_request` duration and its `x-trace` / `traceparent` metadata
 - Jaeger counts and summed duration for `GraphQL Request`, `repos.Get`,
   `sql.conn.query`, and `database.PermsStore.LoadUserPermissions`
 - retries/timeouts from the CLI log
 
-In a large traced sgdev end-to-end run, all 42 cases passed in 5,936 seconds.
-The child logs contained 8,146 traced GraphQL requests. The expensive cases
-were still dominated by full snapshot capture:
+In a traced sgdev end-to-end run after the matrix was trimmed to avoid
+overlapping code paths, all 36 cases passed. Child command time summed to about
+1,126 seconds. The JSONL trace summary file contained 3,256 GraphQL trace
+lookups, but Jaeger returned only 26 summaries; most lookups returned `trace
+not found`. The expensive cases were still dominated by full snapshot capture
+and full apply / restore paths:
 
 | Case | Elapsed | GraphQL requests | Slowest GraphQL request | Dominant phase |
 | --- | ---: | ---: | ---: | --- |
-| `set-full-sync-saml-orgs-apply` | 832s | 919 | 14.6s | `capture_explicit_grants` |
-| `restore-full-apply-cleanup` | 782s | 911 | 2.0s | `capture_explicit_grants` |
-| `set-full-apply` | 774s | 915 | 13.5s | `capture_explicit_grants` |
-| `explicit-get-all-users` | 355s | 507 | 16.5s | `capture_explicit_grants` |
-| `get-sync-saml-orgs-dry-run` | 349s | 509 | 16.4s | `capture_explicit_grants` |
+| `restore-full-apply-cleanup` | 234s | 913 | 3.2s | `capture_explicit_grants` / restore |
+| `set-full-apply` | 214s | 917 | 3.2s | `capture_explicit_grants` / apply |
+| `restore-full-no-backup-cleanup` | 135s | 510 | 3.2s | `capture_explicit_grants` / restore |
+| `set-full-no-backup-apply` | 129s | 129 | 1.2s | apply mutations |
+| `get-sync-saml-orgs-dry-run` | 116s | 510 | 3.2s | `capture_explicit_grants` |
 
 Fetch Jaeger traces immediately for long runs. In that same full matrix, older
 trace IDs were no longer available by the time the run finished. Focused reruns

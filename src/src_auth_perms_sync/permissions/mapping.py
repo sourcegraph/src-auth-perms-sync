@@ -24,8 +24,9 @@ from collections.abc import Mapping
 from typing import Any, cast
 
 import json5
+import src_py_lib as src
 
-from ..shared import id_codec, saml_groups
+from ..shared import saml_groups
 from ..shared import types as shared_types
 from . import types as permission_types
 
@@ -495,10 +496,10 @@ def _repos_matching_code_host_connection(
         log.info(
             "    codeHostConnection → %s (id=%d kind=%s)",
             service["displayName"],
-            id_codec.decode_external_service_id(service["id"]),
+            src.decode_external_service_id(service["id"]),
             service["kind"],
         )
-        external_service_id = id_codec.decode_external_service_id(service["id"])
+        external_service_id = src.decode_external_service_id(service["id"])
         for repo in repos_by_external_service_id.get(external_service_id, []):
             matched_repos[repo["id"]] = repo
     return list(matched_repos.values())

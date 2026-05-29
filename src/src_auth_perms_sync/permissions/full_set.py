@@ -10,7 +10,7 @@ from typing import Any, cast
 
 import src_py_lib as src
 
-from ..shared import backups, id_codec, run_context, saml_groups
+from ..shared import backups, run_context, saml_groups
 from ..shared import sourcegraph as shared_sourcegraph
 from ..shared import types as shared_types
 from . import apply as permissions_apply
@@ -378,7 +378,7 @@ def _finish_full_set_dry_run(
             "[DRY RUN] Would set %d users on repo %s (id=%d).",
             len(usernames),
             plan.repo_names[repo_id],
-            id_codec.decode_repository_id(repo_id),
+            src.decode_repository_id(repo_id),
         )
     log.info("Dry run complete. Pass --apply to mutate state.")
 

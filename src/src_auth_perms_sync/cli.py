@@ -11,9 +11,7 @@ from __future__ import annotations
 
 import logging
 import os
-import secrets
 import sys
-from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
@@ -207,10 +205,7 @@ class SrcAuthPermissionsSyncConfig(src.SourcegraphClientConfig, src.LoggingConfi
         env_var="SRC_AUTH_PERMS_SYNC_TRACE",
         cli_flag="--trace",
         cli_action="store_true",
-        help=(
-            "Force Sourcegraph trace sampling by sending a sampled traceparent "
-            "header on each HTTP request"
-        ),
+        help=("Ask Sourcegraph to retain traces for GraphQL requests and return trace metadata"),
     )
 
 
@@ -401,45 +396,6 @@ def run_fields(
     }
 
 
-class TraceSamplingHTTPClient(src.HTTPClient):
-    """HTTP client that asks Sourcegraph to retain Jaeger traces for every request."""
-
-    def request(
-        self,
-        method: str,
-        url: str,
-        *,
-        headers: Mapping[str, str] | None = None,
-        query: Mapping[str, str | int | float | bool | None] | None = None,
-        json_body: object | None = None,
-        data: bytes | None = None,
-    ) -> bytes:
-        request_headers = dict(headers or {})
-        if not any(name.lower() == "traceparent" for name in request_headers):
-            request_headers["traceparent"] = sampled_traceparent()
-        return super().request(
-            method,
-            url,
-            headers=request_headers,
-            query=query,
-            json_body=json_body,
-            data=data,
-        )
-
-
-def sampled_traceparent() -> str:
-    """Return a W3C traceparent header value with the sampled flag set."""
-    return f"00-{nonzero_hex(16)}-{nonzero_hex(8)}-01"
-
-
-def nonzero_hex(byte_count: int) -> str:
-    """Return a random hex string that is not all zeroes."""
-    while True:
-        value = secrets.token_hex(byte_count)
-        if any(character != "0" for character in value):
-            return value
-
-
 def run_with_client(
     config: SrcAuthPermissionsSyncConfig,
     command: ResolvedCommand,
@@ -447,13 +403,17 @@ def run_with_client(
     worker_pool: ThreadPoolExecutor,
 ) -> None:
     """Create a client, run the selected command, and always close HTTP resources."""
-    http_class = TraceSamplingHTTPClient if config.trace else src.HTTPClient
-    http = http_class(
+    http = src.HTTPClient(
         user_agent="src-auth-perms-sync/0.1 (+python)",
         max_attempts=config.max_attempts,
         max_connections=config.parallelism,
     )
-    client = src.SourcegraphClient(endpoint=endpoint, token=config.src_access_token, http=http)
+    client = src.SourcegraphClient(
+        endpoint=endpoint,
+        token=config.src_access_token,
+        http=http,
+        trace=config.trace,
+    )
     try:
         run_command(config, command, client, worker_pool)
     finally:

@@ -9,7 +9,7 @@ import json5
 import src_py_lib as src
 import yaml
 
-from ..shared import id_codec, site_config
+from ..shared import site_config
 from ..shared import types as shared_types
 from . import types as permission_types
 
@@ -152,7 +152,7 @@ def external_service_to_yaml(service: permission_types.ExternalService) -> dict[
     discovered state is explicit.
     """
     rendered: dict[str, Any] = {
-        "id": id_codec.decode_external_service_id(service["id"]),
+        "id": src.decode_external_service_id(service["id"]),
         "kind": service["kind"],
         "displayName": service["displayName"],
         "url": service["url"],

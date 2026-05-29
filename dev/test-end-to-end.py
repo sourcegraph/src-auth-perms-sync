@@ -13,13 +13,10 @@ already covers that behavior.
 
 from __future__ import annotations
 
-import argparse
-import collections
 import csv
 import datetime
 import json
 import os
-import queue
 import re
 import shlex
 import statistics
@@ -27,13 +24,20 @@ import subprocess
 import sys
 import threading
 import time
-import urllib.error
-import urllib.request
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping, Sequence
+from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import wait as wait_for_futures
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, TextIO, cast
 from urllib.parse import urlsplit
+
+import src_py_lib as src
+from src_py_lib.clients.sourcegraph import (
+    DEFAULT_SOURCEGRAPH_ENDPOINT,
+    JAEGER_TRACE_RETRY_DELAYS_SECONDS,
+    sourcegraph_trace_from_headers,
+)
 
 LOG_PATH_PATTERN = re.compile(r"Writing log events to (.+?/log\.json)\.")
 DEFAULT_FUTURE_DATE = "2099-01-01"
@@ -41,6 +45,11 @@ REMOVED_SRC_AUTH_PERMS_SYNC_ENVIRONMENT_PREFIX = "SRC_AUTH_PERMS_SYNC_"
 DEFAULT_SAMPLE_INTERVAL_SECONDS = 1.0
 DEFAULT_REPEAT_COUNT = 1
 DEFAULT_JAEGER_TRACE_LIMIT: int | None = None
+DEFAULT_JAEGER_TRACE_PARALLELISM = 16
+DEFAULT_PARALLELISM = 4
+DEFAULT_FULL_RESTORE_PARALLELISM = 1
+DEFAULT_MEMORY_SUMMARY_LIMIT = 20
+DEFAULT_SRC_AUTH_PERMS_SYNC_COMMAND = "uv run src-auth-perms-sync"
 WORKLOAD_FIELDS = (
     "user_count",
     "total_users",
@@ -57,6 +66,227 @@ WORKLOAD_FIELDS = (
     "mutations_failed",
     "mutations_canceled",
 )
+
+
+def format_jaeger_retry_delays(delays: Sequence[float]) -> str:
+    """Return retry delays in the format accepted by --jaeger-retry-delays."""
+    return ",".join(f"{delay:g}" for delay in delays)
+
+
+class EndToEndConfig(src.SourcegraphClientConfig, src.LoggingConfig):
+    """Config values for the end-to-end runner."""
+
+    src_endpoint: str = src.config_field(
+        default=DEFAULT_SOURCEGRAPH_ENDPOINT,
+        env_var="SRC_ENDPOINT",
+        cli_flag="--src-endpoint",
+        cli_aliases=("--endpoint",),
+        metavar="URL",
+        help=f"Sourcegraph test instance URL (default: {DEFAULT_SOURCEGRAPH_ENDPOINT})",
+    )
+    src_access_token: str = src.config_field(
+        default="",
+        env_var="SRC_ACCESS_TOKEN",
+        cli_flag="--src-access-token",
+        cli_aliases=("--access-token",),
+        metavar="TOKEN",
+        help="Sourcegraph access token, or op:// secret reference",
+        secret=True,
+        required=True,
+    )
+    src_auth_perms_sync_command: str = src.config_field(
+        default=DEFAULT_SRC_AUTH_PERMS_SYNC_COMMAND,
+        env_var="SRC_AUTH_PERMS_SYNC_E2E_COMMAND",
+        cli_flag="--src-auth-perms-sync-command",
+        help=(
+            "Candidate command used to invoke the CLI "
+            f"(default: {DEFAULT_SRC_AUTH_PERMS_SYNC_COMMAND})"
+        ),
+    )
+    candidate_command: str | None = src.config_field(
+        default=None,
+        env_var="SRC_AUTH_PERMS_SYNC_E2E_CANDIDATE_COMMAND",
+        cli_flag="--candidate-command",
+        help="Candidate command to compare; overrides --src-auth-perms-sync-command",
+    )
+    baseline_command: str | None = src.config_field(
+        default=None,
+        env_var="SRC_AUTH_PERMS_SYNC_E2E_BASELINE_COMMAND",
+        cli_flag="--baseline-command",
+        help="Optional baseline command. When set, baseline and candidate results are compared.",
+    )
+    repeat: int = src.config_field(
+        default=DEFAULT_REPEAT_COUNT,
+        env_var="SRC_AUTH_PERMS_SYNC_E2E_REPEAT",
+        cli_flag="--repeat",
+        metavar="N",
+        ge=1,
+        help=(
+            "Number of times to run each command for each variant "
+            f"(default: {DEFAULT_REPEAT_COUNT})"
+        ),
+    )
+    user: str = src.config_field(
+        default="",
+        env_var="SRC_AUTH_PERMS_SYNC_TEST_USER",
+        cli_flag="--user",
+        metavar="USER",
+        help="Sourcegraph user for user-scoped get/set/restore cases (default: USER)",
+    )
+    future_date: str = src.config_field(
+        default=DEFAULT_FUTURE_DATE,
+        env_var="SRC_AUTH_PERMS_SYNC_E2E_FUTURE_DATE",
+        cli_flag="--future-date",
+        metavar="YYYY-MM-DD",
+        pattern=r"^\d{4}-\d{2}-\d{2}$",
+        help=f"YYYY-MM-DD date expected to match no users (default: {DEFAULT_FUTURE_DATE})",
+    )
+    parallelism: int = src.config_field(
+        default=DEFAULT_PARALLELISM,
+        env_var="SRC_AUTH_PERMS_SYNC_E2E_PARALLELISM",
+        cli_flag="--parallelism",
+        metavar="N",
+        ge=1,
+        help=f"Parallelism for light mutation/no-op apply cases (default: {DEFAULT_PARALLELISM})",
+    )
+    full_restore_parallelism: int = src.config_field(
+        default=DEFAULT_FULL_RESTORE_PARALLELISM,
+        env_var="SRC_AUTH_PERMS_SYNC_E2E_FULL_RESTORE_PARALLELISM",
+        cli_flag="--full-restore-parallelism",
+        metavar="N",
+        ge=1,
+        help=(
+            "Parallelism for the expensive full restore cleanup "
+            f"(default: {DEFAULT_FULL_RESTORE_PARALLELISM})"
+        ),
+    )
+    allow_non_test_endpoint: bool = src.config_field(
+        default=False,
+        env_var="SRC_AUTH_PERMS_SYNC_E2E_ALLOW_NON_TEST_ENDPOINT",
+        cli_flag="--allow-non-test-endpoint",
+        cli_action="store_true",
+        help="Allow mutating cases outside localhost/sgdev endpoints",
+    )
+    keep_going: bool = src.config_field(
+        default=False,
+        env_var="SRC_AUTH_PERMS_SYNC_E2E_KEEP_GOING",
+        cli_flag="--keep-going",
+        cli_action="store_true",
+        help="Continue after assertion failures where it is safe to do so",
+    )
+    trace: bool = src.config_field(
+        default=False,
+        env_var="SRC_AUTH_PERMS_SYNC_E2E_TRACE",
+        cli_flag="--trace",
+        cli_action="store_true",
+        help="Pass --trace to each child src-auth-perms-sync command",
+    )
+    jaeger_trace_limit: int | None = src.config_field(
+        default=DEFAULT_JAEGER_TRACE_LIMIT,
+        env_var="SRC_AUTH_PERMS_SYNC_E2E_JAEGER_TRACE_LIMIT",
+        cli_flag="--jaeger-trace-limit",
+        metavar="N",
+        ge=0,
+        help=(
+            "When --trace is set, fetch and summarize the N slowest GraphQL Jaeger traces "
+            "while each child command runs; omit for all traces, set 0 to disable"
+        ),
+    )
+    jaeger_trace_parallelism: int = src.config_field(
+        default=DEFAULT_JAEGER_TRACE_PARALLELISM,
+        env_var="SRC_AUTH_PERMS_SYNC_E2E_JAEGER_TRACE_PARALLELISM",
+        cli_flag="--jaeger-trace-parallelism",
+        metavar="N",
+        ge=1,
+        help=(
+            "Concurrent Jaeger trace fetch requests when --trace is set "
+            f"(default: {DEFAULT_JAEGER_TRACE_PARALLELISM})"
+        ),
+    )
+    jaeger_trace_jsonl: Path | None = src.config_field(
+        default=None,
+        env_var="SRC_AUTH_PERMS_SYNC_E2E_JAEGER_TRACE_JSONL",
+        cli_flag="--jaeger-trace-jsonl",
+        metavar="PATH",
+        help=(
+            "Write Jaeger trace summaries incrementally as JSON Lines. Defaults to a sibling "
+            "of --results-json or --results-csv when --trace is set."
+        ),
+    )
+    jaeger_retry_delays: tuple[float, ...] = src.config_field(
+        default=JAEGER_TRACE_RETRY_DELAYS_SECONDS,
+        env_var="SRC_AUTH_PERMS_SYNC_E2E_JAEGER_RETRY_DELAYS",
+        cli_flag="--jaeger-retry-delays",
+        metavar="SECONDS[,SECONDS...]",
+        help=(
+            "Comma-separated retry delays for Jaeger trace lookup lag "
+            f"(default: {format_jaeger_retry_delays(JAEGER_TRACE_RETRY_DELAYS_SECONDS)})"
+        ),
+    )
+    sample_interval: float = src.config_field(
+        default=DEFAULT_SAMPLE_INTERVAL_SECONDS,
+        env_var="SRC_AUTH_PERMS_SYNC_E2E_SAMPLE_INTERVAL",
+        cli_flag="--sample-interval",
+        metavar="SECONDS",
+        ge=0,
+        help=(
+            "Seconds between child resource_sample log events. The run end record always "
+            "includes peak_rss_mb; set 0 to disable samples. Default: "
+            f"{DEFAULT_SAMPLE_INTERVAL_SECONDS}"
+        ),
+    )
+    external_sample_interval: float = src.config_field(
+        default=DEFAULT_SAMPLE_INTERVAL_SECONDS,
+        env_var="SRC_AUTH_PERMS_SYNC_E2E_EXTERNAL_SAMPLE_INTERVAL",
+        cli_flag="--external-sample-interval",
+        metavar="SECONDS",
+        ge=0,
+        help=(
+            "Seconds between external child process-tree RSS samples; set 0 to disable "
+            f"(default: {DEFAULT_SAMPLE_INTERVAL_SECONDS})"
+        ),
+    )
+    memory_summary_limit: int = src.config_field(
+        default=DEFAULT_MEMORY_SUMMARY_LIMIT,
+        env_var="SRC_AUTH_PERMS_SYNC_E2E_MEMORY_SUMMARY_LIMIT",
+        cli_flag="--memory-summary-limit",
+        metavar="N",
+        ge=1,
+        help="Number of highest-RSS cases to print in the final memory summary",
+    )
+    results_json: Path | None = src.config_field(
+        default=None,
+        env_var="SRC_AUTH_PERMS_SYNC_E2E_RESULTS_JSON",
+        cli_flag="--results-json",
+        metavar="PATH",
+        help="Optional path to write machine-readable run and comparison results as JSON",
+    )
+    results_csv: Path | None = src.config_field(
+        default=None,
+        env_var="SRC_AUTH_PERMS_SYNC_E2E_RESULTS_CSV",
+        cli_flag="--results-csv",
+        metavar="PATH",
+        help=(
+            "Optional path to write per-command memory results as CSV; phase rows are written "
+            "beside it as *-phases.csv"
+        ),
+    )
+    fail_on_memory_regression_percent: float | None = src.config_field(
+        default=None,
+        env_var="SRC_AUTH_PERMS_SYNC_E2E_FAIL_ON_MEMORY_REGRESSION_PERCENT",
+        cli_flag="--fail-on-memory-regression-percent",
+        metavar="PERCENT",
+        ge=0,
+        help="Fail if candidate median peak RSS regresses by more than this percent",
+    )
+    fail_on_memory_regression_mib: float | None = src.config_field(
+        default=None,
+        env_var="SRC_AUTH_PERMS_SYNC_E2E_FAIL_ON_MEMORY_REGRESSION_MIB",
+        cli_flag="--fail-on-memory-regression-mib",
+        metavar="MIB",
+        ge=0,
+        help="Fail if candidate median peak RSS regresses by more than this many MiB",
+    )
 
 
 @dataclass(frozen=True)
@@ -201,28 +431,109 @@ class ExternalProcessSampler:
         self.peak_rss_mb = max_optional_float(self.peak_rss_mb, rss_mb)
 
 
+class JaegerTraceFetchPool:
+    """Fetch Sourcegraph Jaeger trace summaries through one bounded HTTP pool."""
+
+    def __init__(
+        self,
+        config: EndToEndConfig,
+        *,
+        parallelism: int,
+        retry_delays_seconds: Sequence[float],
+        jsonl_path: Path | None,
+    ) -> None:
+        self.retry_delays_seconds = tuple(retry_delays_seconds)
+        self._executor = ThreadPoolExecutor(
+            max_workers=parallelism,
+            thread_name_prefix="JaegerTraceFetch",
+        )
+        self._jsonl_file: TextIO | None = None
+        self._lock = threading.Lock()
+        http = src.HTTPClient(
+            user_agent="src-auth-perms-sync-e2e/0.1 (+python)",
+            max_attempts=1,
+            max_connections=parallelism,
+        )
+        self._client = src.sourcegraph_client_from_config(config, http=http)
+        if jsonl_path is not None:
+            jsonl_path.parent.mkdir(parents=True, exist_ok=True)
+            self._jsonl_file = jsonl_path.open("w", encoding="utf-8")
+            print(f"Writing Jaeger trace summaries incrementally to {jsonl_path}")
+
+    def submit(
+        self,
+        trace_request: dict[str, Any],
+        collector: JaegerTraceCollector,
+    ) -> Future[dict[str, Any]]:
+        future = src.submit_with_log_context(self._executor, self._fetch_summary, trace_request)
+        future.add_done_callback(lambda completed: self._record_summary(collector, completed))
+        return future
+
+    def close(self) -> None:
+        self._executor.shutdown(wait=True)
+        self._client.http.close()
+        if self._jsonl_file is not None:
+            self._jsonl_file.close()
+
+    def _fetch_summary(self, trace_request: dict[str, Any]) -> dict[str, Any]:
+        try:
+            trace = sourcegraph_trace_from_request(trace_request)
+            summary = self._client.fetch_jaeger_trace_summary(
+                trace,
+                retry_delays_seconds=self.retry_delays_seconds,
+            ).to_json()
+            return {**trace_request, **summary}
+        except Exception as exception:  # noqa: BLE001 - keep long-running evidence collection alive.
+            return {
+                **trace_request,
+                "jaeger_found": False,
+                "error": f"{type(exception).__name__}: {exception}",
+            }
+
+    def _record_summary(
+        self,
+        collector: JaegerTraceCollector,
+        future: Future[dict[str, Any]],
+    ) -> None:
+        summary = future.result()
+        collector.record_summary(summary)
+        self._write_jsonl(summary)
+
+    def _write_jsonl(self, summary: dict[str, Any]) -> None:
+        if self._jsonl_file is None:
+            return
+        with self._lock:
+            self._jsonl_file.write(json.dumps(summary, sort_keys=True) + "\n")
+            self._jsonl_file.flush()
+
+
 class JaegerTraceCollector:
-    """Tail a child log and fetch Jaeger traces while the child keeps running."""
+    """Tail a child log and submit Jaeger trace fetches while the child runs."""
 
     def __init__(
         self,
         log_path: Path,
-        environment: dict[str, str],
         limit: int | None,
+        fetch_pool: JaegerTraceFetchPool,
+        *,
+        variant: str,
+        iteration: int,
+        case_name: str,
     ) -> None:
         self.log_path = log_path
         self.limit = limit
-        self.endpoint = environment.get("SRC_ENDPOINT", "").rstrip("/")
-        self.access_token = environment.get("SRC_ACCESS_TOKEN", "")
+        self.fetch_pool = fetch_pool
+        self.variant = variant
+        self.iteration = iteration
+        self.case_name = case_name
         self.summaries: list[dict[str, Any]] = []
         self._requests_by_trace_id: dict[str, dict[str, Any]] = {}
         self._queued_trace_ids: set[str] = set()
-        self._queue: queue.Queue[dict[str, Any] | None] = queue.Queue()
+        self._futures: list[Future[dict[str, Any]]] = []
         self._lock = threading.Lock()
         self._log_complete = threading.Event()
         self._started = False
         self._tail_thread: threading.Thread | None = None
-        self._fetch_thread: threading.Thread | None = None
 
     def start(self) -> None:
         if self._started:
@@ -235,13 +546,7 @@ class JaegerTraceCollector:
             name="JaegerTraceLogTail",
             daemon=True,
         )
-        self._fetch_thread = threading.Thread(
-            target=self._fetch_loop,
-            name="JaegerTraceFetch",
-            daemon=True,
-        )
         self._tail_thread.start()
-        self._fetch_thread.start()
 
     def finish_log_capture(self) -> None:
         self._log_complete.set()
@@ -252,17 +557,22 @@ class JaegerTraceCollector:
         if not self._started:
             return
         self.finish_log_capture()
-        if self._fetch_thread is not None:
-            self._fetch_thread.join()
+        with self._lock:
+            futures = list(self._futures)
+        if futures:
+            wait_for_futures(futures)
         with self._lock:
             self.summaries.sort(key=trace_summary_duration_ms, reverse=True)
         print_jaeger_trace_summaries(self.summaries)
 
+    def record_summary(self, summary: dict[str, Any]) -> None:
+        with self._lock:
+            self.summaries.append(summary)
+
     def _tail_log(self) -> None:
         while not self.log_path.exists():
             if self._log_complete.wait(0.1):
-                self._queue_limited_requests()
-                self._queue.put(None)
+                self._submit_limited_requests()
                 return
         with self.log_path.open(encoding="utf-8") as log_file:
             while True:
@@ -278,8 +588,7 @@ class JaegerTraceCollector:
                 if self._log_complete.is_set():
                     break
                 time.sleep(0.1)
-        self._queue_limited_requests()
-        self._queue.put(None)
+        self._submit_limited_requests()
 
     def _record_line(self, line: str) -> None:
         if not line.strip():
@@ -293,7 +602,11 @@ class JaegerTraceCollector:
         trace_request = graphql_trace_request_from_record(cast(dict[str, Any], record))
         if trace_request is None:
             return
+        trace_request.update(
+            {"variant": self.variant, "iteration": self.iteration, "case": self.case_name}
+        )
         trace_id = trace_request["trace_id"]
+        submit_request: dict[str, Any] | None = None
         with self._lock:
             existing_request = self._requests_by_trace_id.get(trace_id)
             if existing_request is None or trace_summary_duration_ms(
@@ -302,9 +615,13 @@ class JaegerTraceCollector:
                 self._requests_by_trace_id[trace_id] = trace_request
             if self.limit is None and trace_id not in self._queued_trace_ids:
                 self._queued_trace_ids.add(trace_id)
-                self._queue.put(trace_request)
+                submit_request = trace_request
+        if submit_request is not None:
+            future = self.fetch_pool.submit(submit_request, self)
+            with self._lock:
+                self._futures.append(future)
 
-    def _queue_limited_requests(self) -> None:
+    def _submit_limited_requests(self) -> None:
         if self.limit is None:
             return
         with self._lock:
@@ -321,31 +638,11 @@ class JaegerTraceCollector:
             self._queued_trace_ids.update(
                 trace_request["trace_id"] for trace_request in new_trace_requests
             )
-        for trace_request in new_trace_requests:
-            self._queue.put(trace_request)
-
-    def _fetch_loop(self) -> None:
-        while True:
-            trace_request = self._queue.get()
-            if trace_request is None:
-                return
-            summary = self._fetch_summary(trace_request)
-            with self._lock:
-                self.summaries.append(summary)
-
-    def _fetch_summary(self, trace_request: dict[str, Any]) -> dict[str, Any]:
-        if not self.endpoint or not self.access_token:
-            return {
-                **trace_request,
-                "jaeger_found": False,
-                "error": "SRC_ENDPOINT or SRC_ACCESS_TOKEN is missing",
-            }
-        return {
-            **trace_request,
-            **fetch_jaeger_trace_summary(
-                self.endpoint, self.access_token, trace_request["trace_id"]
-            ),
-        }
+        futures = [
+            self.fetch_pool.submit(trace_request, self) for trace_request in new_trace_requests
+        ]
+        with self._lock:
+            self._futures.extend(futures)
 
 
 class CommandPermutationRunner:
@@ -360,6 +657,7 @@ class CommandPermutationRunner:
         keep_going: bool,
         trace: bool,
         jaeger_trace_limit: int | None,
+        jaeger_trace_fetch_pool: JaegerTraceFetchPool | None,
         sample_interval: float,
         external_sample_interval: float,
     ) -> None:
@@ -369,6 +667,7 @@ class CommandPermutationRunner:
         self.keep_going = keep_going
         self.trace = trace
         self.jaeger_trace_limit = jaeger_trace_limit
+        self.jaeger_trace_fetch_pool = jaeger_trace_fetch_pool
         self.sample_interval = sample_interval
         self.external_sample_interval = external_sample_interval
         self.results: list[CommandResult] = []
@@ -422,11 +721,14 @@ class CommandPermutationRunner:
             print(line, end="")
             if log_path is None:
                 log_path = _extract_log_path(line)
-                if log_path is not None and self.trace and self.jaeger_trace_limit != 0:
+                if log_path is not None and self.jaeger_trace_fetch_pool is not None:
                     jaeger_collector = JaegerTraceCollector(
                         log_path,
-                        self.environment,
                         self.jaeger_trace_limit,
+                        self.jaeger_trace_fetch_pool,
+                        variant=self.variant.name,
+                        iteration=self.iteration,
+                        case_name=case.name,
                     )
                     jaeger_collector.start()
         return_code = process.wait()
@@ -438,13 +740,15 @@ class CommandPermutationRunner:
         if (
             jaeger_collector is None
             and log_path is not None
-            and self.trace
-            and self.jaeger_trace_limit != 0
+            and self.jaeger_trace_fetch_pool is not None
         ):
             jaeger_collector = JaegerTraceCollector(
                 log_path,
-                self.environment,
                 self.jaeger_trace_limit,
+                self.jaeger_trace_fetch_pool,
+                variant=self.variant.name,
+                iteration=self.iteration,
+                case_name=case.name,
             )
             jaeger_collector.start()
         run_record: dict[str, Any] | None = None
@@ -544,53 +848,73 @@ class CommandPermutationRunner:
 
 
 def main() -> None:
-    arguments = parse_arguments()
-    validate_date(arguments.future_date, "--future-date")
-    variants = run_variants(arguments)
-    if arguments.sample_interval < 0:
-        raise SystemExit("--sample-interval must be >= 0")
-    if arguments.external_sample_interval < 0:
-        raise SystemExit("--external-sample-interval must be >= 0")
+    config = load_end_to_end_config()
+    with src.logging(config, command="test_end_to_end", git_cwd=Path.cwd()):
+        run_end_to_end(config)
 
-    environment = command_environment(arguments)
-    if not arguments.user:
-        arguments.user = environment.get("SRC_AUTH_PERMS_SYNC_TEST_USER") or environment.get("USER")
-    if not arguments.user:
+
+def load_end_to_end_config() -> EndToEndConfig:
+    """Load runner Config from CLI flags, environment, and .env."""
+    config = src.parse_args(
+        EndToEndConfig,
+        description="Run src-auth-perms-sync end-to-end cases against a test instance.",
+    )
+    validate_date(config.future_date, "--future-date")
+    if any(delay < 0 for delay in config.jaeger_retry_delays):
+        raise SystemExit("--jaeger-retry-delays values must be >= 0")
+    user = config.user or os.environ.get("SRC_AUTH_PERMS_SYNC_TEST_USER") or os.environ.get("USER")
+    if not user:
         raise SystemExit("--user is required when SRC_AUTH_PERMS_SYNC_TEST_USER and USER are unset")
-    endpoint = environment.get("SRC_ENDPOINT")
-    access_token = environment.get("SRC_ACCESS_TOKEN")
-    if not endpoint:
-        raise SystemExit("SRC_ENDPOINT must be set, or pass --endpoint")
-    if not access_token:
-        raise SystemExit("SRC_ACCESS_TOKEN must be set, or pass --access-token")
-    if not arguments.allow_non_test_endpoint:
-        assert_test_endpoint(endpoint)
+    normalized_endpoint = src.normalize_sourcegraph_endpoint(config.src_endpoint)
+    if not config.allow_non_test_endpoint:
+        assert_test_endpoint(normalized_endpoint)
+    return config.model_copy(update={"src_endpoint": normalized_endpoint, "user": user})
 
+
+def run_end_to_end(config: EndToEndConfig) -> None:
+    """Run the full matrix for the loaded Config."""
+    variants = run_variants(config)
+    environment = command_environment(config)
     all_results: list[CommandResult] = []
     all_failures: list[str] = []
     all_jaeger_collectors: list[JaegerTraceCollector] = []
+    jaeger_trace_fetch_pool = create_jaeger_trace_fetch_pool(config)
     latest_baseline_repositories: set[str] = set()
     try:
-        for iteration in range(1, arguments.repeat + 1):
-            for variant in variants:
-                runner = CommandPermutationRunner(
-                    variant,
-                    environment,
-                    iteration=iteration,
-                    keep_going=arguments.keep_going,
-                    trace=arguments.trace,
-                    jaeger_trace_limit=arguments.jaeger_trace_limit,
-                    sample_interval=arguments.sample_interval,
-                    external_sample_interval=arguments.external_sample_interval,
-                )
-                try:
-                    latest_baseline_repositories = run_matrix(arguments, runner)
-                finally:
-                    all_results.extend(runner.results)
-                    all_failures.extend(f"{variant.name}: {failure}" for failure in runner.failures)
-                    all_jaeger_collectors.extend(runner.jaeger_collectors)
+        with src.event(
+            "end_to_end_matrix",
+            repeat=config.repeat,
+            variant_count=len(variants),
+            trace=config.trace,
+        ) as matrix_summary:
+            for iteration in range(1, config.repeat + 1):
+                for variant in variants:
+                    with src.stage("matrix_variant", variant=variant.name, iteration=iteration):
+                        runner = CommandPermutationRunner(
+                            variant,
+                            environment,
+                            iteration=iteration,
+                            keep_going=config.keep_going,
+                            trace=config.trace,
+                            jaeger_trace_limit=config.jaeger_trace_limit,
+                            jaeger_trace_fetch_pool=jaeger_trace_fetch_pool,
+                            sample_interval=config.sample_interval,
+                            external_sample_interval=config.external_sample_interval,
+                        )
+                        try:
+                            latest_baseline_repositories = run_matrix(config, runner)
+                        finally:
+                            all_results.extend(runner.results)
+                            all_failures.extend(
+                                f"{variant.name}: {failure}" for failure in runner.failures
+                            )
+                            all_jaeger_collectors.extend(runner.jaeger_collectors)
+            matrix_summary["case_count"] = len(all_results)
+            matrix_summary["failure_count"] = len(all_failures)
     finally:
         wait_for_jaeger_trace_collectors(all_jaeger_collectors)
+        if jaeger_trace_fetch_pool is not None:
+            jaeger_trace_fetch_pool.close()
     if all_failures:
         print("\nFailures:", file=sys.stderr)
         for failure in all_failures:
@@ -599,233 +923,63 @@ def main() -> None:
 
     print("\nAll end-to-end cases passed.")
     print(f"Cases passed: {len(all_results)}")
-    print(f"Baseline repositories for {arguments.user}: {len(latest_baseline_repositories)}")
-    print_memory_summary(all_results, arguments.memory_summary_limit)
-    print_phase_memory_summary(all_results, arguments.memory_summary_limit)
+    print(f"Baseline repositories for {config.user}: {len(latest_baseline_repositories)}")
+    print_memory_summary(all_results, config.memory_summary_limit)
+    print_phase_memory_summary(all_results, config.memory_summary_limit)
     comparisons = compare_variants(all_results)
     print_comparison_summary(comparisons)
-    write_results_files(all_results, comparisons, arguments)
-    raise_for_memory_regressions(comparisons, arguments)
+    write_results_files(all_results, comparisons, config)
+    raise_for_memory_regressions(comparisons, config)
 
 
-def run_variants(arguments: argparse.Namespace) -> list[RunVariant]:
+def run_variants(config: EndToEndConfig) -> list[RunVariant]:
     """Return the executable variants to measure."""
-    candidate_command = arguments.candidate_command or arguments.src_auth_perms_sync_command
+    candidate_command = config.candidate_command or config.src_auth_perms_sync_command
     candidate = RunVariant("candidate", tuple(shlex.split(candidate_command)))
     if not candidate.executable:
         raise SystemExit("candidate command cannot be empty")
-    if not arguments.baseline_command:
+    if not config.baseline_command:
         return [candidate]
-    baseline = RunVariant("baseline", tuple(shlex.split(arguments.baseline_command)))
+    baseline = RunVariant("baseline", tuple(shlex.split(config.baseline_command)))
     if not baseline.executable:
         raise SystemExit("--baseline-command cannot be empty")
     return [baseline, candidate]
 
 
-def parse_arguments() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="Run src-auth-perms-sync end-to-end cases against a test instance.",
+def create_jaeger_trace_fetch_pool(
+    config: EndToEndConfig,
+) -> JaegerTraceFetchPool | None:
+    """Return the shared trace fetch pool for this run, if trace collection is enabled."""
+    if not config.trace or config.jaeger_trace_limit == 0:
+        return None
+    return JaegerTraceFetchPool(
+        config,
+        parallelism=config.jaeger_trace_parallelism,
+        retry_delays_seconds=config.jaeger_retry_delays,
+        jsonl_path=jaeger_trace_jsonl_path(config),
     )
-    parser.add_argument(
-        "--src-auth-perms-sync-command",
-        default="uv run src-auth-perms-sync",
-        help="Candidate command used to invoke the CLI (default: %(default)s)",
-    )
-    parser.add_argument(
-        "--candidate-command",
-        help="Candidate command to compare; overrides --src-auth-perms-sync-command",
-    )
-    parser.add_argument(
-        "--baseline-command",
-        help="Optional baseline command. When set, baseline and candidate results are compared.",
-    )
-    parser.add_argument(
-        "--repeat",
-        type=int,
-        default=DEFAULT_REPEAT_COUNT,
-        help="Number of times to run each command for each variant (default: %(default)s)",
-    )
-    parser.add_argument(
-        "--endpoint",
-        help="Override SRC_ENDPOINT for the child commands",
-    )
-    parser.add_argument(
-        "--access-token",
-        help="Override SRC_ACCESS_TOKEN for the child commands",
-    )
-    parser.add_argument(
-        "--env-file",
-        default=".env",
-        help="Env file to load for runner checks when variables are not already exported",
-    )
-    parser.add_argument(
-        "--user",
-        help=(
-            "Sourcegraph user for user-scoped get/set/restore permutations "
-            "(default: SRC_AUTH_PERMS_SYNC_TEST_USER or USER)"
-        ),
-    )
-    parser.add_argument(
-        "--future-date",
-        default=DEFAULT_FUTURE_DATE,
-        help="YYYY-MM-DD date expected to match no users (default: %(default)s)",
-    )
-    parser.add_argument(
-        "--parallelism",
-        type=int,
-        default=4,
-        help="Parallelism for light mutation/no-op apply cases (default: %(default)s)",
-    )
-    parser.add_argument(
-        "--full-restore-parallelism",
-        type=int,
-        default=1,
-        help="Parallelism for the expensive full restore cleanup (default: %(default)s)",
-    )
-    parser.add_argument(
-        "--allow-non-test-endpoint",
-        action="store_true",
-        help="Allow mutating cases outside localhost/sgdev endpoints",
-    )
-    parser.add_argument(
-        "--keep-going",
-        action="store_true",
-        help="Continue after assertion failures where it is safe to do so",
-    )
-    parser.add_argument(
-        "--trace",
-        action="store_true",
-        help="Pass --trace to each child src-auth-perms-sync command",
-    )
-    parser.add_argument(
-        "--jaeger-trace-limit",
-        type=int,
-        default=DEFAULT_JAEGER_TRACE_LIMIT,
-        metavar="N",
-        help=(
-            "When --trace is set, fetch and summarize the N slowest GraphQL "
-            "Jaeger traces while each child command runs; omit for all traces, set "
-            "0 to disable"
-        ),
-    )
-    parser.add_argument(
-        "--sample-interval",
-        type=float,
-        default=DEFAULT_SAMPLE_INTERVAL_SECONDS,
-        help=(
-            "Seconds between child resource_sample log events. "
-            "The run end record always includes peak_rss_mb; set 0 to disable samples. "
-            "Default: %(default)s"
-        ),
-    )
-    parser.add_argument(
-        "--external-sample-interval",
-        type=float,
-        default=DEFAULT_SAMPLE_INTERVAL_SECONDS,
-        help=(
-            "Seconds between external child process-tree RSS samples; "
-            "set 0 to disable (default: %(default)s)"
-        ),
-    )
-    parser.add_argument(
-        "--memory-summary-limit",
-        type=int,
-        default=20,
-        help="Number of highest-RSS cases to print in the final memory summary",
-    )
-    parser.add_argument(
-        "--results-json",
-        type=Path,
-        help="Optional path to write machine-readable run and comparison results as JSON",
-    )
-    parser.add_argument(
-        "--results-csv",
-        type=Path,
-        help=(
-            "Optional path to write per-command memory results as CSV; "
-            "phase rows are written beside it as *-phases.csv"
-        ),
-    )
-    parser.add_argument(
-        "--fail-on-memory-regression-percent",
-        type=float,
-        help="Fail if candidate median peak RSS regresses by more than this percent",
-    )
-    parser.add_argument(
-        "--fail-on-memory-regression-mib",
-        type=float,
-        help="Fail if candidate median peak RSS regresses by more than this many MiB",
-    )
-    parsed_arguments = parser.parse_args()
-    if parsed_arguments.repeat < 1:
-        parser.error("--repeat must be >= 1")
-    if parsed_arguments.parallelism < 1:
-        parser.error("--parallelism must be >= 1")
-    if parsed_arguments.full_restore_parallelism < 1:
-        parser.error("--full-restore-parallelism must be >= 1")
-    if parsed_arguments.jaeger_trace_limit is not None and parsed_arguments.jaeger_trace_limit < 0:
-        parser.error("--jaeger-trace-limit must be >= 0")
-    if parsed_arguments.memory_summary_limit < 1:
-        parser.error("--memory-summary-limit must be >= 1")
-    if (
-        parsed_arguments.fail_on_memory_regression_percent is not None
-        and parsed_arguments.fail_on_memory_regression_percent < 0
-    ):
-        parser.error("--fail-on-memory-regression-percent must be >= 0")
-    if (
-        parsed_arguments.fail_on_memory_regression_mib is not None
-        and parsed_arguments.fail_on_memory_regression_mib < 0
-    ):
-        parser.error("--fail-on-memory-regression-mib must be >= 0")
-    return parsed_arguments
 
 
-def command_environment(arguments: argparse.Namespace) -> dict[str, str]:
+def jaeger_trace_jsonl_path(config: EndToEndConfig) -> Path | None:
+    """Return where to stream trace summaries for this run."""
+    if config.jaeger_trace_jsonl is not None:
+        return config.jaeger_trace_jsonl
+    anchor = config.results_json or config.results_csv
+    if anchor is not None:
+        return anchor.with_name(f"{anchor.stem}-jaeger-traces.jsonl")
+    stamp = datetime.datetime.now(datetime.UTC).strftime("%Y%m%d-%H%M%S")
+    return Path("/tmp") / f"src-auth-perms-sync-end-to-end-jaeger-traces-{stamp}.jsonl"
+
+
+def command_environment(config: EndToEndConfig) -> dict[str, str]:
     """Return a deterministic child environment for CLI config parsing."""
-    environment = {**dotenv_values(Path(arguments.env_file)), **os.environ}
+    environment = dict(os.environ)
     for name in list(environment):
         if name.startswith(REMOVED_SRC_AUTH_PERMS_SYNC_ENVIRONMENT_PREFIX):
             del environment[name]
-    if arguments.endpoint:
-        environment["SRC_ENDPOINT"] = arguments.endpoint
-    if arguments.access_token:
-        environment["SRC_ACCESS_TOKEN"] = arguments.access_token
+    environment["SRC_ENDPOINT"] = config.src_endpoint
+    environment["SRC_ACCESS_TOKEN"] = config.src_access_token
     return environment
-
-
-def dotenv_values(path: Path) -> dict[str, str]:
-    """Parse simple KEY=VALUE entries from an env file without logging secrets."""
-    if not path.is_file():
-        return {}
-    values: dict[str, str] = {}
-    for raw_line in path.read_text().splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#"):
-            continue
-        if line.startswith("export "):
-            line = line.removeprefix("export ").strip()
-        name, separator, raw_value = line.partition("=")
-        if not separator:
-            continue
-        name = name.strip()
-        if not name:
-            continue
-        values[name] = dotenv_value(raw_value)
-    return values
-
-
-def dotenv_value(raw_value: str) -> str:
-    """Return one shell-like dotenv value."""
-    value = raw_value.strip()
-    if not value:
-        return ""
-    try:
-        parsed_values = shlex.split(value, comments=True, posix=True)
-    except ValueError:
-        return value.strip("'\"")
-    if not parsed_values:
-        return ""
-    return parsed_values[0]
 
 
 def assert_test_endpoint(endpoint: str) -> None:
@@ -849,31 +1003,31 @@ def validate_date(value: str, flag_name: str) -> None:
 
 
 def run_matrix(
-    arguments: argparse.Namespace,
+    config: EndToEndConfig,
     runner: CommandPermutationRunner,
 ) -> set[str]:
-    for case in invalid_configuration_cases(arguments):
+    for case in invalid_configuration_cases(config):
         runner.run(case)
 
     baseline_result: CommandResult | None = None
-    for case in read_only_cases(arguments):
+    for case in read_only_cases(config):
         result = runner.run(case)
         if case.name == "implicit-get-user":
             baseline_result = result
     assert baseline_result is not None
-    baseline_repositories = repositories_for_user(snapshot_path(baseline_result), arguments.user)
+    baseline_repositories = repositories_for_user(snapshot_path(baseline_result), config.user)
 
-    run_safe_set_cases(arguments, runner)
-    run_full_apply_cases(arguments, runner)
+    run_safe_set_cases(config, runner)
+    run_full_apply_cases(config, runner)
 
-    set_user_dry_run = runner.run(set_user_dry_run_case(arguments))
-    runner.run(restore_scoped_dry_run_case(snapshot_path(set_user_dry_run), arguments))
-    set_user_apply = runner.run(set_user_apply_case(arguments))
+    set_user_dry_run = runner.run(set_user_dry_run_case(config))
+    runner.run(restore_scoped_dry_run_case(snapshot_path(set_user_dry_run), config))
+    set_user_apply = runner.run(set_user_apply_case(config))
     try:
-        runner.run(restore_scoped_apply_case(snapshot_path(set_user_apply), arguments))
+        runner.run(restore_scoped_apply_case(snapshot_path(set_user_apply), config))
     finally:
-        final_result = runner.run(final_get_user_case(arguments))
-        final_repositories = repositories_for_user(snapshot_path(final_result), arguments.user)
+        final_result = runner.run(final_get_user_case(config))
+        final_repositories = repositories_for_user(snapshot_path(final_result), config.user)
         if final_repositories != baseline_repositories:
             added = sorted(final_repositories - baseline_repositories)
             removed = sorted(baseline_repositories - final_repositories)
@@ -881,12 +1035,12 @@ def run_matrix(
                 f"final user baseline differs after cleanup; added={added}, removed={removed}"
             )
 
-    runner.run(users_without_explicit_permissions_no_op_case(arguments))
+    runner.run(users_without_explicit_permissions_no_op_case(config))
     runner.run(sync_saml_apply_case())
     return baseline_repositories
 
 
-def invalid_configuration_cases(arguments: argparse.Namespace) -> list[CommandCase]:
+def invalid_configuration_cases(config: EndToEndConfig) -> list[CommandCase]:
     restore_placeholder = "definitely-missing-before.json"
     missing_maps = "definitely-missing-command-permutation-maps.yaml"
     command_pairs: list[tuple[str, tuple[str, ...]]] = [
@@ -921,7 +1075,7 @@ def invalid_configuration_cases(arguments: argparse.Namespace) -> list[CommandCa
             ),
             CommandCase(
                 name="invalid-set-full-and-user",
-                arguments=("--set", "maps.yaml", "--full", "--user", arguments.user),
+                arguments=("--set", "maps.yaml", "--full", "--user", config.user),
                 expected_exit_code=2,
                 must_contain=("choose at most one",),
             ),
@@ -933,19 +1087,19 @@ def invalid_configuration_cases(arguments: argparse.Namespace) -> list[CommandCa
             ),
             CommandCase(
                 name="invalid-user-filter-conflict",
-                arguments=("--get", "--user", arguments.user, "--users-without-explicit-perms"),
+                arguments=("--get", "--user", config.user, "--users-without-explicit-perms"),
                 expected_exit_code=2,
                 must_contain=("choose only one of --user or --users-without-explicit-perms",),
             ),
             CommandCase(
                 name="invalid-restore-user-filter",
-                arguments=("--restore", restore_placeholder, "--user", arguments.user),
+                arguments=("--restore", restore_placeholder, "--user", config.user),
                 expected_exit_code=2,
                 must_contain=("require --get or --set",),
             ),
             CommandCase(
                 name="invalid-sync-created-after-filter",
-                arguments=("--sync-saml-orgs", "--created-after", arguments.future_date),
+                arguments=("--sync-saml-orgs", "--created-after", config.future_date),
                 expected_exit_code=2,
                 must_contain=("require --get or --set",),
             ),
@@ -970,7 +1124,7 @@ def invalid_configuration_cases(arguments: argparse.Namespace) -> list[CommandCa
             ),
             CommandCase(
                 name="invalid-removed-repositories-created-after-flag",
-                arguments=("--repositories-created-after", arguments.future_date),
+                arguments=("--repositories-created-after", config.future_date),
                 expected_exit_code=2,
                 must_contain=("unrecognized arguments",),
             ),
@@ -985,7 +1139,7 @@ def invalid_configuration_cases(arguments: argparse.Namespace) -> list[CommandCa
     return cases
 
 
-def read_only_cases(arguments: argparse.Namespace) -> list[CommandCase]:
+def read_only_cases(config: EndToEndConfig) -> list[CommandCase]:
     cases = [
         CommandCase(
             name="help",
@@ -995,25 +1149,25 @@ def read_only_cases(arguments: argparse.Namespace) -> list[CommandCase]:
         ),
         CommandCase(
             name="implicit-get-user",
-            arguments=("--user", arguments.user),
+            arguments=("--user", config.user),
             expected_log_command="get",
             must_contain=("Wrote before-snapshot",),
         ),
         CommandCase(
             name="explicit-get-user",
-            arguments=("--get", "--user", arguments.user),
+            arguments=("--get", "--user", config.user),
             expected_log_command="get",
             must_contain=("Wrote before-snapshot",),
         ),
         CommandCase(
             name="get-created-after-future",
-            arguments=("--get", "--created-after", arguments.future_date),
+            arguments=("--get", "--created-after", config.future_date),
             expected_log_command="get",
             must_contain=("Selected 0 user(s) for get output",),
         ),
         CommandCase(
             name="get-user-created-after-future",
-            arguments=("--get", "--user", arguments.user, "--created-after", arguments.future_date),
+            arguments=("--get", "--user", config.user, "--created-after", config.future_date),
             expected_log_command="get",
             must_contain_one_of=(
                 "Selected 0 user(s) for get output",
@@ -1026,7 +1180,7 @@ def read_only_cases(arguments: argparse.Namespace) -> list[CommandCase]:
                 "--get",
                 "--users-without-explicit-perms",
                 "--created-after",
-                arguments.future_date,
+                config.future_date,
             ),
             expected_log_command="get",
             must_contain=("Selected 0 user(s) for get output",),
@@ -1041,7 +1195,7 @@ def read_only_cases(arguments: argparse.Namespace) -> list[CommandCase]:
     return cases
 
 
-def run_safe_set_cases(arguments: argparse.Namespace, runner: CommandPermutationRunner) -> None:
+def run_safe_set_cases(config: EndToEndConfig, runner: CommandPermutationRunner) -> None:
     runner.run(
         CommandCase(
             name="set-explicit-full-no-op-apply",
@@ -1050,11 +1204,11 @@ def run_safe_set_cases(arguments: argparse.Namespace, runner: CommandPermutation
                 "maps.yaml",
                 "--full",
                 "--created-after",
-                arguments.future_date,
+                config.future_date,
                 "--apply",
                 "--no-backup",
                 "--parallelism",
-                str(arguments.parallelism),
+                str(config.parallelism),
             ),
             expected_log_command="set_full",
             must_contain=("No repos resolved across any mapping",),
@@ -1062,26 +1216,26 @@ def run_safe_set_cases(arguments: argparse.Namespace, runner: CommandPermutation
     )
 
 
-def set_user_dry_run_case(arguments: argparse.Namespace) -> CommandCase:
+def set_user_dry_run_case(config: EndToEndConfig) -> CommandCase:
     return CommandCase(
         name="set-user-dry-run",
-        arguments=("--set", "maps.yaml", "--user", arguments.user),
+        arguments=("--set", "maps.yaml", "--user", config.user),
         expected_log_command="set_user",
         must_contain=("Dry run complete",),
     )
 
 
-def set_user_apply_case(arguments: argparse.Namespace) -> CommandCase:
+def set_user_apply_case(config: EndToEndConfig) -> CommandCase:
     return CommandCase(
         name="set-user-apply",
         arguments=(
             "--set",
             "maps.yaml",
             "--user",
-            arguments.user,
+            config.user,
             "--apply",
             "--parallelism",
-            str(arguments.parallelism),
+            str(config.parallelism),
         ),
         expected_log_command="set_user",
         must_contain_one_of=(
@@ -1091,7 +1245,7 @@ def set_user_apply_case(arguments: argparse.Namespace) -> CommandCase:
     )
 
 
-def users_without_explicit_permissions_no_op_case(arguments: argparse.Namespace) -> CommandCase:
+def users_without_explicit_permissions_no_op_case(config: EndToEndConfig) -> CommandCase:
     return CommandCase(
         name="set-users-without-explicit-perms-no-op-apply",
         arguments=(
@@ -1099,32 +1253,32 @@ def users_without_explicit_permissions_no_op_case(arguments: argparse.Namespace)
             "maps.yaml",
             "--users-without-explicit-perms",
             "--created-after",
-            arguments.future_date,
+            config.future_date,
             "--apply",
             "--no-backup",
             "--parallelism",
-            str(arguments.parallelism),
+            str(config.parallelism),
         ),
         expected_log_command="set_users_without_explicit_perms",
         must_contain=("No users selected",),
     )
 
 
-def restore_scoped_dry_run_case(snapshot: Path, arguments: argparse.Namespace) -> CommandCase:
+def restore_scoped_dry_run_case(snapshot: Path, config: EndToEndConfig) -> CommandCase:
     return CommandCase(
         name="restore-scoped-dry-run",
         arguments=(
             "--restore",
             str(snapshot),
             "--parallelism",
-            str(arguments.parallelism),
+            str(config.parallelism),
         ),
         expected_log_command="restore",
         must_contain=("Dry run complete",),
     )
 
 
-def restore_scoped_apply_case(snapshot: Path, arguments: argparse.Namespace) -> CommandCase:
+def restore_scoped_apply_case(snapshot: Path, config: EndToEndConfig) -> CommandCase:
     return CommandCase(
         name="restore-scoped-apply-cleanup",
         arguments=(
@@ -1132,7 +1286,7 @@ def restore_scoped_apply_case(snapshot: Path, arguments: argparse.Namespace) -> 
             str(snapshot),
             "--apply",
             "--parallelism",
-            str(arguments.parallelism),
+            str(config.parallelism),
         ),
         expected_log_command="restore",
         must_contain_one_of=(
@@ -1151,16 +1305,16 @@ def sync_saml_apply_case() -> CommandCase:
     )
 
 
-def final_get_user_case(arguments: argparse.Namespace) -> CommandCase:
+def final_get_user_case(config: EndToEndConfig) -> CommandCase:
     return CommandCase(
         name="final-get-user-baseline-check",
-        arguments=("--get", "--user", arguments.user),
+        arguments=("--get", "--user", config.user),
         expected_log_command="get",
         must_contain=("Wrote before-snapshot",),
     )
 
 
-def run_full_apply_cases(arguments: argparse.Namespace, runner: CommandPermutationRunner) -> None:
+def run_full_apply_cases(config: EndToEndConfig, runner: CommandPermutationRunner) -> None:
     dry_run_result = runner.run(
         CommandCase(
             name="set-full-dry-run",
@@ -1179,7 +1333,7 @@ def run_full_apply_cases(arguments: argparse.Namespace, runner: CommandPermutati
                     "--set",
                     "--apply",
                     "--parallelism",
-                    str(arguments.parallelism),
+                    str(config.parallelism),
                 ),
                 expected_log_command="set_full",
                 must_contain=("VALIDATION OK",),
@@ -1190,7 +1344,7 @@ def run_full_apply_cases(arguments: argparse.Namespace, runner: CommandPermutati
             restore_full_apply_case(
                 "restore-full-apply-cleanup",
                 baseline_snapshot,
-                arguments,
+                config,
                 no_backup=False,
             )
         )
@@ -1204,7 +1358,7 @@ def run_full_apply_cases(arguments: argparse.Namespace, runner: CommandPermutati
                     "--apply",
                     "--no-backup",
                     "--parallelism",
-                    str(arguments.parallelism),
+                    str(config.parallelism),
                 ),
                 expected_log_command="set_full",
                 must_contain=("Apply done",),
@@ -1215,7 +1369,7 @@ def run_full_apply_cases(arguments: argparse.Namespace, runner: CommandPermutati
             restore_full_apply_case(
                 "restore-full-no-backup-cleanup",
                 baseline_snapshot,
-                arguments,
+                config,
                 no_backup=True,
             )
         )
@@ -1236,7 +1390,7 @@ def run_full_apply_cases(arguments: argparse.Namespace, runner: CommandPermutati
 def restore_full_apply_case(
     name: str,
     snapshot: Path,
-    arguments: argparse.Namespace,
+    config: EndToEndConfig,
     *,
     no_backup: bool,
 ) -> CommandCase:
@@ -1245,7 +1399,7 @@ def restore_full_apply_case(
         str(snapshot),
         "--apply",
         "--parallelism",
-        str(arguments.full_restore_parallelism),
+        str(config.full_restore_parallelism),
     ]
     if no_backup:
         restore_arguments.append("--no-backup")
@@ -1474,19 +1628,6 @@ def artifact_sizes_for_run(log_path: Path) -> dict[str, int]:
     return sizes
 
 
-def fetch_jaeger_trace_summaries(
-    log_path: Path,
-    environment: dict[str, str],
-    limit: int | None,
-) -> list[dict[str, Any]]:
-    """Fetch Jaeger summaries for the slowest traced GraphQL requests."""
-    collector = JaegerTraceCollector(log_path, environment, limit)
-    collector.start()
-    collector.finish_log_capture()
-    collector.wait()
-    return collector.summaries
-
-
 def wait_for_jaeger_trace_collectors(collectors: list[JaegerTraceCollector]) -> None:
     if not collectors:
         return
@@ -1495,44 +1636,15 @@ def wait_for_jaeger_trace_collectors(collectors: list[JaegerTraceCollector]) -> 
         collector.wait()
 
 
-def slow_graphql_trace_requests(log_path: Path, limit: int | None) -> list[dict[str, Any]]:
-    """Return the slowest unique traced GraphQL requests from one run log."""
-    requests_by_trace_id: dict[str, dict[str, Any]] = {}
-    with log_path.open(encoding="utf-8") as log_file:
-        for line in log_file:
-            if not line.strip():
-                continue
-            record = json.loads(line)
-            if not isinstance(record, dict):
-                continue
-            trace_request = graphql_trace_request_from_record(cast(dict[str, Any], record))
-            if trace_request is None:
-                continue
-            trace_id = trace_request["trace_id"]
-            existing_request = requests_by_trace_id.get(trace_id)
-            if existing_request is None or trace_summary_duration_ms(
-                trace_request
-            ) > trace_summary_duration_ms(existing_request):
-                requests_by_trace_id[trace_id] = trace_request
-    requests = sorted(
-        requests_by_trace_id.values(),
-        key=trace_summary_duration_ms,
-        reverse=True,
-    )
-    return requests if limit is None else requests[:limit]
-
-
 def graphql_trace_request_from_record(record: dict[str, Any]) -> dict[str, Any] | None:
     if record.get("event") != "http_request" or record.get("phase") != "end":
         return None
     if not str(record.get("url", "")).endswith("/.api/graphql"):
         return None
-    trace_id = trace_id_from_http_request(record)
-    if trace_id is None:
+    trace = sourcegraph_trace_from_record(record)
+    if trace is None:
         return None
-    return {
-        "trace_id": trace_id,
-        "trace_url": header_value(record.get("response_headers"), "x-trace-url"),
+    return trace.to_json() | {
         "duration_ms": float_field(record, "duration_ms") or 0.0,
         "timestamp": record.get("ts"),
         "status": record.get("status"),
@@ -1546,8 +1658,32 @@ def trace_summary_duration_ms(summary: dict[str, Any]) -> float:
     return float(duration_ms) if isinstance(duration_ms, int | float) else 0.0
 
 
-def trace_id_from_http_request(record: dict[str, Any]) -> str | None:
-    traceparent = header_value(record.get("request_headers"), "traceparent")
+def sourcegraph_trace_from_record(record: dict[str, Any]) -> src.SourcegraphTrace | None:
+    request_headers = string_headers(record.get("request_headers"))
+    response_headers = string_headers(record.get("response_headers"))
+    trace = sourcegraph_trace_from_headers(response_headers, request_headers)
+    if trace is not None:
+        return trace
+    trace_id = trace_id_from_traceparent(header_value(request_headers, "traceparent"))
+    if trace_id is None:
+        return None
+    return src.SourcegraphTrace(
+        trace_id=trace_id,
+        trace_url=header_value(response_headers, "x-trace-url"),
+    )
+
+
+def sourcegraph_trace_from_request(trace_request: dict[str, Any]) -> src.SourcegraphTrace:
+    return src.SourcegraphTrace(
+        trace_id=str(trace_request["trace_id"]),
+        span_id=optional_string(trace_request.get("span_id")),
+        trace_url=optional_string(trace_request.get("trace_url")),
+        parent_trace_id=optional_string(trace_request.get("parent_trace_id")),
+        parent_span_id=optional_string(trace_request.get("parent_span_id")),
+    )
+
+
+def trace_id_from_traceparent(traceparent: str | None) -> str | None:
     if traceparent is None:
         return None
     parts = traceparent.split("-")
@@ -1559,127 +1695,34 @@ def trace_id_from_http_request(record: dict[str, Any]) -> str | None:
     return trace_id
 
 
-def header_value(headers: object, name: str) -> str | None:
+def string_headers(headers: object) -> dict[str, str]:
     if not isinstance(headers, dict):
-        return None
+        return {}
+    values: dict[str, str] = {}
     typed_headers = cast(dict[object, object], headers)
-    lower_name = name.lower()
     for header_name, value in typed_headers.items():
-        if (
-            isinstance(header_name, str)
-            and header_name.lower() == lower_name
-            and isinstance(value, str)
-        ):
+        if not isinstance(header_name, str):
+            continue
+        if isinstance(value, str):
+            values[header_name] = value
+        elif isinstance(value, list):
+            value_items = cast(list[object], value)
+            string_values = [item for item in value_items if isinstance(item, str)]
+            if string_values:
+                values[header_name] = string_values[0]
+    return values
+
+
+def header_value(headers: Mapping[str, str], name: str) -> str | None:
+    lower_name = name.lower()
+    for header_name, value in headers.items():
+        if header_name.lower() == lower_name:
             return value
     return None
 
 
-def fetch_jaeger_trace_summary(
-    endpoint: str,
-    access_token: str,
-    trace_id: str,
-) -> dict[str, Any]:
-    """Fetch and summarize one Jaeger trace, retrying brief ingestion lag."""
-    url = f"{endpoint}/-/debug/jaeger/api/traces/{trace_id}"
-    last_error = "trace not found"
-    for delay_seconds in (0, 2, 5):
-        if delay_seconds:
-            time.sleep(delay_seconds)
-        request = urllib.request.Request(
-            url,
-            headers={"Authorization": f"token {access_token}"},
-        )
-        try:
-            with urllib.request.urlopen(request, timeout=30) as response:
-                payload = cast(dict[str, Any], json.loads(response.read()))
-        except urllib.error.HTTPError as error:
-            body = error.read().decode("utf-8", "replace").strip()
-            last_error = f"HTTP {error.code}" + (f": {body[:200]}" if body else "")
-            if error.code in {404, 502, 503, 504}:
-                continue
-            return {"jaeger_found": False, "error": last_error}
-        except (TimeoutError, urllib.error.URLError) as error:
-            last_error = f"{type(error).__name__}: {error}"
-            continue
-
-        traces = payload.get("data")
-        if isinstance(traces, list) and traces:
-            trace = cast(object, traces[0])
-            if isinstance(trace, dict):
-                return summarize_jaeger_trace(cast(dict[str, Any], trace))
-        errors = payload.get("errors")
-        last_error = json.dumps(errors) if errors else "trace not found"
-    return {"jaeger_found": False, "error": last_error}
-
-
-def summarize_jaeger_trace(trace: dict[str, Any]) -> dict[str, Any]:
-    spans = trace.get("spans")
-    if not isinstance(spans, list):
-        return {"jaeger_found": True, "span_count": 0, "hot_operations": []}
-    typed_spans = cast(list[object], spans)
-
-    durations_by_operation: dict[str, list[float]] = collections.defaultdict(list)
-    graphql_operations: collections.Counter[str] = collections.Counter()
-    errored_spans: list[dict[str, Any]] = []
-    for span_value in typed_spans:
-        if not isinstance(span_value, dict):
-            continue
-        span = cast(dict[str, Any], span_value)
-        operation = span.get("operationName")
-        if not isinstance(operation, str):
-            operation = ""
-        duration_ms = float_field(span, "duration") or 0.0
-        duration_ms /= 1000.0
-        durations_by_operation[operation].append(duration_ms)
-        tags = jaeger_span_tags(span)
-        operation_name = tags.get("graphql.operationName")
-        if isinstance(operation_name, str):
-            graphql_operations[operation_name] += 1
-        if tags.get("error") in {True, "true", "True"}:
-            errored_spans.append(
-                {
-                    "operation": operation,
-                    "duration_ms": round(duration_ms, 1),
-                    "description": tags.get("otel.status_description"),
-                }
-            )
-
-    hot_operations = [
-        {
-            "operation": operation,
-            "count": len(durations),
-            "sum_ms": round(sum(durations), 1),
-            "max_ms": round(max(durations), 1),
-        }
-        for operation, durations in durations_by_operation.items()
-    ]
-    hot_operations.sort(key=lambda operation: float(operation["sum_ms"]), reverse=True)
-    return {
-        "jaeger_found": True,
-        "span_count": len(typed_spans),
-        "hot_operations": hot_operations[:10],
-        "graphql_operations": [
-            {"operation": operation, "count": count}
-            for operation, count in graphql_operations.most_common(10)
-        ],
-        "errored_spans": errored_spans[:5],
-    }
-
-
-def jaeger_span_tags(span: dict[str, Any]) -> dict[str, object]:
-    tags: dict[str, object] = {}
-    raw_tags = span.get("tags")
-    if not isinstance(raw_tags, list):
-        return tags
-    typed_tags = cast(list[object], raw_tags)
-    for tag_value in typed_tags:
-        if not isinstance(tag_value, dict):
-            continue
-        tag = cast(dict[str, Any], tag_value)
-        key = tag.get("key")
-        if isinstance(key, str):
-            tags[key] = tag.get("value")
-    return tags
+def optional_string(value: object) -> str | None:
+    return value if isinstance(value, str) else None
 
 
 def print_jaeger_trace_summaries(summaries: list[dict[str, Any]]) -> None:
@@ -1691,21 +1734,23 @@ def print_jaeger_trace_summaries(summaries: list[dict[str, Any]]) -> None:
         if summary.get("jaeger_found") is not True:
             print(f"  {duration_ms:.0f}ms {trace_id}: {summary.get('error')}")
             continue
-        hot_operations = summary.get("hot_operations")
-        hot_text = ""
-        if isinstance(hot_operations, list):
-            typed_hot_operations = cast(list[object], hot_operations)
-            hot_text = "; ".join(
-                format_hot_operation(cast(dict[str, Any], operation))
-                for operation in typed_hot_operations[:3]
-                if isinstance(operation, dict)
-            )
+        hot_text = format_hot_operations(summary.get("hot_operations"))
         print(
             f"  {duration_ms:.0f}ms {trace_id}: {summary.get('span_count', 0)} span(s); {hot_text}"
         )
 
 
-def format_hot_operation(operation: dict[str, Any]) -> str:
+def format_hot_operations(value: object) -> str:
+    if not isinstance(value, list):
+        return ""
+    return "; ".join(
+        format_hot_operation(cast(dict[object, object], operation))
+        for operation in cast(list[object], value)[:3]
+        if isinstance(operation, dict)
+    )
+
+
+def format_hot_operation(operation: dict[object, object]) -> str:
     return (
         f"{operation.get('operation')} x{operation.get('count')} "
         f"sum={operation.get('sum_ms')}ms max={operation.get('max_ms')}ms"
@@ -1951,13 +1996,13 @@ def print_comparison_summary(comparisons: list[CaseComparison]) -> None:
 def write_results_files(
     results: list[CommandResult],
     comparisons: list[CaseComparison],
-    arguments: argparse.Namespace,
+    config: EndToEndConfig,
 ) -> None:
-    if arguments.results_json is not None:
-        write_results_json(arguments.results_json, results, comparisons)
-    if arguments.results_csv is not None:
-        write_results_csv(arguments.results_csv, results)
-        phase_csv = phase_results_csv_path(arguments.results_csv)
+    if config.results_json is not None:
+        write_results_json(config.results_json, results, comparisons)
+    if config.results_csv is not None:
+        write_results_csv(config.results_csv, results)
+        phase_csv = phase_results_csv_path(config.results_csv)
         write_phase_results_csv(phase_csv, results)
 
 
@@ -2054,11 +2099,9 @@ def phase_results_csv_path(path: Path) -> Path:
     return path.with_name(f"{path.stem}-phases{path.suffix}")
 
 
-def raise_for_memory_regressions(
-    comparisons: list[CaseComparison], arguments: argparse.Namespace
-) -> None:
-    percent_limit = arguments.fail_on_memory_regression_percent
-    mib_limit = arguments.fail_on_memory_regression_mib
+def raise_for_memory_regressions(comparisons: list[CaseComparison], config: EndToEndConfig) -> None:
+    percent_limit = config.fail_on_memory_regression_percent
+    mib_limit = config.fail_on_memory_regression_mib
     if percent_limit is None and mib_limit is None:
         return
     failures: list[str] = []

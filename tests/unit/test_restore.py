@@ -2,16 +2,17 @@ from __future__ import annotations
 
 import unittest
 
+import src_py_lib as src
+
 from src_auth_perms_sync.permissions import restore as permission_restore
 from src_auth_perms_sync.permissions import snapshot as permission_snapshot
-from src_auth_perms_sync.shared import id_codec
 
 
 class RestoreTests(unittest.TestCase):
     def test_plan_full_restore_skips_repos_that_already_match(self) -> None:
-        matching_repo_id = id_codec.encode_repository_id(1)
-        changed_repo_id = id_codec.encode_repository_id(2)
-        extra_repo_id = id_codec.encode_repository_id(3)
+        matching_repo_id = src.encode_repository_id(1)
+        changed_repo_id = src.encode_repository_id(2)
+        extra_repo_id = src.encode_repository_id(3)
         target_snapshot = self.make_snapshot(
             {
                 matching_repo_id: self.make_repo_snapshot(
