@@ -47,7 +47,7 @@ class SamlGroupTests(unittest.TestCase):
         )
 
     def test_attribute_names_by_provider_key_uses_only_saml_providers_with_overrides(self) -> None:
-        providers = [
+        providers: list[shared_types.AuthProvider] = [
             {
                 "serviceType": "saml",
                 "serviceID": "https://idp.example.com",
@@ -80,7 +80,7 @@ class SamlGroupTests(unittest.TestCase):
         )
 
     def test_count_users_per_saml_group_counts_missing_and_deduplicates_user_groups(self) -> None:
-        users = [
+        users: list[shared_types.User] = [
             {
                 "id": "user-1",
                 "username": "alice",
@@ -159,7 +159,7 @@ class SamlGroupTests(unittest.TestCase):
         )
 
     def test_compact_saml_group_users_keeps_only_org_sync_fields(self) -> None:
-        providers = [
+        providers: list[shared_types.AuthProvider] = [
             {
                 "serviceType": "saml",
                 "serviceID": "https://idp.example.com",
@@ -177,7 +177,7 @@ class SamlGroupTests(unittest.TestCase):
                 "configID": "github",
             },
         ]
-        users = [
+        users: list[shared_types.User] = [
             {
                 "id": "user-1",
                 "username": "alice",

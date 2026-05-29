@@ -161,6 +161,7 @@ def capture_explicit_grants(
     client: src.SourcegraphClient,
     users: Iterable[SnapshotUserInput],
     parallelism: int,
+    explicit_permissions_batch_size: int,
     total_users: int | None = None,
     worker_pool: ThreadPoolExecutor | None = None,
 ) -> tuple[dict[str, RepoSnapshot], int]:
@@ -215,6 +216,7 @@ def capture_explicit_grants(
                 repos_by_user_id = permissions_sourcegraph.list_users_explicit_repos(
                     client,
                     [user["id"] for user in batch_users],
+                    batch_size=explicit_permissions_batch_size,
                 )
                 failures = 0
             except Exception as exception:
@@ -253,7 +255,11 @@ def capture_explicit_grants(
                 repos_by_user_id[user["id"]] = []
         return repos_by_user_id, failures
 
-    with src.event("capture_explicit_grants", total_users=total_users) as capture_event:
+    with src.event(
+        "capture_explicit_grants",
+        total_users=total_users,
+        explicit_permissions_batch_size=explicit_permissions_batch_size,
+    ) as capture_event:
         capture_failures = 0
         futures: dict[Any, list[SnapshotUserInput]] = {}
         submitted_user_count = 0
@@ -346,7 +352,7 @@ def capture_explicit_grants(
             batch_users: list[SnapshotUserInput] = []
             for user in users:
                 batch_users.append(user)
-                if len(batch_users) >= permissions_sourcegraph.USER_EXPLICIT_REPOS_BATCH_SIZE:
+                if len(batch_users) >= explicit_permissions_batch_size:
                     _submit_batch(executor, batch_users)
                     batch_users = []
                     if len(futures) >= max_pending_batches:
@@ -375,7 +381,9 @@ def build_snapshot(
     parallelism: int,
     bind_id_mode: str,
     config_path: Path | None = None,
+    *,
     total_users: int | None = None,
+    explicit_permissions_batch_size: int,
     worker_pool: ThreadPoolExecutor | None = None,
 ) -> Snapshot:
     """Capture a full Snapshot: explicit grants + pending-bindIDs + metadata.
@@ -393,6 +401,7 @@ def build_snapshot(
             client,
             users,
             parallelism,
+            explicit_permissions_batch_size,
             total_users=total_users,
             worker_pool=worker_pool,
         )

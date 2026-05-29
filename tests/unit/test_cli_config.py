@@ -2,12 +2,16 @@ from __future__ import annotations
 
 import contextlib
 import io
+import re
 import tempfile
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from typing import cast
 from unittest import mock
 
+import httpx
+import src_py_lib as src
 from src_py_lib.utils import config as shared_config
 
 from src_auth_perms_sync import cli
@@ -169,6 +173,44 @@ class CliConfigTests(unittest.TestCase):
             ):
                 load_config_from_env(SRC_AUTH_PERMS_SYNC_CREATED_AFTER=invalid_value)
 
+    def test_explicit_permissions_batch_size_config_is_loaded_from_env(self) -> None:
+        config = load_config_from_env(SRC_AUTH_PERMS_SYNC_EXPLICIT_PERMISSIONS_BATCH_SIZE="50")
+
+        self.assertEqual(50, config.explicit_permissions_batch_size)
+
+    def test_explicit_permissions_batch_size_rejects_values_below_one(self) -> None:
+        with self.assertRaisesRegex(shared_config.ConfigError, "greater than or equal to 1"):
+            load_config_from_env(SRC_AUTH_PERMS_SYNC_EXPLICIT_PERMISSIONS_BATCH_SIZE="0")
+
+    def test_trace_config_is_loaded_from_env(self) -> None:
+        config = load_config_from_env(SRC_AUTH_PERMS_SYNC_TRACE="true")
+
+        self.assertTrue(config.trace)
+
+    def test_trace_sampling_http_client_adds_sampled_traceparent(self) -> None:
+        traceparents: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            traceparents.append(request.headers["traceparent"])
+            return httpx.Response(200, json={"ok": True})
+
+        client = cli.TraceSamplingHTTPClient(
+            max_attempts=1,
+            transport=httpx.MockTransport(handler),
+        )
+        try:
+            self.assertEqual(
+                {"ok": True},
+                client.json("POST", "https://sourcegraph.example.com/.api/graphql"),
+            )
+        finally:
+            client.close()
+
+        self.assertEqual(1, len(traceparents))
+        self.assertRegex(traceparents[0], r"^00-[0-9a-f]{32}-[0-9a-f]{16}-01$")
+        self.assertNotEqual("0" * 32, re.split("-", traceparents[0])[1])
+        self.assertNotEqual("0" * 16, re.split("-", traceparents[0])[2])
+
     def test_validate_config_rejects_multiple_set_modes(self) -> None:
         self.assert_config_error(
             make_config(set_path=Path("maps.yaml"), full=True, user="alice"),
@@ -204,11 +246,13 @@ class CliConfigTests(unittest.TestCase):
         self.assertEqual("set", fields["base_cmd"])
         self.assertEqual("user", fields["set_mode"])
         self.assertEqual(True, fields["apply_flag"])
+        self.assertEqual(25, fields["explicit_permissions_batch_size"])
+        self.assertEqual(False, fields["trace"])
 
     def test_run_command_passes_primary_data_to_combined_sync(self) -> None:
         configuration = make_config(get=True, sync_saml_organizations=True)
         command = cli.resolve_command(configuration)
-        client = object()
+        client = cast(src.SourcegraphClient, object())
         sourcegraph_site_config = object()
         command_data = cli.run_context.CommandData()
 

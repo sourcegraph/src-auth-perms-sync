@@ -109,8 +109,8 @@ jobs:
           fi
 
           uv lock --check
-          uv run --frozen ruff check src_auth_perms_sync/
-          uv run --frozen ruff format --check src_auth_perms_sync/
+          uv run --frozen ruff check src/src_auth_perms_sync/
+          uv run --frozen ruff format --check src/src_auth_perms_sync/
           uv run --frozen pyright
           uv run --frozen src-auth-perms-sync --help >/tmp/src-auth-perms-sync-help.txt
 
@@ -129,7 +129,6 @@ jobs:
           rm -rf build/release
           mkdir -p "${wheelhouse_dir}" "${dist_dir}"
 
-          uv build --wheel git-subtree/src-py-lib --out-dir "${wheelhouse_dir}" --no-create-gitignore
           uv build --wheel --out-dir "${dist_dir}" --no-create-gitignore
           project_wheels=("${dist_dir}"/*.whl)
           if [[ "${#project_wheels[@]}" -ne 1 ]]; then
@@ -152,7 +151,19 @@ jobs:
             --frozen \
             --output-file "${requirements_file}"
 
-          grep -v '^\./git-subtree/src-py-lib$' "${requirements_file}" > "${runtime_requirements_file}"
+          src_py_lib_version="$(awk -F '"' '/^version = / { print $2; exit }' git-subtree/src-py-lib/pyproject.toml)"
+          if [[ -z "${src_py_lib_version}" ]]; then
+            echo "::error title=Missing src-py-lib version::Could not read git-subtree/src-py-lib/pyproject.toml."
+            exit 1
+          fi
+          awk \
+            -v "src_py_lib_requirement=src-py-lib==${src_py_lib_version}" \
+            '{ print ($0 == "./git-subtree/src-py-lib") ? src_py_lib_requirement : $0 }' \
+            "${requirements_file}" > "${runtime_requirements_file}"
+          if grep -q '^\./git-subtree/' "${runtime_requirements_file}"; then
+            echo "::error title=Unexpected local dependency::Runtime requirements must resolve from PyPI."
+            exit 1
+          fi
 
           python -m pip wheel \
             --only-binary=:all: \
@@ -165,8 +176,6 @@ jobs:
             echo "::error title=Unexpected src-py-lib wheel count::Expected one src-py-lib wheel, found ${#src_py_lib_wheels[@]}."
             exit 1
           fi
-          src_py_lib_wheel_path="${src_py_lib_wheels[0]}"
-          src_py_lib_wheel_name="$(basename "${src_py_lib_wheel_path}")"
 
           cat > "${wheelhouse_dir}/INSTALL.txt" <<EOF
           # src-auth-perms-sync ${release_tag} offline install
@@ -179,11 +188,13 @@ jobs:
           pip install --no-index --find-links ./wheelhouse ${PACKAGE_NAME}
           src-auth-perms-sync --help
 
-          Connected install, for environments that can reach GitHub and PyPI:
+          Connected install from PyPI:
 
-          pip install \
-            "https://github.com/sourcegraph/src-auth-perms-sync/releases/download/${release_tag}/${src_py_lib_wheel_name}" \
-            "https://github.com/sourcegraph/src-auth-perms-sync/releases/download/${release_tag}/${project_wheel_name}"
+          pip install ${PACKAGE_NAME}
+
+          GitHub release asset install, using the same project wheel uploaded to PyPI:
+
+          pip install "https://github.com/sourcegraph/src-auth-perms-sync/releases/download/${release_tag}/${project_wheel_name}"
           EOF
 
           (cd "${wheelhouse_dir}" && shasum -a 256 *.whl > WHEELS.sha256)
@@ -210,8 +221,6 @@ jobs:
           echo "checksum_path=${checksum_path}" >> "${GITHUB_OUTPUT}"
           echo "project_wheel_path=${project_wheel_path}" >> "${GITHUB_OUTPUT}"
           echo "project_wheel_name=${project_wheel_name}" >> "${GITHUB_OUTPUT}"
-          echo "src_py_lib_wheel_path=${src_py_lib_wheel_path}" >> "${GITHUB_OUTPUT}"
-          echo "src_py_lib_wheel_name=${src_py_lib_wheel_name}" >> "${GITHUB_OUTPUT}"
 
       - name: Validate offline install from tarball
         run: |
@@ -235,7 +244,6 @@ jobs:
         run: |
           release_tag="${{ steps.release.outputs.tag }}"
           project_wheel_name="${{ steps.build.outputs.project_wheel_name }}"
-          src_py_lib_wheel_name="${{ steps.build.outputs.src_py_lib_wheel_name }}"
           notes_path="build/release/release-notes.md"
           cat > "${notes_path}" <<EOF
           ## Customer install
@@ -267,12 +275,16 @@ jobs:
           The tarball includes this project, \`src-py-lib\`, and all runtime wheels.
           Verify the download with the matching \`.sha256\` file.
 
-          ### Connected install
+          ### Connected PyPI install
 
           \`\`\`sh
-          pip install \
-            "https://github.com/sourcegraph/src-auth-perms-sync/releases/download/${release_tag}/${src_py_lib_wheel_name}" \
-            "https://github.com/sourcegraph/src-auth-perms-sync/releases/download/${release_tag}/${project_wheel_name}"
+          pip install ${PACKAGE_NAME}
+          \`\`\`
+
+          ### GitHub release asset install
+
+          \`\`\`sh
+          pip install "https://github.com/sourcegraph/src-auth-perms-sync/releases/download/${release_tag}/${project_wheel_name}"
           \`\`\`
           EOF
           echo "path=${notes_path}" >> "${GITHUB_OUTPUT}"
@@ -285,8 +297,14 @@ jobs:
             ${{ steps.build.outputs.asset_path }}
             ${{ steps.build.outputs.checksum_path }}
             ${{ steps.build.outputs.project_wheel_path }}
-            ${{ steps.build.outputs.src_py_lib_wheel_path }}
             ${{ steps.notes.outputs.path }}
+
+      - name: Upload PyPI artifact
+        if: matrix.platform == 'linux-x86_64'
+        uses: actions/upload-artifact@v7
+        with:
+          name: pypi-distributions
+          path: ${{ steps.build.outputs.project_wheel_path }}
 
       - name: Publish GitHub release assets
         env:
@@ -296,19 +314,43 @@ jobs:
           asset_path="${{ steps.build.outputs.asset_path }}"
           checksum_path="${{ steps.build.outputs.checksum_path }}"
           project_wheel_path="${{ steps.build.outputs.project_wheel_path }}"
-          src_py_lib_wheel_path="${{ steps.build.outputs.src_py_lib_wheel_path }}"
           notes_path="${{ steps.notes.outputs.path }}"
+          release_assets=("${asset_path}" "${checksum_path}")
+
+          if [[ "${{ matrix.platform }}" == "linux-x86_64" ]]; then
+            release_assets+=("${project_wheel_path}")
+          fi
 
           if gh release view "${release_tag}" >/dev/null 2>&1; then
             gh release edit "${release_tag}" --title "${release_tag}" --notes-file "${notes_path}"
-            gh release upload "${release_tag}" "${asset_path}" "${checksum_path}" "${project_wheel_path}" "${src_py_lib_wheel_path}" --clobber
+            gh release upload "${release_tag}" "${release_assets[@]}" --clobber
           else
             gh release create "${release_tag}" \
-              "${asset_path}" \
-              "${checksum_path}" \
-              "${project_wheel_path}" \
-              "${src_py_lib_wheel_path}" \
+              "${release_assets[@]}" \
               --title "${release_tag}" \
               --notes-file "${notes_path}" \
               --verify-tag
           fi
+
+  pypi:
+    name: Publish PyPI package
+    needs: wheelhouse
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write
+    environment:
+      name: pypi
+      url: https://pypi.org/project/src-auth-perms-sync/
+
+    steps:
+      - name: Download built distribution
+        uses: actions/download-artifact@v7
+        with:
+          name: pypi-distributions
+          path: dist
+
+      - name: Publish PyPI package
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist

@@ -10,15 +10,15 @@
 
 ```bash
 ### Markdown files
-npx --no-install markdownlint-cli2 *.md
+npx --yes markdownlint-cli2
 
 ### Python files
 
 # Lint + auto-fix safe issues
-uv run ruff check src_auth_perms_sync/ --fix
+uv run ruff check src/src_auth_perms_sync/ --fix
 
 # Format
-uv run ruff format src_auth_perms_sync/
+uv run ruff format src/src_auth_perms_sync/
 
 # Type check
 uv run pyright
@@ -90,12 +90,12 @@ uv lock
 set -euo pipefail
 
 uv lock --check
-uv run ruff check src_auth_perms_sync/ tests/
-uv run ruff format --check src_auth_perms_sync/ tests/
+uv run ruff check src/src_auth_perms_sync/ tests/
+uv run ruff format --check src/src_auth_perms_sync/ tests/
 uv run pyright
 uv run python -m unittest discover -s tests
 uv run src-auth-perms-sync --help
-npx --no-install markdownlint-cli2 *.md
+npx --yes markdownlint-cli2
 uv build --wheel --out-dir /tmp/src-auth-perms-sync-release-check --no-create-gitignore
 rm -rf /tmp/src-auth-perms-sync-release-check
 ```
@@ -229,7 +229,7 @@ organization sync maps SAML groups to Sourcegraph org membership. Read
 
 ## Layout
 
-CLI lives in `src_auth_perms_sync/`; invoke with `uv run src-auth-perms-sync`.
+CLI lives in `src/src_auth_perms_sync/`; invoke with `uv run src-auth-perms-sync`.
 Strict pyright covers the package. Root modules are entrypoints only:
 
 - `cli.py` — `main()`, arg parsing, owns the CLI description.

@@ -11,7 +11,9 @@ from __future__ import annotations
 
 import logging
 import os
+import secrets
 import sys
+from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
@@ -159,6 +161,13 @@ class SrcAuthPermissionsSyncConfig(src.SourcegraphClientConfig, src.LoggingConfi
         cli_action="store_true",
         help="With mutating commands: actually mutate state. Default is dry-run",
     )
+    no_backup: bool = src.config_field(
+        default=False,
+        env_var="SRC_AUTH_PERMS_SYNC_NO_BACKUP",
+        cli_flag="--no-backup",
+        cli_action="store_true",
+        help="With mutating commands: skip before/after snapshots and validation",
+    )
     parallelism: int = src.config_field(
         default=16,
         env_var="SRC_AUTH_PERMS_SYNC_PARALLELISM",
@@ -166,6 +175,16 @@ class SrcAuthPermissionsSyncConfig(src.SourcegraphClientConfig, src.LoggingConfi
         metavar="N",
         ge=1,
         help="Concurrent Sourcegraph API worker threads (default: 16)",
+    )
+    explicit_permissions_batch_size: int = src.config_field(
+        default=25,
+        env_var="SRC_AUTH_PERMS_SYNC_EXPLICIT_PERMISSIONS_BATCH_SIZE",
+        cli_flag="--explicit-permissions-batch-size",
+        metavar="N",
+        ge=1,
+        help=(
+            "Users per GraphQL request when capturing explicit repository permissions (default: 25)"
+        ),
     )
     max_attempts: int = src.config_field(
         default=5,
@@ -175,13 +194,6 @@ class SrcAuthPermissionsSyncConfig(src.SourcegraphClientConfig, src.LoggingConfi
         ge=1,
         help="Max attempts per HTTP request before giving up (default: 5)",
     )
-    no_backup: bool = src.config_field(
-        default=False,
-        env_var="SRC_AUTH_PERMS_SYNC_NO_BACKUP",
-        cli_flag="--no-backup",
-        cli_action="store_true",
-        help="With mutating commands: skip before/after snapshots and validation",
-    )
     sample_interval: float = src.config_field(
         default=10.0,
         env_var="SRC_AUTH_PERMS_SYNC_SAMPLE_INTERVAL",
@@ -189,6 +201,16 @@ class SrcAuthPermissionsSyncConfig(src.SourcegraphClientConfig, src.LoggingConfi
         metavar="SECONDS",
         ge=0,
         help="Seconds between logging compute resource samples; set 0 to disable (default: 10)",
+    )
+    trace: bool = src.config_field(
+        default=False,
+        env_var="SRC_AUTH_PERMS_SYNC_TRACE",
+        cli_flag="--trace",
+        cli_action="store_true",
+        help=(
+            "Force Sourcegraph trace sampling by sending a sampled traceparent "
+            "header on each HTTP request"
+        ),
     )
 
 
@@ -367,6 +389,8 @@ def run_fields(
         "apply_flag": config.apply,
         "endpoint": endpoint,
         "parallelism": config.parallelism,
+        "explicit_permissions_batch_size": config.explicit_permissions_batch_size,
+        "trace": config.trace,
         "max_attempts": config.max_attempts,
         "no_backup": config.no_backup,
         "sample_interval": config.sample_interval,
@@ -377,6 +401,45 @@ def run_fields(
     }
 
 
+class TraceSamplingHTTPClient(src.HTTPClient):
+    """HTTP client that asks Sourcegraph to retain Jaeger traces for every request."""
+
+    def request(
+        self,
+        method: str,
+        url: str,
+        *,
+        headers: Mapping[str, str] | None = None,
+        query: Mapping[str, str | int | float | bool | None] | None = None,
+        json_body: object | None = None,
+        data: bytes | None = None,
+    ) -> bytes:
+        request_headers = dict(headers or {})
+        if not any(name.lower() == "traceparent" for name in request_headers):
+            request_headers["traceparent"] = sampled_traceparent()
+        return super().request(
+            method,
+            url,
+            headers=request_headers,
+            query=query,
+            json_body=json_body,
+            data=data,
+        )
+
+
+def sampled_traceparent() -> str:
+    """Return a W3C traceparent header value with the sampled flag set."""
+    return f"00-{nonzero_hex(16)}-{nonzero_hex(8)}-01"
+
+
+def nonzero_hex(byte_count: int) -> str:
+    """Return a random hex string that is not all zeroes."""
+    while True:
+        value = secrets.token_hex(byte_count)
+        if any(character != "0" for character in value):
+            return value
+
+
 def run_with_client(
     config: SrcAuthPermissionsSyncConfig,
     command: ResolvedCommand,
@@ -384,7 +447,8 @@ def run_with_client(
     worker_pool: ThreadPoolExecutor,
 ) -> None:
     """Create a client, run the selected command, and always close HTTP resources."""
-    http = src.HTTPClient(
+    http_class = TraceSamplingHTTPClient if config.trace else src.HTTPClient
+    http = http_class(
         user_agent="src-auth-perms-sync/0.1 (+python)",
         max_attempts=config.max_attempts,
         max_connections=config.parallelism,
@@ -448,6 +512,7 @@ def run_set(
         command.set_options,
         dry_run=not config.apply,
         parallelism=config.parallelism,
+        explicit_permissions_batch_size=config.explicit_permissions_batch_size,
         bind_id_mode=sourcegraph_site_config.bind_id_mode,
         saml_groups_attribute_name_by_config_id=(
             sourcegraph_site_config.saml_groups_attribute_name_by_config_id
@@ -471,6 +536,7 @@ def run_restore(
         config.restore_path,
         dry_run=not config.apply,
         parallelism=config.parallelism,
+        explicit_permissions_batch_size=config.explicit_permissions_batch_size,
         bind_id_mode=sourcegraph_site_config.bind_id_mode,
         do_backup=not config.no_backup,
         worker_pool=worker_pool,
@@ -522,6 +588,7 @@ def run_get(
         users_without_explicit_perms=config.users_without_explicit_perms,
         user_created_after=config.created_after,
         parallelism=config.parallelism,
+        explicit_permissions_batch_size=config.explicit_permissions_batch_size,
         bind_id_mode=sourcegraph_site_config.bind_id_mode,
         saml_groups_attribute_name_by_config_id=(
             sourcegraph_site_config.saml_groups_attribute_name_by_config_id

@@ -89,6 +89,7 @@ def cmd_get(
     users_without_explicit_perms: bool,
     user_created_after: str | None,
     parallelism: int,
+    explicit_permissions_batch_size: int,
     bind_id_mode: str,
     saml_groups_attribute_name_by_config_id: dict[str, str],
     auth_providers_by_config_id: dict[str, dict[str, Any]],
@@ -141,7 +142,8 @@ def cmd_get(
         # SAML-only: tally distinct users per (serviceID, clientID, group)
         # by parsing each user's SAML AssertionInfo `accountData`. Surfaced
         # in the YAML so operators can size groups before authoring a
-        # `authProvider.samlGroup` mapping rule. See `src_auth_perms_sync/shared/saml_groups.py`.
+        # `authProvider.samlGroup` mapping rule. See
+        # `src/src_auth_perms_sync/shared/saml_groups.py`.
         saml_group_counts = saml_groups.count_users_per_saml_group(
             users, attribute_names_by_provider
         )
@@ -183,6 +185,7 @@ def cmd_get(
             bind_id_mode,
             maps_path,
             total_users=len(users),
+            explicit_permissions_batch_size=explicit_permissions_batch_size,
             worker_pool=worker_pool,
         )
         before_path = snapshot_path(maps_path, timestamp, client.endpoint, "get", "before")
@@ -307,6 +310,7 @@ def cmd_set(
     options: permission_types.SetCommandOptions,
     dry_run: bool,
     parallelism: int,
+    explicit_permissions_batch_size: int,
     bind_id_mode: str,
     saml_groups_attribute_name_by_config_id: dict[str, str],
     do_backup: bool,
@@ -321,6 +325,7 @@ def cmd_set(
             options.user_created_after,
             dry_run,
             parallelism,
+            explicit_permissions_batch_size,
             bind_id_mode,
             saml_groups_attribute_name_by_config_id,
             do_backup,
@@ -896,6 +901,7 @@ def cmd_restore(
     snapshot_path: Path,
     dry_run: bool,
     parallelism: int,
+    explicit_permissions_batch_size: int,
     bind_id_mode: str,
     do_backup: bool,
     worker_pool: ThreadPoolExecutor | None = None,
@@ -906,6 +912,7 @@ def cmd_restore(
         snapshot_path,
         dry_run,
         parallelism,
+        explicit_permissions_batch_size,
         bind_id_mode,
         do_backup,
         worker_pool,

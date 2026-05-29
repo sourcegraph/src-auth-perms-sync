@@ -12,7 +12,7 @@ Keep these in sync when changing the baseline:
 - GitHub Actions CI / release `PYTHON_VERSION`
 - Customer release wheelhouse labels and install instructions
 - `README.md` install commands
-- `src-py-lib`'s matching Python support and pinned commit in `pyproject.toml`
+- `src-py-lib`'s matching Python support and published version in `pyproject.toml`
 
 Do not change `requires-python` until both this repo and `src-py-lib` are tested
 with the target version and matching customer wheelhouses can be built.

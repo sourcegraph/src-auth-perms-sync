@@ -12,8 +12,6 @@ from ..shared import types as shared_types
 from . import queries
 from . import types as permission_types
 
-USER_EXPLICIT_REPOS_BATCH_SIZE = 25
-
 
 def list_external_services(client: src.SourcegraphClient) -> list[permission_types.ExternalService]:
     return [
@@ -144,7 +142,7 @@ def list_users_explicit_repos(
     client: src.SourcegraphClient,
     user_ids: Sequence[str],
     *,
-    batch_size: int = USER_EXPLICIT_REPOS_BATCH_SIZE,
+    batch_size: int,
 ) -> dict[str, list[permission_types.Repository]]:
     """Return explicit API repository grants for many users using GraphQL aliases."""
     if batch_size < 1:

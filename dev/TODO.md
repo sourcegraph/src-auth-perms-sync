@@ -69,8 +69,13 @@ If/when we revisit:
 `allowGroups`-style enforcement exists on more than just SAML, but only
 SAML actually persists the group list. Recovery options for each:
 
-| Provider | `allowGroups`-equivalent config | Stored in `account_data`? | Recovery path |
-| --- | --- | --- | --- |
-| OIDC | None — no `allowGroups` field on `OpenIDConnectAuthProvider` | No — `UserClaims` only stores name/email fields; `groups` claim is never parsed | Upstream change to persist the claim |
-| GitHub OAuth | `allowOrgs`, `allowOrgsMap` (org→teams), `requiredSsoOrgs` | No — orgs/teams checked live in `verifyUserOrgs`/`verifyUserTeams` and discarded | Upstream change to persist the claim |
-| GitLab OAuth | `allowGroups` | No — `verifyUserGroups` calls `glClient.IsGroupMember` live and discards | Upstream change to persist the claim |
+- OIDC has no `allowGroups` field on `OpenIDConnectAuthProvider`.
+  `UserClaims` stores only name/email fields; the `groups` claim is never
+  parsed. Recovery needs an upstream change to persist the claim.
+- GitHub OAuth has `allowOrgs`, `allowOrgsMap` (org→teams), and
+  `requiredSsoOrgs`. Org/team checks happen live in `verifyUserOrgs` /
+  `verifyUserTeams` and are discarded. Recovery needs an upstream change to
+  persist the claim.
+- GitLab OAuth has `allowGroups`, but `verifyUserGroups` calls
+  `glClient.IsGroupMember` live and discards the result. Recovery needs an
+  upstream change to persist the claim.

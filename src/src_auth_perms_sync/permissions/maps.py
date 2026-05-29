@@ -53,7 +53,7 @@ def auth_provider_to_yaml(
 
     `site_config_entry`, when provided, is the matching `auth.providers[*]`
     JSONC entry (already stripped of redacted/secret fields by
-    `src_auth_perms_sync/shared/site_config.py`). Any
+    `src/src_auth_perms_sync/shared/site_config.py`). Any
     fields it carries that aren't already emitted from GraphQL are
     surfaced verbatim, so operators see the full provider config in the
     YAML — e.g. `identityProviderMetadataURL`, `serviceProviderIssuer`,

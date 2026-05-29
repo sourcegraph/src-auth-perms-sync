@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+
 repo_root="$(git rev-parse --show-toplevel)"
 cd "$repo_root"
 
@@ -18,8 +20,8 @@ run git diff --cached --stat
 run git diff --stat
 run dev/check-src-py-lib-subtree.sh --staged
 
-run uv run ruff check src_auth_perms_sync/
-run uv run ruff format src_auth_perms_sync/ --check
+run uv run ruff check .
+run uv run ruff format . --check
 run uv run pyright
 run uv run python -m unittest discover -s tests
 run uv run src-auth-perms-sync --help

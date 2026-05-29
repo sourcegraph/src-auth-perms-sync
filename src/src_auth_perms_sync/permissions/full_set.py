@@ -95,6 +95,7 @@ def _capture_full_set_snapshot_state(
     client: src.SourcegraphClient,
     input_path: Path,
     parallelism: int,
+    explicit_permissions_batch_size: int,
     bind_id_mode: str,
     worker_pool: ThreadPoolExecutor | None = None,
 ) -> _FullSetUserState:
@@ -114,6 +115,7 @@ def _capture_full_set_snapshot_state(
         bind_id_mode,
         input_path,
         total_users=total_users,
+        explicit_permissions_batch_size=explicit_permissions_batch_size,
         worker_pool=worker_pool,
     )
     log.info(
@@ -134,6 +136,7 @@ def _load_full_set_snapshot_state(
     client: src.SourcegraphClient,
     input_path: Path,
     parallelism: int,
+    explicit_permissions_batch_size: int,
     bind_id_mode: str,
     capture_before: bool,
     worker_pool: ThreadPoolExecutor | None = None,
@@ -144,6 +147,7 @@ def _load_full_set_snapshot_state(
             client,
             input_path,
             parallelism,
+            explicit_permissions_batch_size,
             bind_id_mode,
             worker_pool,
         )
@@ -512,6 +516,7 @@ def _finish_full_set_apply_with_backup(
     plan: _FullSetPlan,
     apply_result: _FullSetApplyResult,
     parallelism: int,
+    explicit_permissions_batch_size: int,
     bind_id_mode: str,
     worker_pool: ThreadPoolExecutor | None = None,
 ) -> None:
@@ -527,6 +532,7 @@ def _finish_full_set_apply_with_backup(
             bind_id_mode,
             input_path,
             total_users=len(snapshot_state.users),
+            explicit_permissions_batch_size=explicit_permissions_batch_size,
             worker_pool=worker_pool,
         )
 
@@ -607,6 +613,7 @@ def _finish_empty_full_set_mapping_rules(
     command_name: str,
     dry_run: bool,
     parallelism: int,
+    explicit_permissions_batch_size: int,
     bind_id_mode: str,
     do_backup: bool,
     command_event: dict[str, Any],
@@ -620,6 +627,7 @@ def _finish_empty_full_set_mapping_rules(
         client,
         input_path,
         parallelism,
+        explicit_permissions_batch_size,
         bind_id_mode,
         worker_pool,
     )
@@ -639,6 +647,7 @@ def _load_full_set_plan(
     mapping_rules: list[permission_types.MappingRule],
     user_created_after: str | None,
     parallelism: int,
+    explicit_permissions_batch_size: int,
     bind_id_mode: str,
     saml_groups_attribute_name_by_config_id: dict[str, str],
     capture_before: bool,
@@ -651,6 +660,7 @@ def _load_full_set_plan(
         client,
         input_path,
         parallelism,
+        explicit_permissions_batch_size,
         bind_id_mode,
         capture_before=capture_before,
         worker_pool=worker_pool,
@@ -727,6 +737,7 @@ def _run_full_set_apply(
     plan: _FullSetPlan,
     mapping_count: int,
     parallelism: int,
+    explicit_permissions_batch_size: int,
     bind_id_mode: str,
     do_backup: bool,
     before_path: Path | None,
@@ -766,6 +777,7 @@ def _run_full_set_apply(
             plan,
             apply_result,
             parallelism,
+            explicit_permissions_batch_size,
             bind_id_mode,
             worker_pool,
         )
@@ -779,6 +791,7 @@ def cmd_set_full(
     user_created_after: str | None,
     dry_run: bool,
     parallelism: int,
+    explicit_permissions_batch_size: int,
     bind_id_mode: str,
     saml_groups_attribute_name_by_config_id: dict[str, str],
     do_backup: bool,
@@ -803,6 +816,7 @@ def cmd_set_full(
                 command_name,
                 dry_run,
                 parallelism,
+                explicit_permissions_batch_size,
                 bind_id_mode,
                 do_backup,
                 command_event,
@@ -816,6 +830,7 @@ def cmd_set_full(
             mapping_rules,
             user_created_after,
             parallelism,
+            explicit_permissions_batch_size,
             bind_id_mode,
             saml_groups_attribute_name_by_config_id,
             capture_before=dry_run or do_backup,
@@ -855,6 +870,7 @@ def cmd_set_full(
             plan,
             len(mapping_rules),
             parallelism,
+            explicit_permissions_batch_size,
             bind_id_mode,
             do_backup,
             loaded_plan.apply_before_path,

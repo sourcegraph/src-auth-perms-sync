@@ -1,18 +1,23 @@
 # Ignore
-__pycache__/
+__pycache__
+.DS_Store
+.pypirc
+.pyright
+.pytest_cache
 .ruff_cache
 .venv
-*.egg-info
-*.env
+*.env*
 *.gql
+*.py[cod]
 *.py[oc]
 *.yaml
-src-auth-perms-sync-runs/
 build/
 dist/
+src-auth-perms-sync-runs/
 wheels/
 
 # Allow
 !.env.example
+!.markdownlint-cli2.yaml
 !git-subtree/**
 !maps-example.yaml

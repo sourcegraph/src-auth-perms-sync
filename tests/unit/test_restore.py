@@ -40,13 +40,13 @@ class RestoreTests(unittest.TestCase):
                 ),
             }
         )
-        snapshot_state = permission_restore._RestoreSnapshotState(
+        snapshot_state = permission_restore.RestoreSnapshotState(
             target_snapshot=target_snapshot,
             current_snapshot=current_snapshot,
             users=[],
         )
 
-        plan = permission_restore._plan_full_restore(snapshot_state)
+        plan = permission_restore.plan_full_restore(snapshot_state)
 
         self.assertEqual(2, len(plan.overwrites))
         self.assertEqual(2, plan.snapshot_repo_count)

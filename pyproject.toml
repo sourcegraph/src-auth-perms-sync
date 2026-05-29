@@ -1,48 +1,6 @@
-[project]
-name = "src-auth-perms-sync"
-version = "0.2.0"
-description = "Set Sourcegraph permissions from authentication provider data"
-readme = "README.md"
-requires-python = ">=3.11"
-dependencies = [
-    "json5>=0.14.0",
-    "pyyaml>=6.0.3",
-    "src-py-lib",
-]
-
-[project.scripts]
-src-auth-perms-sync = "src_auth_perms_sync.cli:main"
-
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
-
-[tool.hatch.build.targets.wheel]
-packages = ["src_auth_perms_sync"]
-
-[tool.uv]
-package = true
-
-[tool.uv.sources]
-src-py-lib = { path = "git-subtree/src-py-lib" }
-
-[tool.pyright]
-include = ["src_auth_perms_sync"]
-typeCheckingMode = "strict"
-pythonVersion = "3.11"
-
-[tool.ruff]
-target-version = "py311"
-# Slightly above the default 88 — accommodates the YAML-header literal in
-# permissions/maps.py and a few log-message strings without sacrificing readability.
-line-length = 100
-
-[tool.ruff.lint]
-# E = pycodestyle, F = pyflakes (unused imports, undefined names),
-# I = import sorting, B = bugbear (likely-bug patterns),
-# UP = pyupgrade (modernise syntax for py311),
-# SIM = simplify (collapse trivial constructs).
-select = ["E", "F", "I", "B", "UP", "SIM"]
 
 [dependency-groups]
 dev = [
@@ -50,3 +8,62 @@ dev = [
     "ruff>=0.15.14",
     "types-pyyaml>=6.0.12.20260518",
 ]
+
+[project]
+name = "src-auth-perms-sync"
+version = "0.2.0"
+description = "Set Sourcegraph permissions from authentication provider data"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [
+  { name="Sourcegraph" },
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Typing :: Typed",
+]
+dependencies = [
+    "json5>=0.14.0",
+    "pyyaml>=6.0.3",
+    "src-py-lib==0.1.1",
+]
+keywords = [
+    "Sourcegraph"
+]
+
+[project.scripts]
+src-auth-perms-sync = "src_auth_perms_sync.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/sourcegraph/src-auth-perms-sync"
+Issues = "https://github.com/sourcegraph/src-auth-perms-sync/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/src_auth_perms_sync"]
+
+[tool.pyright]
+include = ["src", "tests", "dev"]
+exclude = ["git-subtree", "src-auth-perms-sync-runs", ".venv", "build", "dist"]
+typeCheckingMode = "strict"
+pythonVersion = "3.11"
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+extend-exclude = ["git-subtree", "src-auth-perms-sync-runs"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM"]
+
+[tool.uv]
+package = true
+
+[tool.uv.sources]
+src-py-lib = { path = "git-subtree/src-py-lib" }

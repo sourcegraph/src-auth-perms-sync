@@ -7,6 +7,7 @@ from pathlib import Path
 import yaml
 
 from src_auth_perms_sync.permissions import maps
+from src_auth_perms_sync.shared import types as shared_types
 
 
 class MapsTests(unittest.TestCase):
@@ -31,7 +32,7 @@ class MapsTests(unittest.TestCase):
             self.assertEqual({"maps": [{"name": "Map 1"}]}, yaml.safe_load(maps_path.read_text()))
 
     def test_count_users_per_provider_counts_each_user_once_per_provider(self) -> None:
-        users = [
+        users: list[shared_types.User] = [
             {
                 "id": "user-1",
                 "username": "alice",

@@ -29,7 +29,7 @@ log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
-class _RestoreSnapshotState:
+class RestoreSnapshotState:
     """Target and live snapshots needed for a full restore."""
 
     target_snapshot: permission_snapshot.Snapshot
@@ -38,7 +38,7 @@ class _RestoreSnapshotState:
 
 
 @dataclass(frozen=True)
-class _RestorePlan:
+class RestorePlan:
     """Per-repo overwrite plan for a full restore."""
 
     overwrites: list[permission_types.RepositoryUsernameOverwrite]
@@ -533,9 +533,10 @@ def _capture_restore_snapshot_state(
     snapshot_path: Path,
     target_snapshot: permission_snapshot.Snapshot,
     parallelism: int,
+    explicit_permissions_batch_size: int,
     bind_id_mode: str,
     worker_pool: ThreadPoolExecutor | None = None,
-) -> _RestoreSnapshotState:
+) -> RestoreSnapshotState:
     """Capture the live full-instance state needed to plan a restore."""
     total_users = shared_sourcegraph.count_users(client)
     log.info(
@@ -552,6 +553,7 @@ def _capture_restore_snapshot_state(
         bind_id_mode,
         snapshot_path,
         total_users=total_users,
+        explicit_permissions_batch_size=explicit_permissions_batch_size,
         worker_pool=worker_pool,
     )
     log.info(
@@ -561,14 +563,14 @@ def _capture_restore_snapshot_state(
         current_snapshot["stats"]["repos_with_explicit_grants"],
         current_snapshot["stats"]["total_grants"],
     )
-    return _RestoreSnapshotState(
+    return RestoreSnapshotState(
         target_snapshot=target_snapshot,
         current_snapshot=current_snapshot,
         users=permission_snapshot.compact_snapshot_users(users),
     )
 
 
-def _plan_full_restore(snapshot_state: _RestoreSnapshotState) -> _RestorePlan:
+def plan_full_restore(snapshot_state: RestoreSnapshotState) -> RestorePlan:
     """Build only the per-repo overwrite plans needed to match the snapshot."""
     target_repos = snapshot_state.target_snapshot["repos"]
     current_repos = snapshot_state.current_snapshot["repos"]
@@ -597,7 +599,7 @@ def _plan_full_restore(snapshot_state: _RestoreSnapshotState) -> _RestorePlan:
                 usernames=(),
             )
         )
-    return _RestorePlan(
+    return RestorePlan(
         overwrites=overwrites,
         snapshot_repo_count=len(target_repos),
         extra_repo_count=len(extra_repo_ids),
@@ -637,7 +639,7 @@ def _finish_empty_restore_plan(
     )
 
 
-def _log_full_restore_plan(snapshot_state: _RestoreSnapshotState, plan: _RestorePlan) -> None:
+def _log_full_restore_plan(snapshot_state: RestoreSnapshotState, plan: RestorePlan) -> None:
     log.info(
         "Restore plan: %d mutation(s) (%d snapshot repo(s), %d unchanged skipped, "
         "%d extra repo(s) to wipe).",
@@ -658,7 +660,7 @@ def _log_full_restore_plan(snapshot_state: _RestoreSnapshotState, plan: _Restore
 def _finish_restore_dry_run(
     client: src.SourcegraphClient,
     snapshot_path: Path,
-    snapshot_state: _RestoreSnapshotState,
+    snapshot_state: RestoreSnapshotState,
 ) -> None:
     """Write dry-run restore artifacts and stop before mutation."""
     timestamp = backups.backup_timestamp()
@@ -733,8 +735,8 @@ def _apply_restore_overwrites(
 
 def _record_restore_event_fields(
     command_event: dict[str, Any],
-    snapshot_state: _RestoreSnapshotState,
-    plan: _RestorePlan,
+    snapshot_state: RestoreSnapshotState,
+    plan: RestorePlan,
     mutations: shared_types.MutationCounts,
 ) -> None:
     command_event["plan_size"] = len(plan.overwrites)
@@ -750,8 +752,9 @@ def _finish_restore_apply_with_backup(
     client: src.SourcegraphClient,
     snapshot_path: Path,
     timestamp: str,
-    snapshot_state: _RestoreSnapshotState,
+    snapshot_state: RestoreSnapshotState,
     parallelism: int,
+    explicit_permissions_batch_size: int,
     bind_id_mode: str,
     worker_pool: ThreadPoolExecutor | None = None,
 ) -> None:
@@ -764,6 +767,7 @@ def _finish_restore_apply_with_backup(
         bind_id_mode,
         snapshot_path,
         total_users=len(snapshot_state.users),
+        explicit_permissions_batch_size=explicit_permissions_batch_size,
         worker_pool=worker_pool,
     )
     after_restore_path = snapshot_artifact_path(
@@ -823,6 +827,7 @@ def cmd_restore(
     snapshot_path: Path,
     dry_run: bool,
     parallelism: int,
+    explicit_permissions_batch_size: int,
     bind_id_mode: str,
     do_backup: bool,
     worker_pool: ThreadPoolExecutor | None = None,
@@ -861,10 +866,11 @@ def cmd_restore(
             snapshot_path,
             target_full_snapshot,
             parallelism,
+            explicit_permissions_batch_size,
             bind_id_mode,
             worker_pool,
         )
-        plan = _plan_full_restore(snapshot_state)
+        plan = plan_full_restore(snapshot_state)
         if not plan.overwrites:
             _finish_empty_restore_plan(
                 client,
@@ -899,6 +905,7 @@ def cmd_restore(
                 timestamp,
                 snapshot_state,
                 parallelism,
+                explicit_permissions_batch_size,
                 bind_id_mode,
                 worker_pool,
             )

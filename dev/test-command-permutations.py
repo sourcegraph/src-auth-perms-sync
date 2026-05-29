@@ -204,6 +204,7 @@ class CommandPermutationRunner:
         *,
         iteration: int,
         keep_going: bool,
+        trace: bool,
         sample_interval: float,
         external_sample_interval: float,
     ) -> None:
@@ -211,6 +212,7 @@ class CommandPermutationRunner:
         self.environment = environment
         self.iteration = iteration
         self.keep_going = keep_going
+        self.trace = trace
         self.sample_interval = sample_interval
         self.external_sample_interval = external_sample_interval
         self.results: list[CommandResult] = []
@@ -235,6 +237,7 @@ class CommandPermutationRunner:
         full_command = [
             *self.variant.executable,
             *case.arguments,
+            *(("--trace",) if self.trace else ()),
             "--sample-interval",
             str(self.sample_interval),
         ]
@@ -385,6 +388,7 @@ def main() -> None:
                 environment,
                 iteration=iteration,
                 keep_going=arguments.keep_going,
+                trace=arguments.trace,
                 sample_interval=arguments.sample_interval,
                 external_sample_interval=arguments.external_sample_interval,
             )
@@ -493,6 +497,11 @@ def parse_arguments() -> argparse.Namespace:
         "--keep-going",
         action="store_true",
         help="Continue after assertion failures where it is safe to do so",
+    )
+    parser.add_argument(
+        "--trace",
+        action="store_true",
+        help="Pass --trace to each child src-auth-perms-sync command",
     )
     parser.add_argument(
         "--sample-interval",
@@ -674,7 +683,7 @@ def run_matrix(
 def invalid_configuration_cases(arguments: argparse.Namespace) -> list[CommandCase]:
     restore_placeholder = "definitely-missing-before.json"
     missing_maps = "definitely-missing-command-permutation-maps.yaml"
-    command_pairs = [
+    command_pairs: list[tuple[str, tuple[str, ...]]] = [
         ("get-set", ("--get", "--set", "maps.yaml")),
         ("get-restore", ("--get", "--restore", restore_placeholder)),
         ("set-restore", ("--set", "maps.yaml", "--restore", restore_placeholder)),
@@ -1416,7 +1425,7 @@ def print_memory_summary(results: list[CommandResult], limit: int) -> None:
     if not rows:
         print("\nMemory summary: no structured peak_rss_mb records found.")
         return
-    rows.sort(key=lambda result: result.memory.peak_rss_mb if result.memory else 0.0, reverse=True)
+    rows.sort(key=lambda result: result_peak_rss_mb(result) or 0.0, reverse=True)
     print("\nMemory summary (highest peak RSS first):")
     print(
         "variant,iteration,case,peak_rss_mib,sampled_peak_rss_mib,"

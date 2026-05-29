@@ -64,7 +64,7 @@ Good parallelism:
 
 Risky parallelism:
 
-- Two agents refactor `src_auth_perms_sync/cli.py` at the same time.
+- Two agents refactor `src/src_auth_perms_sync/cli.py` at the same time.
 - One branch renames functions while another branch edits their call sites.
 - Two branches change the same GraphQL mutation flow.
 

@@ -3,15 +3,18 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from concurrent.futures import Future
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 from unittest.mock import patch
+
+import src_py_lib as src
 
 from src_auth_perms_sync.permissions import snapshot as permission_snapshot
 from src_auth_perms_sync.permissions import sourcegraph as permissions_sourcegraph
+from src_auth_perms_sync.permissions import types as permission_types
 from src_auth_perms_sync.permissions import workflow as permission_workflow
 from src_auth_perms_sync.shared import backups, id_codec
 
@@ -20,27 +23,12 @@ class SnapshotTests(unittest.TestCase):
     def test_capture_explicit_grants_inverts_repos_without_per_user_buffer(self) -> None:
         repo_one_id = id_codec.encode_repository_id(1)
         repo_two_id = id_codec.encode_repository_id(2)
-        users = [
-            {
-                "id": "user-1",
-                "username": "carol",
-                "builtinAuth": True,
-                "externalAccounts": {"nodes": []},
-            },
-            {
-                "id": "user-2",
-                "username": "alice",
-                "builtinAuth": True,
-                "externalAccounts": {"nodes": []},
-            },
-            {
-                "id": "user-3",
-                "username": "bob",
-                "builtinAuth": True,
-                "externalAccounts": {"nodes": []},
-            },
+        users: list[permission_snapshot.SnapshotUser] = [
+            {"id": "user-1", "username": "carol"},
+            {"id": "user-2", "username": "alice"},
+            {"id": "user-3", "username": "bob"},
         ]
-        repos_by_user_id = {
+        repos_by_user_id: dict[str, list[permission_types.Repository]] = {
             "user-1": [
                 {"id": repo_one_id, "name": "github.com/sourcegraph/one"},
                 {"id": repo_two_id, "name": "github.com/sourcegraph/two"},
@@ -49,15 +37,25 @@ class SnapshotTests(unittest.TestCase):
             "user-3": [],
         }
 
+        def list_repos(
+            _client: src.SourcegraphClient,
+            user_ids: Sequence[str],
+            *,
+            batch_size: int,
+        ) -> dict[str, list[permission_types.Repository]]:
+            return {user_id: repos_by_user_id[user_id] for user_id in user_ids}
+
         with patch.object(
             permission_snapshot.permissions_sourcegraph,
             "list_users_explicit_repos",
-            side_effect=lambda _client, user_ids: {
-                user_id: repos_by_user_id[user_id] for user_id in user_ids
-            },
+            side_effect=list_repos,
         ):
             repos, user_count = permission_snapshot.capture_explicit_grants(
-                object(), users, parallelism=1, total_users=len(users)
+                cast(src.SourcegraphClient, object()),
+                users,
+                parallelism=1,
+                explicit_permissions_batch_size=25,
+                total_users=len(users),
             )
 
         self.assertEqual(3, user_count)
@@ -76,14 +74,8 @@ class SnapshotTests(unittest.TestCase):
         )
 
     def test_capture_explicit_grants_bounds_pending_batches(self) -> None:
-        users = [
-            {
-                "id": f"user-{index}",
-                "username": f"user-{index}",
-                "builtinAuth": True,
-                "externalAccounts": {"nodes": []},
-            }
-            for index in range(9)
+        users: list[permission_snapshot.SnapshotUser] = [
+            {"id": f"user-{index}", "username": f"user-{index}"} for index in range(9)
         ]
         pending_counts: list[int] = []
         real_wait = permission_snapshot.wait
@@ -93,17 +85,28 @@ class SnapshotTests(unittest.TestCase):
             pending_counts.append(len(futures_list))
             return real_wait(futures_list, **kwargs)
 
+        def list_repos(
+            _client: src.SourcegraphClient,
+            user_ids: Sequence[str],
+            *,
+            batch_size: int,
+        ) -> dict[str, list[permission_types.Repository]]:
+            return {user_id: [] for user_id in user_ids}
+
         with (
-            patch.object(permissions_sourcegraph, "USER_EXPLICIT_REPOS_BATCH_SIZE", 1),
             patch.object(
                 permission_snapshot.permissions_sourcegraph,
                 "list_users_explicit_repos",
-                side_effect=lambda _client, user_ids: {user_id: [] for user_id in user_ids},
+                side_effect=list_repos,
             ),
             patch.object(permission_snapshot, "wait", side_effect=recording_wait),
         ):
             _, user_count = permission_snapshot.capture_explicit_grants(
-                object(), users, parallelism=2, total_users=len(users)
+                cast(src.SourcegraphClient, object()),
+                users,
+                parallelism=2,
+                explicit_permissions_batch_size=1,
+                total_users=len(users),
             )
 
         self.assertEqual(9, user_count)
@@ -111,14 +114,20 @@ class SnapshotTests(unittest.TestCase):
         self.assertLessEqual(max(pending_counts), 4)
 
     def test_list_users_explicit_repos_batches_aliases_and_follows_pages(self) -> None:
-        repo_one = {"id": id_codec.encode_repository_id(1), "name": "github.com/sourcegraph/one"}
-        repo_two = {"id": id_codec.encode_repository_id(2), "name": "github.com/sourcegraph/two"}
-        repo_three = {
+        repo_one: permission_types.Repository = {
+            "id": id_codec.encode_repository_id(1),
+            "name": "github.com/sourcegraph/one",
+        }
+        repo_two: permission_types.Repository = {
+            "id": id_codec.encode_repository_id(2),
+            "name": "github.com/sourcegraph/two",
+        }
+        repo_three: permission_types.Repository = {
             "id": id_codec.encode_repository_id(3),
             "name": "github.com/sourcegraph/three",
         }
-        calls: list[tuple[str, dict[str, object], bool]] = []
-        responses = [
+        calls: list[tuple[str, src.JSONDict, bool]] = []
+        responses: list[src.JSONDict] = [
             {
                 "user0": self.user_explicit_repos_page([repo_one], has_next_page=False),
                 "user1": self.user_explicit_repos_page(
@@ -139,17 +148,20 @@ class SnapshotTests(unittest.TestCase):
             def execute(
                 self,
                 query: str,
-                variables: dict[str, object],
+                variables: src.JSONDict,
                 *,
                 follow_pages: bool = True,
-            ) -> dict[str, object]:
+            ) -> src.JSONDict:
                 calls.append((query, dict(variables), follow_pages))
                 return responses.pop(0)
 
-        client = SimpleNamespace(
-            endpoint="https://sourcegraph.example.com",
-            token="secret",
-            http=object(),
+        client = cast(
+            src.SourcegraphClient,
+            SimpleNamespace(
+                endpoint="https://sourcegraph.example.com",
+                token="secret",
+                http=object(),
+            ),
         )
         with patch.object(permissions_sourcegraph.src, "GraphQLClient", FakeGraphQLClient):
             repos_by_user_id = permissions_sourcegraph.list_users_explicit_repos(
@@ -308,19 +320,22 @@ class SnapshotTests(unittest.TestCase):
 
     def user_explicit_repos_page(
         self,
-        repositories: list[dict[str, str]],
+        repositories: list[permission_types.Repository],
         *,
         has_next_page: bool,
         end_cursor: str | None = None,
-    ) -> dict[str, object]:
-        return {
-            "permissionsInfo": {
-                "repositories": {
-                    "nodes": [
-                        {"repository": repository, "updatedAt": "2026-05-27T00:00:00Z"}
-                        for repository in repositories
-                    ],
-                    "pageInfo": {"hasNextPage": has_next_page, "endCursor": end_cursor},
+    ) -> src.JSONDict:
+        return cast(
+            src.JSONDict,
+            {
+                "permissionsInfo": {
+                    "repositories": {
+                        "nodes": [
+                            {"repository": repository, "updatedAt": "2026-05-27T00:00:00Z"}
+                            for repository in repositories
+                        ],
+                        "pageInfo": {"hasNextPage": has_next_page, "endCursor": end_cursor},
+                    }
                 }
-            }
-        }
+            },
+        )
