@@ -53,10 +53,10 @@ curl -sS \
 Jaeger ingestion can lag by a few seconds. If the API returns `trace not
 found`, wait briefly and retry the same URL.
 
-For long runs such as `dev/test-command-permutations.py --trace`, fetch the
+For long runs such as `dev/test-end-to-end.py --trace`, fetch the
 slow traces as soon as the relevant command finishes, or rerun a focused case
 and fetch those traces immediately. On the sgdev test instance, a fully traced
-permutation run can emit thousands of sampled traces; the in-memory Jaeger data
+end-to-end run can emit thousands of sampled traces; the in-memory Jaeger data
 may evict or restart before the whole matrix finishes, returning `trace not
 found` or temporary 502s for earlier trace IDs.
 
@@ -90,18 +90,18 @@ benchmark CSVs in `/tmp` unless a human asks to preserve them.
 
 ## Evidence to collect
 
-To trace the full integration matrix, run the permutation script with its own
+To trace the full integration matrix, run the end-to-end script with its own
 `--trace` flag. The runner forwards it to every child CLI invocation, then
 tails each child run log and fetches all traced GraphQL Jaeger traces in the
 background while that child command is still running:
 
 ```bash
-uv run python dev/test-command-permutations.py \
+uv run python dev/test-end-to-end.py \
   --trace \
   --sample-interval 0 \
   --external-sample-interval 0 \
-  --results-json /tmp/src-auth-perms-sync-command-permutations-trace.json \
-  --results-csv /tmp/src-auth-perms-sync-command-permutations-trace.csv
+  --results-json /tmp/src-auth-perms-sync-end-to-end-trace.json \
+  --results-csv /tmp/src-auth-perms-sync-end-to-end-trace.csv
 ```
 
 Use `--jaeger-trace-limit N` to fetch only the `N` slowest GraphQL traces per
@@ -120,7 +120,7 @@ For each tested batch size and parallelism, record:
   `sql.conn.query`, and `database.PermsStore.LoadUserPermissions`
 - retries/timeouts from the CLI log
 
-In a large traced sgdev permutation run, all 42 cases passed in 5,936 seconds.
+In a large traced sgdev end-to-end run, all 42 cases passed in 5,936 seconds.
 The child logs contained 8,146 traced GraphQL requests. The expensive cases
 were still dominated by full snapshot capture:
 

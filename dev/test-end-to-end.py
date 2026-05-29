@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run src-auth-perms-sync command permutations and assert expected outcomes.
+"""Run src-auth-perms-sync end-to-end cases and assert expected outcomes.
 
 This is an integration smoke runner for a real Sourcegraph test instance. It
 uses the same CLI entrypoint an operator uses (`uv run src-auth-perms-sync`) and
@@ -597,7 +597,7 @@ def main() -> None:
             print(f"- {failure}", file=sys.stderr)
         raise SystemExit(1)
 
-    print("\nAll command permutations passed.")
+    print("\nAll end-to-end cases passed.")
     print(f"Cases passed: {len(all_results)}")
     print(f"Baseline repositories for {arguments.user}: {len(latest_baseline_repositories)}")
     print_memory_summary(all_results, arguments.memory_summary_limit)
@@ -624,7 +624,7 @@ def run_variants(arguments: argparse.Namespace) -> list[RunVariant]:
 
 def parse_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Run src-auth-perms-sync command permutations against a test instance.",
+        description="Run src-auth-perms-sync end-to-end cases against a test instance.",
     )
     parser.add_argument(
         "--src-auth-perms-sync-command",
