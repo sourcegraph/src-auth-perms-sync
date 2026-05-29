@@ -136,15 +136,23 @@ jobs:
 
           rm -rf build/release
           mkdir -p "${wheelhouse_dir}" "${dist_dir}"
+          shopt -s nullglob
 
-          uv build --wheel --out-dir "${dist_dir}" --no-create-gitignore
+          uv build --wheel --sdist --out-dir "${dist_dir}" --no-create-gitignore
           project_wheels=("${dist_dir}"/*.whl)
           if [[ "${#project_wheels[@]}" -ne 1 ]]; then
             echo "::error title=Unexpected wheel count::Expected one project wheel, found ${#project_wheels[@]}."
             exit 1
           fi
+          project_source_distributions=("${dist_dir}"/*.tar.gz)
+          if [[ "${#project_source_distributions[@]}" -ne 1 ]]; then
+            echo "::error title=Unexpected source distribution count::Expected one project source distribution, found ${#project_source_distributions[@]}."
+            exit 1
+          fi
           project_wheel_path="${project_wheels[0]}"
           project_wheel_name="$(basename "${project_wheel_path}")"
+          project_source_distribution_path="${project_source_distributions[0]}"
+          project_source_distribution_name="$(basename "${project_source_distribution_path}")"
           if [[ ! -f "${project_wheel_path}" ]]; then
             echo "::error title=Missing project wheel::Expected ${project_wheel_path} to exist."
             exit 1
@@ -221,6 +229,8 @@ jobs:
           echo "checksum_path=${checksum_path}" >> "${GITHUB_OUTPUT}"
           echo "project_wheel_path=${project_wheel_path}" >> "${GITHUB_OUTPUT}"
           echo "project_wheel_name=${project_wheel_name}" >> "${GITHUB_OUTPUT}"
+          echo "project_source_distribution_path=${project_source_distribution_path}" >> "${GITHUB_OUTPUT}"
+          echo "project_source_distribution_name=${project_source_distribution_name}" >> "${GITHUB_OUTPUT}"
 
       - name: Validate offline install from tarball
         run: |
@@ -244,6 +254,7 @@ jobs:
         run: |
           release_tag="${{ steps.release.outputs.tag }}"
           project_wheel_name="${{ steps.build.outputs.project_wheel_name }}"
+          project_source_distribution_name="${{ steps.build.outputs.project_source_distribution_name }}"
           notes_path="build/release/release-notes.md"
           cat > "${notes_path}" <<EOF
           ## Customer install
@@ -273,7 +284,9 @@ jobs:
           \`\`\`
 
           The tarball includes this project, \`src-py-lib\`, and all runtime wheels.
-          Verify the download with the matching \`.sha256\` file.
+          Verify the tarball downloads with the matching \`.sha256\` files.
+          The GitHub release also includes the same \`${project_wheel_name}\` and
+          \`${project_source_distribution_name}\` files uploaded to PyPI.
 
           ### Connected PyPI install
 
@@ -297,6 +310,7 @@ jobs:
             ${{ steps.build.outputs.asset_path }}
             ${{ steps.build.outputs.checksum_path }}
             ${{ steps.build.outputs.project_wheel_path }}
+            ${{ steps.build.outputs.project_source_distribution_path }}
             ${{ steps.notes.outputs.path }}
 
       - name: Upload PyPI artifact
@@ -304,7 +318,9 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: pypi-distributions
-          path: ${{ steps.build.outputs.project_wheel_path }}
+          path: |
+            ${{ steps.build.outputs.project_wheel_path }}
+            ${{ steps.build.outputs.project_source_distribution_path }}
 
       - name: Publish GitHub release assets
         env:
@@ -314,11 +330,12 @@ jobs:
           asset_path="${{ steps.build.outputs.asset_path }}"
           checksum_path="${{ steps.build.outputs.checksum_path }}"
           project_wheel_path="${{ steps.build.outputs.project_wheel_path }}"
+          project_source_distribution_path="${{ steps.build.outputs.project_source_distribution_path }}"
           notes_path="${{ steps.notes.outputs.path }}"
           release_assets=("${asset_path}" "${checksum_path}")
 
           if [[ "${{ matrix.platform }}" == "linux-x86_64" ]]; then
-            release_assets+=("${project_wheel_path}")
+            release_assets+=("${project_wheel_path}" "${project_source_distribution_path}")
           fi
 
           if gh release view "${release_tag}" >/dev/null 2>&1; then
@@ -354,3 +371,4 @@ jobs:
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: dist
+          skip-existing: true
