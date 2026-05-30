@@ -95,8 +95,9 @@ To trace the full integration matrix, run the end-to-end script with its own
 tails each child run log and fetches all traced GraphQL Jaeger traces in the
 background while that child command is still running. The runner uses
 `src-py-lib` Config parsing, logging, Sourcegraph endpoint normalization,
-`SourcegraphClient.fetch_jaeger_trace_summary()`, and a shared HTTP pool, so
-trace summary and retry behavior match the CLI's Sourcegraph client:
+`SourcegraphClient.fetch_jaeger_trace()`, `summarize_jaeger_trace()`, and a
+shared HTTP pool, so trace fetch and summary behavior match the CLI's
+Sourcegraph client:
 
 ```bash
 uv run python dev/test-end-to-end.py \
@@ -116,11 +117,35 @@ The runner writes trace summaries incrementally as JSON Lines. By default, it
 uses a sibling of `--results-json` or `--results-csv`, named
 `*-jaeger-traces.jsonl`. Override this with `--jaeger-trace-jsonl PATH`.
 
+The runner also writes complete raw Jaeger trace payloads for in-depth
+follow-up. By default, it uses a sibling directory named `*-jaeger-traces`.
+Override this with `--jaeger-trace-dir PATH`. Each file is stored by variant,
+iteration, case, and trace ID:
+
+```text
+<trace-dir>/
+  candidate/
+    iteration-0001/
+      set-full-no-backup-apply/
+        <trace-id>.json
+```
+
+Each raw trace file includes:
+
+- `trace_request`: CLI-side correlation metadata from the HTTP request and the
+  surrounding `graphql_query` event, including query name, page number, page
+  size, cursor presence, query byte count, variable names, response fields,
+  status, and timing. If `src-py-lib` later logs sanitized GraphQL variable
+  values, the same field will include them as `variables`, `input_variables`,
+  or `variable_values`.
+- `jaeger_summary`: compact hot-operation and GraphQL-operation summary.
+- `jaeger_trace`: the complete Jaeger trace JSON returned by Sourcegraph.
+
 The shared `src-py-lib` `stream_jaeger_trace_summaries()` helper now fetches in
 parallel for in-process Sourcegraph clients. The end-to-end script still uses a
 bounded global worker pool because the traced requests happen in child
 processes and are discovered by tailing their JSON logs. Tune this with
-`--jaeger-trace-parallelism N` (default 16). The runner drains outstanding
+`--jaeger-trace-parallelism N` (default 8). The runner drains outstanding
 background collectors once at the end, before it writes JSON/CSV results, so
 Jaeger collection does not add a blocking phase between child cases.
 
@@ -135,6 +160,46 @@ For each tested batch size and parallelism, record:
 - Jaeger counts and summed duration for `GraphQL Request`, `repos.Get`,
   `sql.conn.query`, and `database.PermsStore.LoadUserPermissions`
 - retries/timeouts from the CLI log
+
+## Monitor Sourcegraph pod load during e2e runs
+
+Prefer running the end-to-end script as the single orchestrator. It can start
+the Sourcegraph pod/Postgres monitor, collect Jaeger traces in parallel with
+each child CLI command, and write all artifact paths into the result JSON:
+
+```bash
+uv run python dev/test-end-to-end.py \
+  --trace \
+  --monitor-sourcegraph-load \
+  --sample-interval 0 \
+  --external-sample-interval 0 \
+  --results-json /tmp/src-auth-perms-sync-end-to-end-trace.json \
+  --results-csv /tmp/src-auth-perms-sync-end-to-end-trace.csv
+```
+
+By default, monitor output is written beside `--results-json` or
+`--results-csv` as `*-sourcegraph-load`, and the monitor's own stdout/stderr is
+written to `*-sourcegraph-load.log`. Override the location with
+`--monitor-output-dir PATH`. Tune Kubernetes targets and sample intervals with
+the `--monitor-*` flags if the test namespace or pod names differ.
+
+The lower-level helper remains available for focused profiling outside a full
+e2e run:
+
+```bash
+dev/monitor-sourcegraph-load.sh \
+  --namespace m \
+  --output-dir /tmp/src-auth-perms-sync-sourcegraph-load-$(date -u +%Y%m%d-%H%M%S)
+```
+
+Stop the helper with Ctrl-C after the e2e run finishes, or add
+`--duration-seconds N`. The script samples Kubernetes CPU/memory, frontend and
+Postgres processes, cgroup CPU/memory pressure, Postgres active queries/waits/locks,
+`pg_stat_statements` when enabled, and frontend logs. Outputs are timestamped
+files in the selected directory. On startup, it runs `CREATE EXTENSION IF NOT
+EXISTS pg_stat_statements` and `pg_stat_statements_reset()` through
+`kubectl exec` against `pod/pgsql-0`, so the statement summary starts clean for
+the monitored run.
 
 In a traced sgdev end-to-end run after the matrix was trimmed to avoid
 overlapping code paths, all 36 cases passed. Child command time summed to about

@@ -38,15 +38,25 @@ query CountUsers {
 }
 """
 
-QUERY_USERS = """
-query ListUsers($first: Int!, $after: String) {
-  users(first: $first, after: $after) {
-    nodes {
+USER_EMAIL_FIELDS = """      emails {
+        email
+        verified
+      }
+"""
+
+
+def query_users(*, include_emails: bool = False) -> str:
+    """Return the users page query, adding email fields only when requested."""
+    email_fields = USER_EMAIL_FIELDS if include_emails else ""
+    return f"""
+query ListUsers($first: Int!, $after: String) {{
+  users(first: $first, after: $after) {{
+    nodes {{
       id
       username
       builtinAuth
-      externalAccounts(first: 50) {
-        nodes {
+{email_fields}      externalAccounts(first: 50) {{
+        nodes {{
           serviceType
           serviceID
           clientID
@@ -56,10 +66,13 @@ query ListUsers($first: Int!, $after: String) {
           # Admin. Returns null for serviceType where the resolver does
           # not expose data (e.g. plain GitHub OAuth without SSO).
           accountData
-        }
-      }
-    }
-    pageInfo { hasNextPage endCursor }
-  }
-}
+        }}
+      }}
+    }}
+    pageInfo {{ hasNextPage endCursor }}
+  }}
+}}
 """
+
+
+QUERY_USERS = query_users()

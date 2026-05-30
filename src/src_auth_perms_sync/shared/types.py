@@ -30,11 +30,17 @@ class ExternalAccountConnection(TypedDict):
     nodes: list[ExternalAccount]
 
 
+class UserEmail(TypedDict):
+    email: str
+    verified: bool
+
+
 class User(TypedDict):
     id: str
     username: str
     builtinAuth: bool
     externalAccounts: ExternalAccountConnection
+    emails: NotRequired[list[UserEmail]]
 
 
 @dataclass(frozen=True, slots=True)

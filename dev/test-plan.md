@@ -118,6 +118,71 @@ These numbers don't have published baselines yet; this run *creates*
 them. The deliverable is "we now know `--set --apply` with `--parallelism 16`
 hits N MB RSS and W seconds of snapshot wall-clock at G grants."
 
+### Memory-per-grant model
+
+Generate exact users × repos maps and, when ready, run them through the CLI:
+
+```bash
+uv run python dev/run-memory-model-sweep.py
+
+uv run python dev/run-memory-model-sweep.py \
+  --run \
+  --parallelism 1
+```
+
+The runner writes generated maps and `results.json` under
+`src-auth-perms-sync-runs/<endpoint>/memory-model-sweep/<timestamp>/`.
+It uses an inventory-aware `--cases auto` sweep and dry-run mode by default.
+On an instance with 1K+ visible repos, `auto` includes repo-axis points up to
+1K repos and mixed cases up to 100K planned grants. Use explicit cases for
+larger stress points, and use `--mode apply-no-backup --allow-apply` only on a
+scratch instance:
+
+```bash
+uv run python dev/run-memory-model-sweep.py \
+  --cases '1x1,10000x1,1x1000,100x1000,1000x1000,10000x1000' \
+  --run \
+  --parallelism 1
+```
+
+Fit memory from repeated e2e JSON results instead of dividing one run's
+`peak_rss_mb` by one run's grants:
+
+```bash
+uv run python dev/analyze-memory.py results/*.json \
+  --command set_full \
+  --case-regex 'set-full' \
+  --features users,repos,grants \
+  --estimate-users 10000 \
+  --estimate-repos 100
+```
+
+The analyzer fits:
+
+```text
+peak RSS MiB = intercept + users*b1 + repos*b2 + grants*b3
+```
+
+Use one command mode per fit (`set_full` with backup, `set_full --no-backup`,
+`restore`, etc.). Mixing modes smears fixed snapshot / apply costs into the
+per-grant coefficient.
+
+On the sgdev test instance with 10,001 users and 1,023 visible repos, a
+dry-run `10000x1000` case planned 10M grants. Before the lazy-union planner,
+it measured about 651 MiB peak RSS; after Phase 1 in
+[mapping-efficiency.md](./mapping-efficiency.md), the same case measured about
+68 MiB. Re-measure after meaningful mapping or snapshot changes; these numbers
+describe dry-run planning memory, not apply mutation throughput.
+
+The e2e `workload` object now uses event-aware names. In older result JSON,
+`total_users: 40004` came from `apply_username_overwrites` and meant "username
+entries in mutation payloads" (`4 mutated repos × 10001 users`), not total
+Sourcegraph users. Likewise `repo_count: 575` came from a batch fetch and meant
+"grant rows fetched for 25 users" (`25 × 23`), not distinct repos. New results
+expose those as `apply_payload_grant_count` and
+`batch_fetched_grant_count_max`, plus canonical `memory_model_user_count`,
+`memory_model_repo_count`, and `memory_model_grant_count` fields for modeling.
+
 ---
 
 ## Failure injection (scenario e)

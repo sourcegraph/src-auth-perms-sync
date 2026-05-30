@@ -386,7 +386,14 @@ def cmd_set_additive_user(
         context = load_mapping_context(client, input_path, saml_groups_attribute_name_by_config_id)
         if context is None:
             return run_context.CommandData()
-        user = _resolve_user_identifier(client, user_identifier)
+        include_user_emails = permissions_mapping.mapping_rules_need_user_emails(
+            context.mapping_rules
+        )
+        user = _resolve_user_identifier(
+            client,
+            user_identifier,
+            include_emails=include_user_emails,
+        )
         if user_created_after is not None:
             candidate_user_ids = user_ids_created_on_or_after(client, user_created_after)
             if user["id"] not in candidate_user_ids:
@@ -446,6 +453,9 @@ def cmd_set_additive_users_without_explicit_perms(
         context = load_mapping_context(client, input_path, saml_groups_attribute_name_by_config_id)
         if context is None:
             return run_context.CommandData()
+        include_user_emails = permissions_mapping.mapping_rules_need_user_emails(
+            context.mapping_rules
+        )
         resolved_mappings = resolve_additive_mappings(context)
         candidates = permissions_sourcegraph.list_site_user_candidates(client, created_after_filter)
         log.info("Received %d non-deleted user candidate(s).", len(candidates))
@@ -455,7 +465,11 @@ def cmd_set_additive_users_without_explicit_perms(
         for candidate in candidates:
             if permissions_sourcegraph.user_has_explicit_repos(client, candidate["id"]):
                 continue
-            user = permissions_sourcegraph.get_user_by_id(client, candidate["id"])
+            user = permissions_sourcegraph.get_user_by_id(
+                client,
+                candidate["id"],
+                include_emails=include_user_emails,
+            )
             if user is None:
                 log.warning(
                     "Skipping user candidate %s: user no longer exists.",
@@ -492,18 +506,33 @@ def cmd_set_additive_users_without_explicit_perms(
 
 
 def _resolve_user_identifier(
-    client: src.SourcegraphClient, user_identifier: str
+    client: src.SourcegraphClient,
+    user_identifier: str,
+    *,
+    include_emails: bool = False,
 ) -> shared_types.User:
     """Resolve username/email input to one Sourcegraph user."""
     user: shared_types.User | None
     if "@" in user_identifier:
         user = permissions_sourcegraph.get_user_by_email(
-            client, user_identifier
-        ) or permissions_sourcegraph.get_user_by_username(client, user_identifier)
+            client,
+            user_identifier,
+            include_emails=include_emails,
+        ) or permissions_sourcegraph.get_user_by_username(
+            client,
+            user_identifier,
+            include_emails=include_emails,
+        )
     else:
         user = permissions_sourcegraph.get_user_by_username(
-            client, user_identifier
-        ) or permissions_sourcegraph.get_user_by_email(client, user_identifier)
+            client,
+            user_identifier,
+            include_emails=include_emails,
+        ) or permissions_sourcegraph.get_user_by_email(
+            client,
+            user_identifier,
+            include_emails=include_emails,
+        )
     if user is None:
         raise SystemExit(f"No Sourcegraph user found for {user_identifier!r}.")
     if user["username"] != user_identifier:

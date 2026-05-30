@@ -301,12 +301,12 @@ def _apply_repo_overwrite_plans(
 ) -> shared_types.MutationCounts:
     """Dispatch per-repo overwrite mutations with bounded in-flight work."""
     max_pending_futures = max(1, parallelism * 2)
-    total_users = sum(len(overwrite.usernames) for overwrite in overwrites)
+    payload_grant_count = sum(len(overwrite.usernames) for overwrite in overwrites)
     with src.event(
         "apply_username_overwrites",
         payload_count=len(overwrites),
         parallelism=parallelism,
-        total_users=total_users,
+        payload_grant_count=payload_grant_count,
         max_pending_futures=max_pending_futures,
     ) as batch_event:
         succeeded = 0

@@ -89,31 +89,56 @@ externalAccounts(first: 50) {
 }
 """
 
-QUERY_USER_BY_USERNAME = f"""
+USER_EMAIL_FIELDS = """
+emails {
+  email
+  verified
+}
+"""
+
+
+def user_fields(*, include_emails: bool = False) -> str:
+    """Return user fields, adding emails only when downstream matching needs them."""
+    if include_emails:
+        return f"{USER_FIELDS}\n{USER_EMAIL_FIELDS}"
+    return USER_FIELDS
+
+
+def query_user_by_username(*, include_emails: bool = False) -> str:
+    return f"""
 query UserByUsername($username: String!) {{
   user(username: $username) {{
-    {USER_FIELDS}
+    {user_fields(include_emails=include_emails)}
   }}
 }}
 """
 
-QUERY_USER_BY_EMAIL = f"""
+
+def query_user_by_email(*, include_emails: bool = False) -> str:
+    return f"""
 query UserByEmail($email: String!) {{
   user(email: $email) {{
-    {USER_FIELDS}
+    {user_fields(include_emails=include_emails)}
   }}
 }}
 """
 
-QUERY_USER_BY_ID = f"""
+
+def query_user_by_id(*, include_emails: bool = False) -> str:
+    return f"""
 query UserByID($id: ID!) {{
   node(id: $id) {{
     ... on User {{
-      {USER_FIELDS}
+      {user_fields(include_emails=include_emails)}
     }}
   }}
 }}
 """
+
+
+QUERY_USER_BY_USERNAME = query_user_by_username()
+QUERY_USER_BY_EMAIL = query_user_by_email()
+QUERY_USER_BY_ID = query_user_by_id()
 
 QUERY_SITE_USERS = """
 query SiteUsers($limit: Int!, $offset: Int!, $createdAt: SiteUsersDateRangeInput) {

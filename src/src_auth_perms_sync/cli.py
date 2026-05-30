@@ -192,6 +192,14 @@ class SrcAuthPermissionsSyncConfig(src.SourcegraphClientConfig, src.LoggingConfi
         ge=1,
         help="Max attempts per HTTP request before giving up (default: 5)",
     )
+    http_timeout_seconds: float = src.config_field(
+        default=60.0,
+        env_var="SRC_AUTH_PERMS_SYNC_HTTP_TIMEOUT_SECONDS",
+        cli_flag="--http-timeout-seconds",
+        metavar="SECONDS",
+        gt=0,
+        help="HTTP read timeout per request in seconds (default: 60)",
+    )
     sample_interval: float = src.config_field(
         default=10.0,
         env_var="SRC_AUTH_PERMS_SYNC_SAMPLE_INTERVAL",
@@ -387,6 +395,7 @@ def run_fields(
         "explicit_permissions_batch_size": config.explicit_permissions_batch_size,
         "trace": config.trace,
         "max_attempts": config.max_attempts,
+        "http_timeout_seconds": config.http_timeout_seconds,
         "no_backup": config.no_backup,
         "sample_interval": config.sample_interval,
         "user_created_after": config.created_after,
@@ -404,6 +413,7 @@ def run_with_client(
 ) -> None:
     """Create a client, run the selected command, and always close HTTP resources."""
     http = src.HTTPClient(
+        timeout=config.http_timeout_seconds,
         user_agent="src-auth-perms-sync/0.1 (+python)",
         max_attempts=config.max_attempts,
         max_connections=config.parallelism,

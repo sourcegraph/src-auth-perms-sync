@@ -230,7 +230,7 @@ def capture_explicit_grants(
                 user["username"]: repository_ids_by_user_id.get(user["id"], [])
                 for user in batch_users
             }
-            fetch_event["repo_count"] = sum(
+            fetch_event["fetched_grant_count"] = sum(
                 len(repository_ids) for repository_ids in repository_ids_by_username.values()
             )
             fetch_event["per_user_failures"] = failures

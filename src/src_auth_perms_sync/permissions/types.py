@@ -85,11 +85,14 @@ class CodeHostConnectionMatcher(TypedDict, total=False):
 
 class UsersFilter(TypedDict, total=False):
     authProvider: AuthProviderMatcher
+    emails: list[str]
+    usernames: list[str]
 
 
 class ReposFilter(TypedDict, total=False):
     codeHostConnection: CodeHostConnectionMatcher
-    regex: str
+    names: list[str]
+    regexes: list[str]
 
 
 class MappingRule(TypedDict):

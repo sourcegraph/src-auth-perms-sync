@@ -1,11 +1,11 @@
 """Permission mapping resolution: validate rules and match users/repos.
 
 Each mapping rule has a `users:` section and a `repos:` section, each
-containing one or more matchers (today: `authProvider`,
-`codeHostConnection`, and `regex`). Within a matcher, the supplied
-keys AND together against the discovered auth-provider / external-
-service entries. Across mapping rules, `cmd_set` unions the per-repo
-user sets at apply time — see `src/src_auth_perms_sync/permissions/types.py` for the rationale.
+containing one or more matchers. Within a matcher, the supplied keys
+AND together against the discovered auth-provider / external-service
+entries. Across sibling matchers, results intersect. Across mapping
+rules, `cmd_set` unions the per-repo user sets at apply time — see
+`src/src_auth_perms_sync/permissions/types.py` for the rationale.
 
 Adding a new matcher type:
 
@@ -103,7 +103,13 @@ def validate_mapping_rules(rules: list[permission_types.MappingRule]) -> None:
         )
 
 
-_KNOWN_USER_MATCHERS: set[str] = {"authProvider"}
+_KNOWN_USER_MATCHERS: set[str] = {"authProvider", "emails", "usernames"}
+_KNOWN_REPO_MATCHERS: set[str] = {"codeHostConnection", "names", "regexes"}
+
+
+def mapping_rules_need_user_emails(mapping_rules: list[permission_types.MappingRule]) -> bool:
+    """Return whether any mapping rule filters users by verified email."""
+    return any("emails" in mapping["users"] for mapping in mapping_rules)
 
 
 def _validate_users_section(section: dict[str, object], prefix: str) -> list[str]:
@@ -123,6 +129,10 @@ def _validate_users_section(section: dict[str, object], prefix: str) -> list[str
             )
         if "samlGroup" in auth_provider:
             errors.extend(_validate_saml_group(auth_provider, prefix))
+    if "emails" in section:
+        errors.extend(_validate_string_list(section["emails"], prefix, "users.emails"))
+    if "usernames" in section:
+        errors.extend(_validate_string_list(section["usernames"], prefix, "users.usernames"))
     return errors
 
 
@@ -157,7 +167,7 @@ def _validate_repos_section(section: dict[str, object], prefix: str) -> list[str
     """Reject unknown matcher keys and validate `codeHostConnection:` shape."""
     errors: list[str] = []
     for key in section:
-        if key not in {"codeHostConnection", "regex"}:
+        if key not in _KNOWN_REPO_MATCHERS:
             errors.append(f"{prefix}: unknown repos matcher {key!r}")
     code_host_section = cast(dict[str, object] | None, section.get("codeHostConnection"))
     if code_host_section is not None:
@@ -190,17 +200,46 @@ def _validate_repos_section(section: dict[str, object], prefix: str) -> list[str
                 f"key/value pairs to deep-subset-match against the service's "
                 f"parsed config (got {type(code_host_section['config']).__name__})"
             )
-    regex = section.get("regex")
-    if regex is not None:
-        if not isinstance(regex, str):
-            errors.append(f"{prefix}: repos.regex must be a string (got {type(regex).__name__})")
-        elif not regex:
-            errors.append(f"{prefix}: repos.regex is an empty string")
-        else:
-            try:
-                re.compile(regex)
-            except re.error as exception:
-                errors.append(f"{prefix}: repos.regex is not a valid Python regex: {exception}")
+    if "names" in section:
+        errors.extend(_validate_string_list(section["names"], prefix, "repos.names"))
+    regexes = section.get("regexes")
+    if regexes is not None:
+        errors.extend(_validate_regexes(regexes, prefix))
+    return errors
+
+
+def _validate_regexes(value: object, prefix: str) -> list[str]:
+    """Validate list-based regex filters."""
+    errors = _validate_string_list(value, prefix, "repos.regexes")
+    if errors:
+        return errors
+
+    for index, pattern in enumerate(cast(list[str], value)):
+        try:
+            re.compile(pattern)
+        except re.error as exception:
+            errors.append(
+                f"{prefix}: repos.regexes[{index}] is not a valid Python regex: {exception}"
+            )
+    return errors
+
+
+def _validate_string_list(value: object, prefix: str, path: str) -> list[str]:
+    """Validate list-based exact-match filters."""
+    if not isinstance(value, list):
+        return [f"{prefix}: {path} must be a list of strings (got {type(value).__name__})"]
+
+    items = cast(list[object], value)
+    errors: list[str] = []
+    if not items:
+        errors.append(f"{prefix}: {path} is empty (matches nothing)")
+    for index, item in enumerate(items):
+        if not isinstance(item, str):
+            errors.append(
+                f"{prefix}: {path}[{index}] must be a string (got {type(item).__name__} {item!r})"
+            )
+        elif not item:
+            errors.append(f"{prefix}: {path}[{index}] is an empty string")
     return errors
 
 
@@ -243,6 +282,15 @@ def resolve_users(
                     saml_groups_attribute_names,
                 )
             }
+        elif key == "emails":
+            current_ids = {
+                user["id"] for user in _users_matching_emails(cast(list[str], matcher), all_users)
+            }
+        elif key == "usernames":
+            current_ids = {
+                user["id"]
+                for user in _users_matching_usernames(cast(list[str], matcher), all_users)
+            }
         else:
             # validate_mapping_rules catches this earlier with a clearer
             # message; this only fires for programmatic callers.
@@ -273,11 +321,49 @@ def user_matches_users_section(
                 saml_groups_attribute_names,
             ):
                 return False
+        elif key == "emails":
+            if not _user_matches_emails(user, cast(list[str], matcher)):
+                return False
+        elif key == "usernames":
+            if user["username"] not in cast(list[str], matcher):
+                return False
         else:
             # validate_mapping_rules catches this earlier with a clearer
             # message; this only fires for programmatic callers.
             raise ValueError(f"unknown users matcher {key!r}")
     return True
+
+
+def _users_matching_emails(
+    emails: list[str], all_users: list[shared_types.User]
+) -> list[shared_types.User]:
+    """Return users with at least one verified email in `emails`."""
+    matched = [user for user in all_users if _user_matches_emails(user, emails)]
+    log.info("    emails → %d user(s) matched %d email(s)", len(matched), len(set(emails)))
+    return matched
+
+
+def _user_matches_emails(user: shared_types.User, emails: list[str]) -> bool:
+    """Match only verified emails, mirroring Sourcegraph's `user(email:)` lookup."""
+    email_set = set(emails)
+    return any(
+        user_email["verified"] and user_email["email"] in email_set
+        for user_email in user.get("emails", [])
+    )
+
+
+def _users_matching_usernames(
+    usernames: list[str], all_users: list[shared_types.User]
+) -> list[shared_types.User]:
+    """Return users whose Sourcegraph username is listed exactly."""
+    username_set = set(usernames)
+    matched = [user for user in all_users if user["username"] in username_set]
+    log.info(
+        "    usernames → %d user(s) matched %d username(s)",
+        len(matched),
+        len(username_set),
+    )
+    return matched
 
 
 def _users_matching_auth_provider(
@@ -449,7 +535,7 @@ def resolve_repos(
 
     matched_ids: set[str] | None = None
     repo_index: dict[str, permission_types.Repository] = {}
-    ordered_keys = [key for key in ("codeHostConnection", "regex") if key in section]
+    ordered_keys = [key for key in ("codeHostConnection", "names", "regexes") if key in section]
     for key in ordered_keys:
         matcher = section[key]
         if key == "codeHostConnection":
@@ -458,13 +544,20 @@ def resolve_repos(
                 services_by_id,
                 repos_by_external_service_id,
             )
-        elif key == "regex":
+        elif key == "names":
             candidate_repos = (
                 [repo_index[repo_id] for repo_id in matched_ids]
                 if matched_ids is not None
                 else list(all_repos_by_id.values())
             )
-            repos = _repos_matching_regex(cast(str, matcher), candidate_repos)
+            repos = _repos_matching_names(cast(list[str], matcher), candidate_repos)
+        elif key == "regexes":
+            candidate_repos = (
+                [repo_index[repo_id] for repo_id in matched_ids]
+                if matched_ids is not None
+                else list(all_repos_by_id.values())
+            )
+            repos = _repos_matching_regexes(cast(list[str], matcher), candidate_repos)
         else:
             # validate_mapping_rules catches this earlier with a clearer
             # message; this only fires for programmatic callers.
@@ -477,6 +570,16 @@ def resolve_repos(
             return []
     assert matched_ids is not None
     return [repo_index[repo_id] for repo_id in matched_ids]
+
+
+def _repos_matching_names(
+    names: list[str], repos: list[permission_types.Repository]
+) -> list[permission_types.Repository]:
+    """Return repos whose Sourcegraph name is listed exactly."""
+    name_set = set(names)
+    matched = [repo for repo in repos if repo["name"] in name_set]
+    log.info("    names → %d repo(s) matched %d name(s)", len(matched), len(name_set))
+    return matched
 
 
 def _repos_matching_code_host_connection(
@@ -505,22 +608,26 @@ def _repos_matching_code_host_connection(
     return list(matched_repos.values())
 
 
-def _repos_matching_regex(
-    pattern: str, repos: list[permission_types.Repository]
+def _repos_matching_regexes(
+    patterns: list[str], repos: list[permission_types.Repository]
 ) -> list[permission_types.Repository]:
-    """Return repos whose name matches `pattern` using Python `re`.
+    """Return repos whose name matches any pattern using Python `re`.
 
     Sourcegraph repo names usually omit the URL scheme (for example
     `github.com/example/repo`). To keep URL-looking operator patterns
     useful, also test `https://<repo name>`.
     """
-    compiled = re.compile(pattern)
+    compiled_patterns = [re.compile(pattern) for pattern in patterns]
     matched = [
         repo
         for repo in repos
-        if compiled.search(repo["name"]) or compiled.search(f"https://{repo['name']}")
+        if any(
+            compiled_pattern.search(repo["name"])
+            or compiled_pattern.search(f"https://{repo['name']}")
+            for compiled_pattern in compiled_patterns
+        )
     ]
-    log.info("    regex → %d repo(s) matched %r", len(matched), pattern)
+    log.info("    regexes → %d repo(s) matched %d pattern(s)", len(matched), len(patterns))
     return matched
 
 

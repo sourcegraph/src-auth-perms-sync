@@ -180,6 +180,15 @@ class CliConfigTests(unittest.TestCase):
         with self.assertRaisesRegex(shared_config.ConfigError, "greater than or equal to 1"):
             load_config_from_env(SRC_AUTH_PERMS_SYNC_EXPLICIT_PERMISSIONS_BATCH_SIZE="0")
 
+    def test_http_timeout_config_is_loaded_from_env(self) -> None:
+        config = load_config_from_env(SRC_AUTH_PERMS_SYNC_HTTP_TIMEOUT_SECONDS="90")
+
+        self.assertEqual(90, config.http_timeout_seconds)
+
+    def test_http_timeout_rejects_values_at_or_below_zero(self) -> None:
+        with self.assertRaisesRegex(shared_config.ConfigError, "greater than 0"):
+            load_config_from_env(SRC_AUTH_PERMS_SYNC_HTTP_TIMEOUT_SECONDS="0")
+
     def test_trace_config_is_loaded_from_env(self) -> None:
         config = load_config_from_env(SRC_AUTH_PERMS_SYNC_TRACE="true")
 
@@ -211,6 +220,33 @@ class CliConfigTests(unittest.TestCase):
 
         self.assertEqual(1, len(captured_clients))
         self.assertTrue(captured_clients[0].trace)
+
+    def test_run_with_client_uses_configured_http_timeout(self) -> None:
+        configuration = make_config(http_timeout_seconds=75.0)
+        command = cli.resolve_command(configuration)
+        captured_clients: list[src.SourcegraphClient] = []
+
+        def capture_client(
+            _config: cli.SrcAuthPermissionsSyncConfig,
+            _command: cli.ResolvedCommand,
+            client: src.SourcegraphClient,
+            _worker_pool: ThreadPoolExecutor,
+        ) -> None:
+            captured_clients.append(client)
+
+        with (
+            ThreadPoolExecutor(max_workers=1) as worker_pool,
+            mock.patch.object(cli, "run_command", side_effect=capture_client),
+        ):
+            cli.run_with_client(
+                configuration,
+                command,
+                "https://sourcegraph.example.com",
+                worker_pool,
+            )
+
+        self.assertEqual(1, len(captured_clients))
+        self.assertEqual(75.0, captured_clients[0].http.timeout)
 
     def test_validate_config_rejects_multiple_set_modes(self) -> None:
         self.assert_config_error(
@@ -249,6 +285,7 @@ class CliConfigTests(unittest.TestCase):
         self.assertEqual(True, fields["apply_flag"])
         self.assertEqual(25, fields["explicit_permissions_batch_size"])
         self.assertEqual(False, fields["trace"])
+        self.assertEqual(60.0, fields["http_timeout_seconds"])
 
     def test_run_command_passes_primary_data_to_combined_sync(self) -> None:
         configuration = make_config(get=True, sync_saml_organizations=True)
