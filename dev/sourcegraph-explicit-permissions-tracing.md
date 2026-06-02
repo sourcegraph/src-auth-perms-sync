@@ -220,6 +220,49 @@ Fetch Jaeger traces immediately for long runs. In that same full matrix, older
 trace IDs were no longer available by the time the run finished. Focused reruns
 with immediate fetches gave stable Jaeger data.
 
+## Stress-run findings
+
+The deliberately hard stress map used about 10,001 users and 1,000 repos,
+planning roughly 10.23 million explicit grants. The sgdev instance exposes
+1,000 `test-repo-*` repos today, not the intended 1 million, so the current
+stress profile hammers a 10k-user × 1k-repo permission matrix.
+
+The stress run showed a clear server-side cliff:
+
+| Case | Elapsed | Notes |
+| --- | ---: | --- |
+| `set-full-dry-run` | 214s | planning/snapshot only, peak CLI RSS about 669 MiB |
+| `set-full-no-backup-apply` | 4,067s | ~1,023 overwrites; hit `repo not found` |
+| `restore-full-no-backup-cleanup` | 5,679s | re-snapshot and huge overwrite cleanup |
+
+Postgres was busy but not obviously resource-starved:
+
+| Component | Max CPU | Max memory | Notes |
+| --- | ---: | ---: | --- |
+| `pgsql-0/pgsql` | ~1235m | ~3231 MiB | below the 4G memory limit; no observed OOM/throttling |
+| `sourcegraph-frontend` | ~954m | ~561 MiB | frontend was not memory-bound |
+| `src-serve-git/src-cli` | ~1610m | ~388 MiB | incidental load during the same window |
+
+`pg_stat_statements` made the dominant work visible. The stress run spent most
+of its database time in explicit-permissions read and write helpers:
+
+| Sourcegraph operation | Calls | Total time | Mean time |
+| --- | ---: | ---: | ---: |
+| `permsStore.ListUserPermissions` | 19,974 | 30,862.6s | 1,545ms |
+| `permsStore.upsertUserRepoPermissions-range1` | 472 | 1,178.8s | 2,497ms |
+
+Compared with focused traces at normal scale, `ListUserPermissions` became much
+slower under the large explicit-perms state. This reinforces that the bottleneck
+is Sourcegraph server/database work, not local Python CPU. The CLI can avoid
+some redundant work, but Sourcegraph still needs a bulk read path and probably a
+more efficient bulk overwrite path for very large explicit permission sets.
+
+One live-instance behavior is now expected: if Sourcegraph returns a GraphQL
+application error showing that a repo/user disappeared between planning and the
+mutation, `src-auth-perms-sync` logs a skipped mutation and continues. The next
+scheduled run will re-plan against the then-current users/repos. Other GraphQL
+application errors still fail normally.
+
 For current `src-auth-perms-sync`, `UserExplicitReposBatch` requests only repo
 IDs from `User.permissionsInfo.repositories(source: API)`. A focused traced
 batch for one user with 19 explicit repos showed per-user fanout:
@@ -319,6 +362,15 @@ Important requirements:
 Expected benefit: replace hundreds or thousands of per-repo resolver SQL spans
 per request with one indexed `user_repo_permissions` join per user batch.
 
+The stress profile also needs attention on the write path. A 10k-user ×
+1k-repo full set planned about 10.23 million grants. The apply path then spent
+about 67.8 minutes before a live/deleted-repo race interrupted the run, with
+`pg_stat_statements` showing `permsStore.upsertUserRepoPermissions-range1` at
+472 calls, 1,178.8 seconds total, and 2.5 seconds mean. A purpose-built bulk
+overwrite API that accepts many repo/user edges at once, streams or stages the
+input server-side, and avoids repeated per-repo permission reconciliation would
+make worst-case full syncs much safer.
+
 ## Copy/paste request
 
 Title: Add a bulk GraphQL read path for explicit repository permissions
@@ -352,3 +404,6 @@ Acceptance criteria:
   latency visible.
 - `src-auth-perms-sync` can replace its aliased
   `User.permissionsInfo.repositories(source: API)` calls with this API.
+- Follow-up: evaluate a bulk overwrite API for large full-set applies. The
+  stress run planned about 10.23 million grants and observed
+  `permsStore.upsertUserRepoPermissions-range1` averaging about 2.5s per call.

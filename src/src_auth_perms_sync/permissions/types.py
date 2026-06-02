@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Literal, NotRequired, TypeAlias, TypedDict
+from typing import Any, Literal, TypeAlias, TypedDict
 
 from ..shared import types as shared_types
 
@@ -16,7 +16,7 @@ SetCommandMode: TypeAlias = Literal[
 
 @dataclass(frozen=True)
 class SetCommandOptions:
-    """Operator-selected mode for `--set`."""
+    """Operator-selected mode for the set command."""
 
     mode: SetCommandMode
     user_identifier: str | None = None
@@ -76,29 +76,34 @@ class AuthProviderMatcher(TypedDict, total=False):
 class CodeHostConnectionMatcher(TypedDict, total=False):
     """Match repos by Sourcegraph code-host connection discovery fields."""
 
-    id: int
     kind: str
     displayName: str
     url: str
-    config: dict[str, Any]
+    username: str
 
 
-class UsersFilter(TypedDict, total=False):
+class UserSelector(TypedDict, total=False):
+    """User selectors. Fields AND together; values inside each field OR."""
+
     authProvider: AuthProviderMatcher
     emails: list[str]
+    emailRegexes: list[str]
     usernames: list[str]
+    usernameRegexes: list[str]
 
 
-class ReposFilter(TypedDict, total=False):
+class RepositorySelector(TypedDict, total=False):
+    """Repository selectors. Fields AND together; values inside each field OR."""
+
     codeHostConnection: CodeHostConnectionMatcher
     names: list[str]
-    regexes: list[str]
+    nameRegexes: list[str]
 
 
 class MappingRule(TypedDict):
-    name: NotRequired[str]
-    users: UsersFilter
-    repos: ReposFilter
+    name: str
+    users: UserSelector
+    repos: RepositorySelector
 
 
 class ConfigFile(TypedDict, total=False):

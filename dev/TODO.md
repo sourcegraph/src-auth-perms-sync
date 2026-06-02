@@ -1,5 +1,35 @@
 # TODO
 
+## High priority: Customer feedback
+
+- Allow use as either CLI or importable module
+- Take maps.yaml as a constructor object?
+
+## High priority: Instrument with OpenTelemetry — in progress
+
+- [ ] Add OTel-native traces, metrics, and wide log events in `src-py-lib`.
+- [ ] Add shared OTel bootstrap config/helpers with `--otel` and standard
+  `OTEL_*` env-var-backed CLI args.
+- [ ] Replace custom trace-context propagation with OTel W3C propagation.
+- [ ] Instrument shared HTTP and GraphQL clients manually, preserving safe
+  sanitized attributes and Sourcegraph-specific metadata.
+- [ ] Rename Sourcegraph debug tracing from `--trace` to `--fetch-sg-traces`.
+- [ ] Wire `src-auth-perms-sync` to the shared OTel bootstrap without doing
+  import-time logger/provider setup.
+- [ ] Verify pyright, tests, and CLI help in both repos.
+
+## High priority: Reduce worst-case full-permission sync load
+
+- Use the stress-run evidence in
+  [sourcegraph-explicit-permissions-tracing.md](./sourcegraph-explicit-permissions-tracing.md)
+  to request Sourcegraph bulk explicit-permission read and write APIs.
+- Add an explicit destructive/performance-test mode to the e2e runner so giant
+  stress runs can skip or defer full restore cleanup when the goal is finding
+  the server-side breaking point.
+- Revisit full snapshot capture once Sourcegraph exposes a bulk read path;
+  replace aliased `User.permissionsInfo.repositories(source: API)` calls before
+  raising concurrency further.
+
 ## Medium priority: Lightweight incremental updates
 
 - When a new user's account is created, or a new repo is synced from a code host,

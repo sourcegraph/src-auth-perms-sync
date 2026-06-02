@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Generate and optionally run maps.yaml files for memory-model sweeps.
 
-The generated maps use exact `users.usernames` and `repos.names` filters so
-each case has a known planned grant count: `users * repos`.
+The generated maps use exact `users.usernames` and `repos.names` filters.
+Different workload shapes stress different parts of mapping resolution and
+full-set planning, while preserving known selected user/repo/grant counts.
 
 By default this script only generates the maps. Pass `--run` to execute the
 CLI in dry-run mode. Pass `--mode apply-no-backup --allow-apply` only on a
@@ -24,7 +25,7 @@ import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal, cast
+from typing import Any, Literal, TypeAlias, cast
 from urllib.parse import urlsplit
 
 import src_py_lib as src
@@ -82,6 +83,27 @@ DEFAULT_REPO_POINTS = (1, 10, 100, 1000)
 DEFAULT_COMMAND = "uv run src-auth-perms-sync"
 LOG_PATH_PATTERN = re.compile(r"Writing log events to (.+?/log\.json)\.")
 RunMode = Literal["dry-run", "apply-no-backup"]
+SweepSuite = Literal["gentle", "breaking"]
+StressShape: TypeAlias = Literal[
+    "rectangle",
+    "user-shards",
+    "repo-shards",
+    "diagonal-shards",
+    "duplicate-rules",
+]
+STRESS_SHAPES: tuple[StressShape, ...] = (
+    "rectangle",
+    "user-shards",
+    "repo-shards",
+    "diagonal-shards",
+    "duplicate-rules",
+)
+BREAKING_SHAPES: tuple[StressShape, ...] = (
+    "rectangle",
+    "user-shards",
+    "repo-shards",
+    "duplicate-rules",
+)
 
 
 class SweepSourcegraphConfig(src.SourcegraphClientConfig):
@@ -90,18 +112,33 @@ class SweepSourcegraphConfig(src.SourcegraphClientConfig):
 
 @dataclass(frozen=True)
 class SweepCase:
-    """One users x repos planned-permissions case."""
+    """One generated workload case."""
 
     users: int
     repos: int
+    shape: StressShape = "rectangle"
+    rule_count: int = 1
 
     @property
     def grants(self) -> int:
-        return self.users * self.repos
+        """Final unique planned grants after map-entry unioning."""
+        return unique_grant_count(self)
+
+    @property
+    def raw_rule_grants(self) -> int:
+        """Total per-rule rectangle grants before cross-rule unioning."""
+        return raw_rule_grant_count(self)
+
+    @property
+    def map_rule_count(self) -> int:
+        return map_rule_count(self)
 
     @property
     def name(self) -> str:
-        return f"u{self.users:05d}-r{self.repos:05d}-g{self.grants:010d}"
+        return (
+            f"{self.shape}-m{self.map_rule_count:03d}-"
+            f"u{self.users:05d}-r{self.repos:05d}-g{self.grants:012d}"
+        )
 
 
 @dataclass(frozen=True)
@@ -140,8 +177,11 @@ def main() -> int:
     parser = build_parser()
     arguments = parser.parse_args()
     mode = cast(RunMode, arguments.mode)
+    suite = cast(SweepSuite, arguments.suite)
     if mode == "apply-no-backup" and not arguments.allow_apply:
         parser.error("--mode apply-no-backup requires --allow-apply")
+    if arguments.rule_count < 1:
+        parser.error("--rule-count must be >= 1")
 
     config = sourcegraph_config(arguments)
     output_dir = arguments.output_dir or default_output_dir(config.src_endpoint)
@@ -164,10 +204,13 @@ def main() -> int:
         inventory_repo_count = sum(service.repo_count for service in external_services)
         service = choose_external_service(external_services, arguments.external_service_id)
         total_user_count = count_users(client)
-        cases = requested_cases or default_cases_for_inventory(
+        base_cases = requested_cases or default_cases_for_inventory(
             total_user_count,
             service.repo_count,
+            suite=suite,
         )
+        shapes = parse_shapes(arguments.shapes, suite)
+        cases = expand_cases(base_cases, shapes, arguments.rule_count)
         max_users = max(sweep_case.users for sweep_case in cases)
         max_repos = max(sweep_case.repos for sweep_case in cases)
         usernames = list_usernames(client, max_users, arguments.page_size)
@@ -176,7 +219,14 @@ def main() -> int:
         client.http.close()
 
     generated_maps = write_maps(maps_dir, cases, usernames, repo_names, service)
-    write_manifest(output_dir, generated_maps, service, config.src_endpoint, inventory_repo_count)
+    write_manifest(
+        output_dir,
+        generated_maps,
+        service,
+        config.src_endpoint,
+        inventory_repo_count,
+        total_user_count,
+    )
     print(f"Generated {len(generated_maps)} maps.yaml file(s) under {maps_dir}")
     print(
         f"Selected code host: {service.display_name} id={service.database_id} "
@@ -227,12 +277,37 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--suite",
+        choices=("gentle", "breaking"),
+        default="gentle",
+        help=(
+            "Case-size preset. gentle keeps the previous low-risk auto sweep; "
+            "breaking adds larger dimensions intended to find the failure point."
+        ),
+    )
+    parser.add_argument(
         "--cases",
         default=DEFAULT_CASES,
         help=(
             "Comma-separated users x repos cases, e.g. '100x10,1000x25', "
             "or 'auto' for a gentle inventory-aware sweep. Default: auto."
         ),
+    )
+    parser.add_argument(
+        "--shapes",
+        default="auto",
+        help=(
+            "Comma-separated workload shapes: "
+            f"{', '.join(STRESS_SHAPES)}. "
+            "Default auto means rectangle for --suite gentle and a mixed set "
+            "for --suite breaking."
+        ),
+    )
+    parser.add_argument(
+        "--rule-count",
+        type=int,
+        default=10,
+        help="Target map-rule/selector count for multi-rule shapes (default: 10).",
     )
     parser.add_argument(
         "--external-service-id",
@@ -338,12 +413,37 @@ def parse_cases(raw_cases: str) -> list[SweepCase] | None:
     return cases
 
 
-def default_cases_for_inventory(user_count: int, repo_count: int) -> list[SweepCase]:
-    """Return a safe default sweep that covers user, repo, and grant axes."""
+def parse_shapes(raw_shapes: str, suite: SweepSuite) -> tuple[StressShape, ...]:
+    """Return workload shapes requested by the operator."""
+    if raw_shapes.strip().lower() == "auto":
+        return BREAKING_SHAPES if suite == "breaking" else ("rectangle",)
+
+    valid_shapes = set(STRESS_SHAPES)
+    shapes: list[StressShape] = []
+    for raw_shape in raw_shapes.split(","):
+        shape = raw_shape.strip().lower()
+        if not shape:
+            continue
+        if shape not in valid_shapes:
+            raise SystemExit(
+                f"Invalid shape {raw_shape!r}; expected one of {', '.join(STRESS_SHAPES)}"
+            )
+        shapes.append(shape)
+    if not shapes:
+        raise SystemExit("At least one --shapes entry is required")
+    return tuple(dict.fromkeys(shapes))
+
+
+def default_cases_for_inventory(
+    user_count: int, repo_count: int, *, suite: SweepSuite
+) -> list[SweepCase]:
+    """Return an inventory-aware sweep that covers user, repo, and grant axes."""
     if user_count < 1:
         raise SystemExit("Need at least one Sourcegraph user for an auto sweep")
     if repo_count < 1:
         raise SystemExit("Need at least one Sourcegraph repo for an auto sweep")
+    if suite == "breaking":
+        return breaking_cases_for_inventory(user_count, repo_count)
 
     user_points = bounded_points(user_count, DEFAULT_USER_POINTS)
     repo_points = bounded_points(repo_count, DEFAULT_REPO_POINTS)
@@ -362,6 +462,48 @@ def default_cases_for_inventory(user_count: int, repo_count: int) -> list[SweepC
     return unique_cases(cases)
 
 
+def breaking_cases_for_inventory(user_count: int, repo_count: int) -> list[SweepCase]:
+    """Return larger cases ordered from likely-safe to likely-breaking."""
+    capped_users = min(user_count, 10000)
+    capped_repos = min(repo_count, 50000)
+    candidate_dimensions = (
+        (1, capped_repos),
+        (100, capped_repos),
+        (1000, min(capped_repos, 1000)),
+        (capped_users, 1),
+        (capped_users, 100),
+        (capped_users, 1000),
+        (capped_users, 5000),
+        (capped_users, 10000),
+        (capped_users, 25000),
+        (capped_users, capped_repos),
+    )
+    cases = [
+        SweepCase(users=users, repos=repos)
+        for users, repos in candidate_dimensions
+        if users <= user_count and repos <= repo_count
+    ]
+    return unique_cases(cases)
+
+
+def expand_cases(
+    base_cases: Sequence[SweepCase], shapes: Sequence[StressShape], rule_count: int
+) -> list[SweepCase]:
+    """Expand dimensions into the requested workload shapes."""
+    cases: list[SweepCase] = []
+    for base_case in base_cases:
+        for shape in shapes:
+            cases.append(
+                SweepCase(
+                    users=base_case.users,
+                    repos=base_case.repos,
+                    shape=shape,
+                    rule_count=rule_count if shape != "rectangle" else 1,
+                )
+            )
+    return unique_cases(cases)
+
+
 def bounded_points(available_count: int, candidate_points: Sequence[int]) -> list[int]:
     """Return candidate points that fit, plus the exact inventory cap if useful."""
     points = [point for point in candidate_points if point <= available_count]
@@ -372,10 +514,10 @@ def bounded_points(available_count: int, candidate_points: Sequence[int]) -> lis
 
 def unique_cases(cases: Sequence[SweepCase]) -> list[SweepCase]:
     """Preserve case order while removing duplicates."""
-    seen: set[tuple[int, int]] = set()
+    seen: set[tuple[int, int, StressShape, int]] = set()
     unique: list[SweepCase] = []
     for sweep_case in cases:
-        key = (sweep_case.users, sweep_case.repos)
+        key = (sweep_case.users, sweep_case.repos, sweep_case.shape, sweep_case.rule_count)
         if key in seen:
             continue
         seen.add(key)
@@ -472,6 +614,71 @@ def list_repo_names(
     return repo_names
 
 
+def map_rule_count(sweep_case: SweepCase) -> int:
+    """Return the actual map-rule count for this case."""
+    if sweep_case.shape == "rectangle":
+        return 1
+    if sweep_case.shape == "duplicate-rules":
+        return sweep_case.rule_count
+    if sweep_case.shape == "user-shards":
+        return min(sweep_case.users, sweep_case.rule_count)
+    if sweep_case.shape == "repo-shards":
+        return min(sweep_case.repos, sweep_case.rule_count)
+    return min(sweep_case.users, sweep_case.repos, sweep_case.rule_count)
+
+
+def user_selector_count(sweep_case: SweepCase) -> int:
+    """Return the number of user selectors emitted across all map rules."""
+    return map_rule_count(sweep_case)
+
+
+def repository_selector_count(sweep_case: SweepCase) -> int:
+    """Return the number of repository selectors emitted across all map rules."""
+    return map_rule_count(sweep_case)
+
+
+def unique_grant_count(sweep_case: SweepCase) -> int:
+    """Return final unique grants after unioning all map entries."""
+    if sweep_case.shape == "diagonal-shards":
+        return sum(
+            user_count * repo_count
+            for user_count, repo_count in zip(
+                chunk_lengths(sweep_case.users, map_rule_count(sweep_case)),
+                chunk_lengths(sweep_case.repos, map_rule_count(sweep_case)),
+                strict=True,
+            )
+        )
+    return sweep_case.users * sweep_case.repos
+
+
+def raw_rule_grant_count(sweep_case: SweepCase) -> int:
+    """Return total per-rule grants before cross-rule unioning."""
+    if sweep_case.shape == "duplicate-rules":
+        return sweep_case.users * sweep_case.repos * sweep_case.rule_count
+    return unique_grant_count(sweep_case)
+
+
+def chunk_lengths(total: int, chunk_count: int) -> list[int]:
+    """Return near-even chunk lengths for `total` items."""
+    if chunk_count < 1:
+        raise ValueError("chunk_count must be >= 1")
+    base, extra = divmod(total, chunk_count)
+    return [base + (1 if index < extra else 0) for index in range(chunk_count)]
+
+
+def chunked_values(values: Sequence[str], chunk_count: int) -> list[list[str]]:
+    """Split values into near-even non-empty chunks."""
+    lengths = chunk_lengths(len(values), chunk_count)
+    chunks: list[list[str]] = []
+    offset = 0
+    for length in lengths:
+        if length < 1:
+            continue
+        chunks.append(list(values[offset : offset + length]))
+        offset += length
+    return chunks
+
+
 def write_maps(
     maps_dir: Path,
     cases: Sequence[SweepCase],
@@ -482,21 +689,14 @@ def write_maps(
     generated: list[GeneratedMap] = []
     for sweep_case in cases:
         map_path = maps_dir / f"maps-{sweep_case.name}.yaml"
+        rules = map_rules_for_case(
+            sweep_case,
+            usernames[: sweep_case.users],
+            repo_names[: sweep_case.repos],
+            service,
+        )
         payload = {
-            "maps": [
-                {
-                    "name": (
-                        "memory model "
-                        f"users={sweep_case.users} repos={sweep_case.repos} "
-                        f"grants={sweep_case.grants}"
-                    ),
-                    "users": {"usernames": list(usernames[: sweep_case.users])},
-                    "repos": {
-                        "codeHostConnection": {"id": service.database_id},
-                        "names": list(repo_names[: sweep_case.repos]),
-                    },
-                }
-            ]
+            "maps": rules,
         }
         with map_path.open("w", encoding="utf-8") as output_file:
             output_file.write(
@@ -504,11 +704,88 @@ def write_maps(
             )
             output_file.write(
                 f"# users={sweep_case.users} repos={sweep_case.repos} "
-                f"planned_grants={sweep_case.grants}\n"
+                f"planned_grants={sweep_case.grants} "
+                f"raw_rule_grants={sweep_case.raw_rule_grants} "
+                f"shape={sweep_case.shape} map_rules={sweep_case.map_rule_count}\n"
             )
             yaml.safe_dump(payload, output_file, sort_keys=False, allow_unicode=True)
         generated.append(GeneratedMap(case=sweep_case, path=map_path))
     return generated
+
+
+def map_rules_for_case(
+    sweep_case: SweepCase,
+    usernames: Sequence[str],
+    repo_names: Sequence[str],
+    service: ExternalServiceChoice,
+) -> list[dict[str, object]]:
+    """Build map rules for one workload shape."""
+    if sweep_case.shape == "rectangle":
+        return [map_rule(sweep_case, 1, usernames, repo_names, service)]
+    if sweep_case.shape == "user-shards":
+        return [
+            map_rule(sweep_case, index, user_chunk, repo_names, service)
+            for index, user_chunk in enumerate(
+                chunked_values(usernames, sweep_case.map_rule_count), start=1
+            )
+        ]
+    if sweep_case.shape == "repo-shards":
+        return [
+            map_rule(sweep_case, index, usernames, repo_chunk, service)
+            for index, repo_chunk in enumerate(
+                chunked_values(repo_names, sweep_case.map_rule_count), start=1
+            )
+        ]
+    if sweep_case.shape == "diagonal-shards":
+        return [
+            map_rule(sweep_case, index, user_chunk, repo_chunk, service)
+            for index, (user_chunk, repo_chunk) in enumerate(
+                zip(
+                    chunked_values(usernames, sweep_case.map_rule_count),
+                    chunked_values(repo_names, sweep_case.map_rule_count),
+                    strict=True,
+                ),
+                start=1,
+            )
+        ]
+    if sweep_case.shape == "duplicate-rules":
+        return [
+            map_rule(sweep_case, index, usernames, repo_names, service)
+            for index in range(1, sweep_case.map_rule_count + 1)
+        ]
+    raise AssertionError(f"Unhandled shape {sweep_case.shape!r}")
+
+
+def map_rule(
+    sweep_case: SweepCase,
+    index: int,
+    usernames: Sequence[str],
+    repo_names: Sequence[str],
+    service: ExternalServiceChoice,
+) -> dict[str, object]:
+    """Build one rectangular map rule."""
+    return {
+        "name": f"memory model {sweep_case.shape} rule {index}/{sweep_case.map_rule_count}",
+        "users": username_selector(usernames),
+        "repos": repository_selector(repo_names, service),
+    }
+
+
+def username_selector(usernames: Sequence[str]) -> dict[str, object]:
+    return {"usernames": list(usernames)}
+
+
+def repository_selector(
+    repo_names: Sequence[str], service: ExternalServiceChoice
+) -> dict[str, object]:
+    return {
+        "codeHostConnection": {
+            "kind": service.kind,
+            "displayName": service.display_name,
+            "url": service.url,
+        },
+        "names": list(repo_names),
+    }
 
 
 def write_manifest(
@@ -517,15 +794,25 @@ def write_manifest(
     service: ExternalServiceChoice,
     endpoint: str,
     inventory_repo_count: int,
+    sourcegraph_user_count: int,
 ) -> None:
     manifest = {
         "generated_at": datetime.datetime.now(datetime.UTC).isoformat(timespec="seconds"),
         "endpoint": endpoint,
         "external_service": service_to_json(service),
+        "sourcegraph_user_count": sourcegraph_user_count,
         "sourcegraph_inventory_repo_count": inventory_repo_count,
         "maps": [
             {
                 "case": generated_map.case.name,
+                "shape": generated_map.case.shape,
+                "map_rule_count": generated_map.case.map_rule_count,
+                "user_selector_count": user_selector_count(generated_map.case),
+                "repository_selector_count": repository_selector_count(generated_map.case),
+                "selected_user_count": generated_map.case.users,
+                "selected_repo_count": generated_map.case.repos,
+                "selected_total_grants": generated_map.case.grants,
+                "raw_rule_grant_count": generated_map.case.raw_rule_grants,
                 "users": generated_map.case.users,
                 "repos": generated_map.case.repos,
                 "grants": generated_map.case.grants,
@@ -704,6 +991,7 @@ def result_to_json(
         "variant": "candidate",
         "iteration": 1,
         "case": case.name,
+        "shape": case.shape,
         "arguments": ["--set", str(result.generated_map.path), "--full"],
         "return_code": result.return_code,
         "elapsed_seconds": round(result.elapsed_seconds, 3),
@@ -735,6 +1023,10 @@ def workload_json(
         "selected_user_count": sweep_case.users,
         "selected_repo_count": sweep_case.repos,
         "selected_total_grants": sweep_case.grants,
+        "raw_rule_grant_count": sweep_case.raw_rule_grants,
+        "map_rule_count": sweep_case.map_rule_count,
+        "user_selector_count": user_selector_count(sweep_case),
+        "repository_selector_count": repository_selector_count(sweep_case),
         "memory_model_user_count": sweep_case.users,
         "memory_model_repo_count": sweep_case.repos,
         "memory_model_grant_count": sweep_case.grants,
@@ -751,6 +1043,9 @@ def write_results_csv(
 ) -> None:
     fieldnames = [
         "case",
+        "shape",
+        "map_rule_count",
+        "raw_rule_grants",
         "users",
         "repos",
         "grants",
@@ -771,6 +1066,9 @@ def write_results_csv(
             writer.writerow(
                 {
                     "case": case.name,
+                    "shape": case.shape,
+                    "map_rule_count": case.map_rule_count,
+                    "raw_rule_grants": case.raw_rule_grants,
                     "users": case.users,
                     "repos": case.repos,
                     "grants": case.grants,

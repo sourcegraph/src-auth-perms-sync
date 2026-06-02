@@ -133,26 +133,21 @@ def count_users_per_provider(
 def external_service_to_yaml(service: permission_types.ExternalService) -> dict[str, Any]:
     """Render an external service for the YAML config.
 
-    Keys mirror Sourcegraph GraphQL `ExternalService` field names directly
-    (camelCase). Every scalar field exposed by the GraphQL schema is
-    surfaced here, including the JSONC `config` blob (parsed and emitted
-    as a nested mapping). Sourcegraph's `config` resolver redacts secrets
-    by replacing their values with the literal string `"REDACTED"`; we
-    strip those keys recursively via `_strip_redacted` so the YAML
-    contains no useless redaction placeholders. Nested arrays
-    (e.g. `webhooks[]`, `exclude[]`) are walked too.
+    Keys mirror the human-readable Sourcegraph GraphQL `ExternalService`
+    fields that maps can match. The opaque GraphQL `id` is omitted;
+    maps should identify code host connections with `kind`, `displayName`,
+    `url`, and/or `username`.
 
-    `id` is the decoded integer DB primary key, NOT the opaque base64
-    GraphQL Node ID — operators copy this into mapping rules' `repos.
-    codeHostConnection.id` field, where the integer form is much
-    friendlier than `RXh0ZXJuYWxTZXJ2aWNlOjU=`.
+    The JSONC `config` blob is parsed only to lift its top-level
+    `username` into the read-only discovery YAML. The rest of `config`
+    is intentionally omitted because maps no longer support matching
+    code-host connections by arbitrary config subtrees.
 
     Optional / nullable fields are omitted when null/empty so the YAML
     stays readable. Booleans are always emitted (true or false) so the
     discovered state is explicit.
     """
     rendered: dict[str, Any] = {
-        "id": src.decode_external_service_id(service["id"]),
         "kind": service["kind"],
         "displayName": service["displayName"],
         "url": service["url"],
@@ -181,21 +176,22 @@ def external_service_to_yaml(service: permission_types.ExternalService) -> dict[
     raw_config = service.get("config")
     if raw_config:
         try:
-            parsed_config = cast(dict[str, Any], json5.loads(raw_config))
+            parsed_config = cast(Any, json5.loads(raw_config))
         except ValueError:
-            # Unparsable JSONC: surface the raw string verbatim so the
-            # operator can still see what's there. Stripping doesn't
-            # apply since we have no structure to walk.
-            rendered["config"] = raw_config
+            pass
         else:
-            rendered["config"] = _strip_redacted(parsed_config)
+            if isinstance(parsed_config, dict):
+                config_values = cast(dict[str, Any], parsed_config)
+                username = config_values.get("username")
+                if isinstance(username, str) and username:
+                    rendered["username"] = username
     return rendered
 
 
 def dump_auth_providers_yaml(path: Path, providers: list[dict[str, Any]]) -> None:
     header = (
         "# Sourcegraph auth provider configs.\n"
-        "# Generated/refreshed by:  src-auth-perms-sync --get\n"
+        "# Generated/refreshed by:  src-auth-perms-sync get\n"
         "# Use these values when writing maps.yaml rules under `users.authProvider`.\n"
         "# This file is read-only reference data; edit maps.yaml, not this file.\n"
     )
@@ -205,9 +201,9 @@ def dump_auth_providers_yaml(path: Path, providers: list[dict[str, Any]]) -> Non
 def dump_code_hosts_yaml(path: Path, code_hosts: list[dict[str, Any]]) -> None:
     header = (
         "# Sourcegraph code host connection configs.\n"
-        "# Generated/refreshed by:  src-auth-perms-sync --get\n"
+        "# Generated/refreshed by:  src-auth-perms-sync get\n"
         "# Use these values when writing maps.yaml rules under `repos.codeHostConnection`.\n"
-        "# Secrets from ExternalService.config are stripped.\n"
+        "# ExternalService.config.username is surfaced as top-level `username` when present.\n"
         "# This file is read-only reference data; edit maps.yaml, not this file.\n"
     )
     _dump_readonly_discovery_yaml(path, header, "codeHostConnections", code_hosts)

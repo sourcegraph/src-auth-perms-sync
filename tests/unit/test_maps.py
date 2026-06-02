@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import itertools
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -80,6 +81,33 @@ class MapsTests(unittest.TestCase):
         self.assertEqual(1, counts[("saml", "https://idp.example.com", "sourcegraph")])
         self.assertEqual(1, counts[("github", "https://github.com/", "github-client")])
 
+    def test_external_service_to_yaml_lifts_username_without_config(self) -> None:
+        service: permission_types.ExternalService = {
+            "id": "RXh0ZXJuYWxTZXJ2aWNlOjE=",
+            "kind": "BITBUCKETSERVER",
+            "displayName": "Bitbucket LOB1",
+            "url": "https://bitbucket.example.com/",
+            "repoCount": 0,
+            "createdAt": "2026-05-30T00:00:00Z",
+            "updatedAt": "2026-05-30T00:00:00Z",
+            "lastSyncAt": None,
+            "nextSyncAt": None,
+            "lastSyncError": None,
+            "warning": None,
+            "unrestricted": False,
+            "suspended": False,
+            "hasConnectionCheck": False,
+            "supportsRepoExclusion": False,
+            "creator": None,
+            "lastUpdater": None,
+            "config": json.dumps({"username": "LOB1-SA1", "token": "REDACTED"}),
+        }
+
+        rendered = maps.external_service_to_yaml(service)
+
+        self.assertEqual("LOB1-SA1", rendered["username"])
+        self.assertNotIn("config", rendered)
+
 
 class MappingTests(unittest.TestCase):
     def test_mapping_rules_need_user_emails_tracks_email_filters(self) -> None:
@@ -87,6 +115,7 @@ class MappingTests(unittest.TestCase):
             list[permission_types.MappingRule],
             [
                 {
+                    "name": "username only",
                     "users": {"usernames": ["alice"]},
                     "repos": {"names": ["github.com/example/private-repo"]},
                 }
@@ -96,6 +125,7 @@ class MappingTests(unittest.TestCase):
             list[permission_types.MappingRule],
             [
                 {
+                    "name": "email only",
                     "users": {"emails": ["alice@example.com"]},
                     "repos": {"names": ["github.com/example/private-repo"]},
                 }
@@ -122,23 +152,30 @@ class MappingTests(unittest.TestCase):
             self.make_user("user-3", "carol", True, "carol@example.com", False),
             self.make_user("user-4", "dana", False, "dana@example.com", True),
         ]
-        user_filters: dict[str, object] = {
+        user_fields: dict[str, object] = {
             "authProvider": {"type": "builtin"},
             "emails": ["alice@example.com", "carol@example.com", "dana@example.com"],
+            "emailRegexes": [r"^(alice|bob|carol)@example\.com$"],
             "usernames": ["alice", "bob", "carol"],
+            "usernameRegexes": [r"^(alice|dana)$"],
         }
         single_filter_usernames = {
             name: self.usernames_for(
-                mapping.resolve_users({name: matcher}, users, providers),
+                mapping.resolve_users(
+                    cast(permission_types.UserSelector, {name: matcher}), users, providers
+                ),
             )
-            for name, matcher in user_filters.items()
+            for name, matcher in user_fields.items()
         }
 
-        for filter_count in range(2, len(user_filters) + 1):
-            for filter_names in itertools.combinations(user_filters, filter_count):
+        for filter_count in range(2, len(user_fields) + 1):
+            for filter_names in itertools.combinations(user_fields, filter_count):
                 matched_usernames = self.usernames_for(
                     mapping.resolve_users(
-                        {name: user_filters[name] for name in filter_names},
+                        cast(
+                            permission_types.UserSelector,
+                            {name: user_fields[name] for name in filter_names},
+                        ),
                         users,
                         providers,
                     )
@@ -151,7 +188,11 @@ class MappingTests(unittest.TestCase):
 
         self.assertEqual(
             {"alice"},
-            self.usernames_for(mapping.resolve_users(user_filters, users, providers)),
+            self.usernames_for(
+                mapping.resolve_users(
+                    cast(permission_types.UserSelector, user_fields), users, providers
+                )
+            ),
         )
 
     def test_repo_filter_matchers_intersect_without_expanding_selection(self) -> None:
@@ -166,41 +207,41 @@ class MappingTests(unittest.TestCase):
             example_public_repo["id"]: example_public_repo,
         }
         services_by_id = {
-            1: self.make_external_service(1, "GITHUB", "GitHub Enterprise"),
-            2: self.make_external_service(2, "GITHUB", "GitHub Cloud"),
+            1: self.make_external_service(1, "GITHUB", "GitHub Enterprise", "enterprise-sync"),
+            2: self.make_external_service(2, "GITHUB", "GitHub Cloud", "cloud-sync"),
         }
         repos_by_external_service_id = {
             1: [sourcegraph_repo, example_private_repo, gitlab_repo],
             2: [example_public_repo],
         }
-        repo_filters: dict[str, object] = {
-            "codeHostConnection": {"id": 1},
+        repository_fields: dict[str, object] = {
+            "codeHostConnection": {"username": "enterprise-sync"},
             "names": [
                 "github.com/example/private-repo",
                 "gitlab.com/example/private-repo",
             ],
-            "regexes": [
-                r"^github\.com/example/",
-                r"^gitlab\.com/example/",
-            ],
+            "nameRegexes": [r"^github\.com/example/"],
         }
         single_filter_repo_names = {
             name: self.repo_names_for(
                 mapping.resolve_repos(
-                    {name: matcher},
+                    cast(permission_types.RepositorySelector, {name: matcher}),
                     services_by_id,
                     repos_by_external_service_id,
                     all_repos,
                 )
             )
-            for name, matcher in repo_filters.items()
+            for name, matcher in repository_fields.items()
         }
 
-        for filter_count in range(2, len(repo_filters) + 1):
-            for filter_names in itertools.combinations(repo_filters, filter_count):
+        for filter_count in range(2, len(repository_fields) + 1):
+            for filter_names in itertools.combinations(repository_fields, filter_count):
                 matched_repo_names = self.repo_names_for(
                     mapping.resolve_repos(
-                        {name: repo_filters[name] for name in filter_names},
+                        cast(
+                            permission_types.RepositorySelector,
+                            {name: repository_fields[name] for name in filter_names},
+                        ),
                         services_by_id,
                         repos_by_external_service_id,
                         all_repos,
@@ -213,10 +254,10 @@ class MappingTests(unittest.TestCase):
                     self.assertLessEqual(matched_repo_names, single_filter_repo_names[name])
 
         self.assertEqual(
-            {"github.com/example/private-repo", "gitlab.com/example/private-repo"},
+            {"github.com/example/private-repo"},
             self.repo_names_for(
                 mapping.resolve_repos(
-                    repo_filters,
+                    cast(permission_types.RepositorySelector, repository_fields),
                     services_by_id,
                     repos_by_external_service_id,
                     all_repos,
@@ -224,26 +265,29 @@ class MappingTests(unittest.TestCase):
             ),
         )
 
-    def test_validate_mapping_rules_accepts_string_list_filters(self) -> None:
+    def test_validate_mapping_rules_accepts_flat_text_selector_lists(self) -> None:
         mapping.validate_mapping_rules(
             cast(
                 list[permission_types.MappingRule],
                 [
                     {
+                        "name": "flat selector lists",
                         "users": {
                             "emails": ["alice@example.com"],
+                            "emailRegexes": [r"^team-.*@example\.com$"],
                             "usernames": ["alice"],
+                            "usernameRegexes": [r"^team-.*"],
                         },
                         "repos": {
                             "names": ["github.com/example/private-repo"],
-                            "regexes": [r"^github\.com/example/"],
+                            "nameRegexes": [r"^github\.com/example/"],
                         },
                     }
                 ],
             )
         )
 
-    def test_repos_regexes_match_any_pattern(self) -> None:
+    def test_repository_name_matches_any_pattern(self) -> None:
         sourcegraph_repo = self.make_repo("repo-1", "github.com/sourcegraph/sourcegraph")
         github_repo = self.make_repo("repo-2", "github.com/example/private-repo")
         gitlab_repo = self.make_repo("repo-3", "gitlab.com/example/private-repo")
@@ -255,7 +299,7 @@ class MappingTests(unittest.TestCase):
 
         matched_repos = mapping.resolve_repos(
             {
-                "regexes": [
+                "nameRegexes": [
                     r"^github\.com/example/",
                     r"^gitlab\.com/example/",
                 ],
@@ -270,25 +314,56 @@ class MappingTests(unittest.TestCase):
             self.repo_names_for(matched_repos),
         )
 
-    def test_validate_mapping_rules_rejects_non_string_list_filters(self) -> None:
+    def test_username_matches_any_pattern(self) -> None:
+        providers: list[shared_types.AuthProvider] = []
+        users = [
+            self.make_user("user-1", "alice", True, "alice@example.com", True),
+            self.make_user("user-2", "test_user_00001", True, "one@example.com", True),
+            self.make_user("user-3", "test_user_00100", True, "hundred@example.com", True),
+            self.make_user("user-4", "service-account", True, "service@example.com", True),
+        ]
+
+        matched_users = mapping.resolve_users(
+            {"usernameRegexes": [r"^(alice|test_user_00[0-9]{3})$"]},
+            users,
+            providers,
+        )
+
+        self.assertEqual(
+            {"alice", "test_user_00001", "test_user_00100"},
+            self.usernames_for(matched_users),
+        )
+
+    def test_validate_mapping_rules_rejects_invalid_text_matchers(self) -> None:
         with self.assertRaises(SystemExit) as raised:
             mapping.validate_mapping_rules(
                 cast(
                     list[permission_types.MappingRule],
                     [
                         {
+                            "name": "invalid flat selector lists",
                             "users": {
                                 "emails": "alice@example.com",
                                 "usernames": [""],
                             },
+                            "repos": {"names": [123], "nameRegexes": ["["]},
+                        },
+                        {
+                            "name": "invalid code host field",
+                            "users": {"usernames": ["alice"]},
                             "repos": {
-                                "names": [123],
-                                "regexes": ["["],
+                                "codeHostConnection": {"config": {"username": "old"}, "id": 1},
+                                "regex": r"^github\.com/example/",
                             },
                         },
                         {
+                            "name": "invalid username regex",
+                            "users": {"usernameRegexes": ["["]},
+                            "repos": {"names": ["github.com/example/private-repo"]},
+                        },
+                        {
                             "users": {"usernames": ["alice"]},
-                            "repos": {"regex": r"^github\.com/example/"},
+                            "repos": {"names": ["github.com/example/private-repo"]},
                         },
                     ],
                 )
@@ -298,8 +373,12 @@ class MappingTests(unittest.TestCase):
         self.assertIn("users.emails must be a list of strings", message)
         self.assertIn("users.usernames[0] is an empty string", message)
         self.assertIn("repos.names[0] must be a string", message)
-        self.assertIn("repos.regexes[0] is not a valid Python regex", message)
-        self.assertIn("unknown repos matcher 'regex'", message)
+        self.assertIn("repos.nameRegexes[0] is not a valid Python regex", message)
+        self.assertIn("users.usernameRegexes[0] is not a valid Python regex", message)
+        self.assertIn("unknown repos field 'regex'", message)
+        self.assertIn("unknown repos.codeHostConnection field 'config'", message)
+        self.assertIn("unknown repos.codeHostConnection field 'id'", message)
+        self.assertIn("`name:` is missing", message)
 
     def make_user(
         self,
@@ -325,6 +404,7 @@ class MappingTests(unittest.TestCase):
         external_service_id: int,
         kind: str,
         display_name: str,
+        username: str | None = None,
     ) -> permission_types.ExternalService:
         graphql_id = base64.b64encode(f"ExternalService:{external_service_id}".encode()).decode()
         return {
@@ -345,7 +425,7 @@ class MappingTests(unittest.TestCase):
             "supportsRepoExclusion": False,
             "creator": None,
             "lastUpdater": None,
-            "config": "{}",
+            "config": json.dumps({"username": username} if username else {}),
         }
 
     def usernames_for(self, users: list[shared_types.User]) -> set[str]:
@@ -373,6 +453,7 @@ class FullSetPlanningTests(unittest.TestCase):
         context = self.make_context(
             [
                 {
+                    "name": "alice and bob get example repos",
                     "users": {"usernames": ["alice", "bob"]},
                     "repos": {"names": ["github.com/example/one", "github.com/example/two"]},
                 }
@@ -401,10 +482,12 @@ class FullSetPlanningTests(unittest.TestCase):
         context = self.make_context(
             [
                 {
+                    "name": "alice and bob get first repos",
                     "users": {"usernames": ["alice", "bob"]},
                     "repos": {"names": ["github.com/example/one", "github.com/example/two"]},
                 },
                 {
+                    "name": "bob and chris get second repos",
                     "users": {"usernames": ["bob", "chris"]},
                     "repos": {"names": ["github.com/example/two", "github.com/example/three"]},
                 },

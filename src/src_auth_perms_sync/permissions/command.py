@@ -8,7 +8,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 import src_py_lib as src
 
@@ -43,7 +43,7 @@ class _ResolvedMapping:
 
     index: int
     name: str
-    users_section: dict[str, object]
+    user_selector: permission_types.UserSelector
     repos: list[permission_types.Repository]
 
 
@@ -52,9 +52,9 @@ def resolve_additive_mappings(context: permission_types.MappingContext) -> list[
     resolved: list[_ResolvedMapping] = []
     for mapping_index, mapping in enumerate(context.mapping_rules, start=1):
         name = mapping.get("name", f"<unnamed mapping #{mapping_index}>")
-        repos_section = cast(dict[str, object], mapping["repos"])
+        repository_selector = mapping["repos"]
         matched_repos = permissions_mapping.resolve_repos(
-            repos_section,
+            repository_selector,
             context.services_by_id,
             context.repos_by_external_service_id,
             context.all_repos_by_id,
@@ -72,7 +72,7 @@ def resolve_additive_mappings(context: permission_types.MappingContext) -> list[
             _ResolvedMapping(
                 index=mapping_index,
                 name=name,
-                users_section=cast(dict[str, object], mapping["users"]),
+                user_selector=mapping["users"],
                 repos=matched_repos,
             )
         )
@@ -317,7 +317,7 @@ def cmd_set(
     retain_saml_group_users: bool = False,
     worker_pool: ThreadPoolExecutor | None = None,
 ) -> run_context.CommandData:
-    """Dispatch the selected `--set` mode."""
+    """Dispatch the selected set mode."""
     if options.mode == "full":
         return permissions_full_set.cmd_set_full(
             client,
@@ -550,8 +550,8 @@ def _plan_additions_for_user(
     """Return missing additive permission edges for one user."""
     desired_repos: dict[str, permission_types.Repository] = {}
     for resolved_mapping in resolved_mappings:
-        if not permissions_mapping.user_matches_users_section(
-            resolved_mapping.users_section,
+        if not permissions_mapping.user_matches_user_selector(
+            resolved_mapping.user_selector,
             user,
             context.providers,
             context.saml_groups_attribute_names,
@@ -677,8 +677,9 @@ def _apply_additive_permissions(
             worker_pool=worker_pool,
         )
     log.info(
-        "Additive apply done. %d succeeded, %d failed, %d canceled.",
+        "Additive apply done. %d succeeded, %d skipped, %d failed, %d canceled.",
         mutations.succeeded,
+        mutations.skipped,
         mutations.failed,
         mutations.canceled,
     )

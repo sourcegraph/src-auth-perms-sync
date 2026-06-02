@@ -9,15 +9,18 @@ See https://github.com/sourcegraph/src-auth-perms-sync/blob/main/README.md for u
 
 from __future__ import annotations
 
+import argparse
 import logging
 import os
 import sys
+from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, NoReturn, TypeAlias
 
 import src_py_lib as src
+from src_py_lib.utils import config as config_utils
 
 from .orgs import command as organizations_command
 from .permissions import command as permissions_command
@@ -28,6 +31,13 @@ from .shared import backups, run_context, site_config
 log = logging.getLogger(__name__)
 
 CommandName: TypeAlias = Literal["get", "set", "restore", "sync_saml_orgs"]
+CLI_COMMAND_NAMES: tuple[str, ...] = ("get", "set", "restore", "sync-saml-orgs")
+CLI_COMMAND_NAME_BY_ARGUMENT: dict[str, CommandName] = {
+    "get": "get",
+    "set": "set",
+    "restore": "restore",
+    "sync-saml-orgs": "sync_saml_orgs",
+}
 LogCommandName: TypeAlias = Literal[
     "get",
     "set_full",
@@ -77,33 +87,42 @@ class ResolvedCommand:
 
     @property
     def set_mode(self) -> permission_types.SetCommandMode | None:
-        """Return the concrete `--set` mode when this is a set command."""
+        """Return the concrete set mode when this is a set command."""
         if self.set_options is None:
             return None
         return self.set_options.mode
 
 
-class SrcAuthPermissionsSyncConfig(src.SourcegraphClientConfig, src.LoggingConfig):
+@dataclass(frozen=True)
+class CliInput:
+    """Parsed CLI command and runtime config."""
+
+    command_name: CommandName
+    config: Config
+
+
+class Config(src.SourcegraphClientConfig, src.LoggingConfig):
     """Config values loaded from defaults, .env, environment, and CLI flags."""
 
-    get: bool = src.config_field(
-        default=False,
-        env_var="SRC_AUTH_PERMS_SYNC_GET",
-        cli_flag="--get",
-        cli_action="store_true",
-        help="Query the SG instance and write/refresh auth-providers.yaml and code-hosts.yaml",
-    )
-    set_path: Path | None = src.config_field(
-        default=None,
-        env_var="SRC_AUTH_PERMS_SYNC_SET",
-        cli_flag="--set",
-        cli_nargs="?",
-        cli_const="maps.yaml",
+    maps_path: Path = src.config_field(
+        default=Path("maps.yaml"),
+        env_var="SRC_AUTH_PERMS_SYNC_MAPS_PATH",
+        cli_flag="--maps-path",
         metavar="FILE",
         help=(
-            "Read the YAML config file and execute the mapping rules.\n"
+            "Maps YAML file for the set command.\n"
             "Defaults to maps.yaml under src-auth-perms-sync-runs/<endpoint>/.\n"
-            "Relative paths are resolved from that path."
+            "Relative / short paths are resolved from that directory."
+        ),
+    )
+    restore_path: Path | None = src.config_field(
+        default=None,
+        env_var="SRC_AUTH_PERMS_SYNC_RESTORE_PATH",
+        cli_flag="--restore-path",
+        metavar="FILE",
+        help=(
+            "Snapshot JSON file for the restore command.\n"
+            "Relative paths are resolved under 'src-auth-perms-sync-runs/<endpoint>/.'"
         ),
     )
     full: bool = src.config_field(
@@ -111,7 +130,7 @@ class SrcAuthPermissionsSyncConfig(src.SourcegraphClientConfig, src.LoggingConfi
         env_var="SRC_AUTH_PERMS_SYNC_FULL",
         cli_flag="--full",
         cli_action="store_true",
-        help="With --set: run the full overwrite reconciliation mode (default)",
+        help="With the set command: run the full overwrite reconciliation mode (default)",
     )
     user: str | None = src.config_field(
         default=None,
@@ -134,16 +153,6 @@ class SrcAuthPermissionsSyncConfig(src.SourcegraphClientConfig, src.LoggingConfi
         metavar="YYYY-MM-DD",
         pattern=r"^\d{4}-\d{2}-\d{2}$",
         help="Process Sourcegraph users created on or after this date",
-    )
-    restore_path: Path | None = src.config_field(
-        default=None,
-        env_var="SRC_AUTH_PERMS_SYNC_RESTORE",
-        cli_flag="--restore",
-        metavar="FILE",
-        help=(
-            "Restore explicit-permissions state to match the given snapshot JSON file.\n"
-            "Relative paths are resolved under 'src-auth-perms-sync-runs/<endpoint>/.'"
-        ),
     )
     sync_saml_organizations: bool = src.config_field(
         default=False,
@@ -223,55 +232,53 @@ def config_error(message: str) -> NoReturn:
     raise SystemExit(2)
 
 
-def validate_config(config: SrcAuthPermissionsSyncConfig) -> None:
+def validate_config(command_name: CommandName, config: Config) -> None:
     """Validate cross-field CLI/config constraints."""
-    validate_command_selection(config)
-    validate_user_filter_selection(config)
-    validate_set_mode_selection(config)
+    validate_command_options(command_name, config)
+    validate_user_filter_selection(command_name, config)
+    validate_set_mode_selection(command_name, config)
 
 
-def validate_command_selection(config: SrcAuthPermissionsSyncConfig) -> None:
-    """Validate compatible top-level command flags."""
-    if sum((config.get, config.set_path is not None, config.restore_path is not None)) > 1:
-        config_error("choose only one of --get, --set, or --restore")
-    if config.restore_path is not None and config.sync_saml_organizations:
-        config_error("--sync-saml-orgs can run by itself or with --get or --set")
+def validate_command_options(command_name: CommandName, config: Config) -> None:
+    """Validate options that only make sense with specific commands."""
+    if config.sync_saml_organizations and command_name not in {"get", "set"}:
+        config_error("--sync-saml-orgs can only be combined with get or set")
+    if command_name == "restore" and config.restore_path is None:
+        config_error("restore requires --restore-path")
+    if config.restore_path is not None and command_name != "restore":
+        config_error("--restore-path requires the restore command")
 
 
-def validate_user_filter_selection(config: SrcAuthPermissionsSyncConfig) -> None:
+def validate_user_filter_selection(command_name: CommandName, config: Config) -> None:
     """Validate user-scope filters and their compatible commands."""
     user_identifier_filters = sum((config.user is not None, config.users_without_explicit_perms))
     if user_identifier_filters > 1:
         config_error("choose only one of --user or --users-without-explicit-perms")
 
     user_filter_selected = user_identifier_filters > 0 or config.created_after is not None
-    user_filter_allowed = (
-        config.get
-        or config.set_path is not None
-        or (config.restore_path is None and not config.sync_saml_organizations)
-    )
+    user_filter_allowed = command_name in {"get", "set"}
     if user_filter_selected and not user_filter_allowed:
         config_error(
-            "--user, --users-without-explicit-perms, and --created-after require --get or --set"
+            "--user, --users-without-explicit-perms, and --created-after require get or set"
         )
 
 
-def validate_set_mode_selection(config: SrcAuthPermissionsSyncConfig) -> None:
-    """Validate `--set` mode flags."""
-    if config.full and config.set_path is None:
-        config_error("--full requires --set")
+def validate_set_mode_selection(command_name: CommandName, config: Config) -> None:
+    """Validate set command mode flags."""
+    if config.full and command_name != "set":
+        config_error("--full requires the set command")
 
-    if config.set_path is None:
+    if command_name != "set":
         return
 
     if sum((config.full, config.user is not None, config.users_without_explicit_perms)) > 1:
         config_error(
-            "with --set, choose at most one of --full, --user, or --users-without-explicit-perms"
+            "with set, choose at most one of --full, --user, or --users-without-explicit-perms"
         )
 
 
-def set_command_options(config: SrcAuthPermissionsSyncConfig) -> permission_types.SetCommandOptions:
-    """Return the validated `--set` mode options."""
+def set_command_options(config: Config) -> permission_types.SetCommandOptions:
+    """Return the validated set mode options."""
     if config.user is not None:
         return permission_types.SetCommandOptions(
             mode="user",
@@ -289,38 +296,36 @@ def set_command_options(config: SrcAuthPermissionsSyncConfig) -> permission_type
     )
 
 
-def resolve_command(config: SrcAuthPermissionsSyncConfig) -> ResolvedCommand:
+def resolve_command(command_name: CommandName, config: Config) -> ResolvedCommand:
     """Return the command execution plan derived from config."""
     run_mode = "apply" if config.apply else "dry-run"
-    if config.set_path is not None:
+    if command_name == "set":
         return resolve_set_command(config, run_mode)
-    if config.restore_path is not None:
+    if command_name == "restore":
         return ResolvedCommand(
             name="restore",
             log_name="restore",
             artifact_name=f"restore-{run_mode}",
         )
-    if config.get and config.sync_saml_organizations:
+    if command_name == "get" and config.sync_saml_organizations:
         return ResolvedCommand(
             name="get",
             log_name="get_sync_saml_orgs",
             artifact_name=f"get-sync-saml-orgs-{run_mode}",
             sync_saml_organizations=True,
         )
-    if config.get:
+    if command_name == "get":
         return ResolvedCommand(name="get", log_name="get", artifact_name="get")
-    if config.sync_saml_organizations:
-        return ResolvedCommand(
-            name="sync_saml_orgs",
-            log_name="sync_saml_orgs",
-            artifact_name=f"sync-saml-orgs-{run_mode}",
-            sync_saml_organizations=True,
-        )
-    return ResolvedCommand(name="get", log_name="get", artifact_name="get")
+    return ResolvedCommand(
+        name="sync_saml_orgs",
+        log_name="sync_saml_orgs",
+        artifact_name=f"sync-saml-orgs-{run_mode}",
+        sync_saml_organizations=True,
+    )
 
 
-def resolve_set_command(config: SrcAuthPermissionsSyncConfig, run_mode: str) -> ResolvedCommand:
-    """Return resolved metadata for the selected `--set` command mode."""
+def resolve_set_command(config: Config, run_mode: str) -> ResolvedCommand:
+    """Return resolved metadata for the selected set command mode."""
     set_options = set_command_options(config)
     log_names = (
         SYNC_SET_COMMAND_LOG_NAMES if config.sync_saml_organizations else SET_COMMAND_LOG_NAMES
@@ -339,24 +344,35 @@ def resolve_set_command(config: SrcAuthPermissionsSyncConfig, run_mode: str) -> 
     )
 
 
-def load_config() -> SrcAuthPermissionsSyncConfig:
-    """Parse and validate CLI/environment config."""
-    config = src.parse_args(
-        SrcAuthPermissionsSyncConfig,
-        description=__doc__,
-        base_dir=Path("."),
+def load_cli(argv: Sequence[str] | None = None) -> CliInput:
+    """Parse and validate the CLI command plus environment/config options."""
+    parser = argparse.ArgumentParser(
+        description=__doc__.strip() if __doc__ is not None else None,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        usage="%(prog)s {get,set,restore,sync-saml-orgs} [options]",
     )
-    validate_config(config)
-    return config
+    parser.add_argument("command", choices=CLI_COMMAND_NAMES, help="Command to run")
+    config_utils.add_config_arguments(parser, Config)
+    arguments = parser.parse_args(argv)
+    try:
+        config = config_utils.load_config_from_args(
+            Config,
+            arguments,
+            base_dir=Path("."),
+            resolve_op_refs=True,
+        )
+    except src.ConfigError as exception:
+        parser.error(str(exception))
+    command_name = CLI_COMMAND_NAME_BY_ARGUMENT[arguments.command]
+    validate_config(command_name, config)
+    return CliInput(command_name=command_name, config=config)
 
 
-def endpoint_scoped_config(
-    config: SrcAuthPermissionsSyncConfig, endpoint: str
-) -> SrcAuthPermissionsSyncConfig:
+def endpoint_scoped_config(command_name: CommandName, config: Config, endpoint: str) -> Config:
     """Return config with relative operator artifact paths scoped to this endpoint."""
     updates: dict[str, object] = {}
-    if config.set_path is not None:
-        updates["set_path"] = backups.endpoint_artifact_path(endpoint, config.set_path)
+    if command_name == "set":
+        updates["maps_path"] = backups.endpoint_artifact_path(endpoint, config.maps_path)
     if config.restore_path is not None:
         updates["restore_path"] = backups.endpoint_artifact_path(endpoint, config.restore_path)
     if not updates:
@@ -364,25 +380,21 @@ def endpoint_scoped_config(
     return config.model_copy(update=updates)
 
 
-def require_set_input_file(config: SrcAuthPermissionsSyncConfig) -> None:
+def require_set_input_file(config: Config) -> None:
     """Exit with a clear error if the selected maps file is missing."""
-    if config.set_path is None:
+    if config.maps_path.is_file():
         return
-    if config.set_path.is_file():
-        return
-    if config.set_path.exists():
-        raise SystemExit(f"--set input path is not a file: {config.set_path}")
+    if config.maps_path.exists():
+        raise SystemExit(f"set input path is not a file: {config.maps_path}")
     raise SystemExit(
-        "--set input file does not exist: "
-        f"{config.set_path}\n"
-        "Run `uv run src-auth-perms-sync --get` to create the default maps.yaml, "
+        "set input file does not exist: "
+        f"{config.maps_path}\n"
+        "Run `uv run src-auth-perms-sync get` to create the default maps.yaml, "
         "or pass a path to an existing maps file."
     )
 
 
-def run_fields(
-    config: SrcAuthPermissionsSyncConfig, command: ResolvedCommand, endpoint: str
-) -> dict[str, object]:
+def run_fields(config: Config, command: ResolvedCommand, endpoint: str) -> dict[str, object]:
     """Return run-level fields for structured logging."""
     return {
         "cli_cmd": command.log_name,
@@ -406,7 +418,7 @@ def run_fields(
 
 
 def run_with_client(
-    config: SrcAuthPermissionsSyncConfig,
+    config: Config,
     command: ResolvedCommand,
     endpoint: str,
     worker_pool: ThreadPoolExecutor,
@@ -431,7 +443,7 @@ def run_with_client(
 
 
 def run_command(
-    config: SrcAuthPermissionsSyncConfig,
+    config: Config,
     command: ResolvedCommand,
     client: src.SourcegraphClient,
     worker_pool: ThreadPoolExecutor,
@@ -466,19 +478,18 @@ def run_command(
 
 
 def run_set(
-    config: SrcAuthPermissionsSyncConfig,
+    config: Config,
     command: ResolvedCommand,
     client: src.SourcegraphClient,
     sourcegraph_site_config: site_config.SiteConfig,
     worker_pool: ThreadPoolExecutor,
 ) -> run_context.CommandData:
     """Run the selected repo-permission sync command."""
-    assert config.set_path is not None
     assert command.set_options is not None
     require_set_input_file(config)
     return permissions_command.cmd_set(
         client,
-        config.set_path,
+        config.maps_path,
         command.set_options,
         dry_run=not config.apply,
         parallelism=config.parallelism,
@@ -494,7 +505,7 @@ def run_set(
 
 
 def run_restore(
-    config: SrcAuthPermissionsSyncConfig,
+    config: Config,
     client: src.SourcegraphClient,
     sourcegraph_site_config: site_config.SiteConfig,
     worker_pool: ThreadPoolExecutor,
@@ -514,7 +525,7 @@ def run_restore(
 
 
 def run_sync_saml_organizations(
-    config: SrcAuthPermissionsSyncConfig,
+    config: Config,
     client: src.SourcegraphClient,
     sourcegraph_site_config: site_config.SiteConfig,
     command_data: run_context.CommandData,
@@ -535,7 +546,7 @@ def run_sync_saml_organizations(
 
 
 def run_get(
-    config: SrcAuthPermissionsSyncConfig,
+    config: Config,
     client: src.SourcegraphClient,
     sourcegraph_site_config: site_config.SiteConfig,
     worker_pool: ThreadPoolExecutor,
@@ -577,14 +588,47 @@ def reraise_system_exit_with_logged_error(exception: SystemExit) -> NoReturn:
     raise exception
 
 
-def main() -> None:
-    config = load_config()
-    command = resolve_command(config)
+def Get(config: Config) -> bool:
+    """Run repository permission discovery and return whether it succeeded."""
+    return _run("get", config)
+
+
+def Set(config: Config) -> bool:
+    """Run repository permission reconciliation and return whether it succeeded."""
+    return _run("set", config)
+
+
+def Restore(config: Config) -> bool:
+    """Run repository permission restore and return whether it succeeded."""
+    return _run("restore", config)
+
+
+def SyncSamlOrgs(config: Config) -> bool:
+    """Run SAML organization sync and return whether it succeeded."""
+    return _run("sync_saml_orgs", config)
+
+
+def _run(command_name: CommandName, config: Config) -> bool:
+    """Run a command and return whether it completed successfully."""
+    try:
+        _run_or_raise(command_name, config)
+    except SystemExit as exception:
+        return exception.code in (None, 0)
+    except Exception:
+        log.exception("src-auth-perms-sync run failed.")
+        return False
+    return True
+
+
+def _run_or_raise(command_name: CommandName, config: Config) -> None:
+    """Run src-auth-perms-sync, preserving CLI-style exceptions."""
+    validate_config(command_name, config)
+    command = resolve_command(command_name, config)
     try:
         endpoint = src.normalize_sourcegraph_endpoint(config.src_endpoint)
     except ValueError as error:
         config_error(str(error))
-    config = endpoint_scoped_config(config, endpoint)
+    config = endpoint_scoped_config(command_name, config, endpoint)
     run_timestamp = backups.backup_timestamp()
     run_directory = backups.artifact_run_directory(
         run_timestamp,
@@ -614,3 +658,8 @@ def main() -> None:
             run_with_client(config, command, endpoint, worker_pool)
         except SystemExit as exception:
             reraise_system_exit_with_logged_error(exception)
+
+
+def main() -> None:
+    cli_input = load_cli()
+    _run_or_raise(cli_input.command_name, cli_input.config)

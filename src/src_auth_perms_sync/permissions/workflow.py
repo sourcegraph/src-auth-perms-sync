@@ -30,9 +30,9 @@ def load_discovery(
     dict[tuple[str, str], str],
 ]:
     """Fetch auth providers + external services and resolve the SAML attribute
-    names map, with consistent logging. Shared by --get and --set; returns the
-    raw lists so each caller can transform them as needed (YAML form for --get,
-    keyed-by-id dict for --set).
+    names map, with consistent logging. Shared by get and set; returns the
+    raw lists so each caller can transform them as needed (YAML form for get,
+    keyed-by-id dict for set).
 
     Both commands need exactly the same instance state to do their work, so
     centralizing this avoids drift in which providers/services are considered
@@ -143,7 +143,6 @@ def load_mapping_context_for_rules(
         len(all_repos_by_id),
         len(services_by_id),
     )
-    warn_unknown_external_services(mapping_rules, services_by_id)
     return permission_types.MappingContext(
         mapping_rules=mapping_rules,
         providers=providers,
@@ -152,23 +151,6 @@ def load_mapping_context_for_rules(
         repos_by_external_service_id=repos_by_external_service_id,
         all_repos_by_id=all_repos_by_id,
     )
-
-
-def warn_unknown_external_services(
-    mapping_rules: list[permission_types.MappingRule],
-    services_by_id: dict[int, permission_types.ExternalService],
-) -> None:
-    """Warn when maps reference code-host connection IDs absent on the instance."""
-    for external_service_id in sorted(
-        permissions_mapping.referenced_external_service_ids(mapping_rules)
-    ):
-        if external_service_id not in services_by_id:
-            log.warning(
-                "External service id %s is referenced by the maps but "
-                "is not present on the instance — rules using it will "
-                "resolve to zero repos.",
-                external_service_id,
-            )
 
 
 def snapshot_path(

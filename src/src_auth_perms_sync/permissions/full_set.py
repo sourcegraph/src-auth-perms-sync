@@ -6,7 +6,7 @@ import logging
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 import src_py_lib as src
 
@@ -279,11 +279,11 @@ def plan_full_set_permissions(
         name = mapping.get("name", f"<unnamed mapping #{mapping_index}>")
         log.info("=== Mapping %d / %d: %s ===", mapping_index, len(context.mapping_rules), name)
 
-        users_section = cast(dict[str, object], mapping["users"])
-        repos_section = cast(dict[str, object], mapping["repos"])
+        user_selector = mapping["users"]
+        repository_selector = mapping["repos"]
 
         matched_users = permissions_mapping.resolve_users(
-            users_section,
+            user_selector,
             users,
             context.providers,
             context.saml_groups_attribute_names,
@@ -294,7 +294,7 @@ def plan_full_set_permissions(
             continue
 
         matched_repos = permissions_mapping.resolve_repos(
-            repos_section,
+            repository_selector,
             context.services_by_id,
             context.repos_by_external_service_id,
             context.all_repos_by_id,
@@ -504,8 +504,9 @@ def _apply_full_set_plans(
             worker_pool=worker_pool,
         )
     log.info(
-        "Apply done. %d succeeded, %d failed, %d canceled.",
+        "Apply done. %d succeeded, %d skipped, %d failed, %d canceled.",
         mutations.succeeded,
+        mutations.skipped,
         mutations.failed,
         mutations.canceled,
     )
@@ -525,6 +526,7 @@ def _record_full_set_event_fields(
     command_event["repo_count"] = len(plan.expected_users)
     command_event["total_grants"] = plan.total_grants
     command_event["mutations_succeeded"] = apply_result.mutations.succeeded
+    command_event["mutations_skipped"] = apply_result.mutations.skipped
     command_event["mutations_failed"] = apply_result.mutations.failed
     command_event["mutations_canceled"] = apply_result.mutations.canceled
     command_event["full_short_circuit"] = apply_result.full_short_circuit
@@ -586,7 +588,7 @@ def _finish_full_set_apply_with_backup(
     log.info(
         "To roll back the explicit-permissions state captured in "
         "the before-snapshot, run:\n"
-        "  uv run src-auth-perms-sync --restore %s --apply",
+        "  uv run src-auth-perms-sync restore --restore-path %s --apply",
         before_path,
     )
 
@@ -600,7 +602,7 @@ def _raise_for_failed_full_set_apply(
     log.error(
         "RUN FAILED: %d mutation(s) failed, %d canceled by circuit "
         "breaker (out of %d planned). Review the log file and the "
-        "before/after snapshots for details, then re-run --set --apply "
+        "before/after snapshots for details, then re-run set --apply "
         "(after addressing the underlying cause) to retry the "
         "remaining work.",
         apply_result.mutations.failed,
