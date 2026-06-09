@@ -29,7 +29,7 @@ def load_discovery(
     list[permission_types.ExternalService],
     dict[tuple[str, str], str],
 ]:
-    """Fetch auth providers + external services and resolve the SAML attribute
+    """Fetch auth providers + code hosts and resolve the SAML attribute
     names map, with consistent logging. Shared by get and set; returns the
     raw lists so each caller can transform them as needed (YAML form for get,
     keyed-by-id dict for set).
@@ -43,9 +43,9 @@ def load_discovery(
     providers = shared_sourcegraph.list_auth_providers(client)
     log.info("Received %d auth providers.", len(providers))
 
-    log.info("Loading external services from %s ...", client.endpoint)
+    log.info("Loading code hosts from %s ...", client.endpoint)
     services = permissions_sourcegraph.list_external_services(client)
-    log.info("Received %d external services.", len(services))
+    log.info("Received %d code hosts.", len(services))
 
     saml_attribute_names = saml_groups.attribute_names_by_provider_key(
         providers, saml_groups_attribute_name_by_config_id

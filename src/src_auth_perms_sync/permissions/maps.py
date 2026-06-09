@@ -131,7 +131,7 @@ def count_users_per_provider(
 
 
 def external_service_to_yaml(service: permission_types.ExternalService) -> dict[str, Any]:
-    """Render an external service for the YAML config.
+    """Render a code host for the YAML config.
 
     Keys mirror the human-readable Sourcegraph GraphQL `ExternalService`
     fields that maps can match. The opaque GraphQL `id` is omitted;
