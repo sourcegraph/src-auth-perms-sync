@@ -176,12 +176,9 @@ def _plan_user_scoped_restore(
         current_user = current_snapshot["users"].get(username)
         current_repos = {
             repository["id"]: repository["name"]
-            for repository in (current_user["explicit_repositories"] if current_user else [])
+            for repository in (current_user["repos"] if current_user else [])
         }
-        target_repos = {
-            repository["id"]: repository["name"]
-            for repository in target_user["explicit_repositories"]
-        }
+        target_repos = {repository["id"]: repository["name"] for repository in target_user["repos"]}
         for repo_id in sorted(
             set(target_repos) - set(current_repos),
             key=lambda value: target_repos[value],
@@ -544,21 +541,25 @@ def _capture_restore_snapshot_state(
     worker_pool: ThreadPoolExecutor | None = None,
 ) -> RestoreSnapshotState:
     """Capture the live full-instance state needed to plan a restore."""
-    total_users = shared_sourcegraph.count_users(client)
+    expected_user_count = shared_sourcegraph.count_users(client)
     log.info(
         "Streaming %d users from %s and capturing current explicit-permissions "
         "state in parallel ...",
-        total_users,
+        expected_user_count,
         client.endpoint,
     )
     users: list[shared_types.User] = []
     current_snapshot = permission_snapshot.build_snapshot(
         client,
-        shared_sourcegraph.list_users_streaming(client, collect_into=users),
+        shared_sourcegraph.list_users_streaming(
+            client,
+            collect_into=users,
+            include_account_data=False,
+        ),
         parallelism,
         bind_id_mode,
         snapshot_path,
-        total_users=total_users,
+        expected_user_count=expected_user_count,
         explicit_permissions_batch_size=explicit_permissions_batch_size,
         worker_pool=worker_pool,
     )
@@ -583,9 +584,9 @@ def plan_full_restore(snapshot_state: RestoreSnapshotState) -> RestorePlan:
     overwrites: list[permission_types.RepositoryUsernameOverwrite] = []
     skipped_repo_count = 0
     for repo_id, repo_snapshot in target_repos.items():
-        target_usernames = repo_snapshot["explicit_permissions_users"]
+        target_usernames = repo_snapshot["users"]
         current_repo = current_repos.get(repo_id)
-        current_usernames = current_repo["explicit_permissions_users"] if current_repo else []
+        current_usernames = current_repo["users"] if current_repo else []
         if current_usernames == target_usernames or sorted(current_usernames) == target_usernames:
             skipped_repo_count += 1
             continue
@@ -774,7 +775,7 @@ def _finish_restore_apply_with_backup(
         parallelism,
         bind_id_mode,
         snapshot_path,
-        total_users=len(snapshot_state.users),
+        expected_user_count=len(snapshot_state.users),
         explicit_permissions_batch_size=explicit_permissions_batch_size,
         worker_pool=worker_pool,
     )

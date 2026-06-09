@@ -29,7 +29,7 @@ def load_discovery(
     list[permission_types.ExternalService],
     dict[tuple[str, str], str],
 ]:
-    """Fetch auth providers + external services and resolve the SAML attribute
+    """Fetch auth providers + code hosts and resolve the SAML attribute
     names map, with consistent logging. Shared by get and set; returns the
     raw lists so each caller can transform them as needed (YAML form for get,
     keyed-by-id dict for set).
@@ -43,9 +43,9 @@ def load_discovery(
     providers = shared_sourcegraph.list_auth_providers(client)
     log.info("Received %d auth providers.", len(providers))
 
-    log.info("Loading external services from %s ...", client.endpoint)
+    log.info("Querying code hosts from %s ...", client.endpoint)
     services = permissions_sourcegraph.list_external_services(client)
-    log.info("Received %d external services.", len(services))
+    log.info("Received %d code hosts.", len(services))
 
     saml_attribute_names = saml_groups.attribute_names_by_provider_key(
         providers, saml_groups_attribute_name_by_config_id
@@ -151,6 +151,129 @@ def load_mapping_context_for_rules(
         repos_by_external_service_id=repos_by_external_service_id,
         all_repos_by_id=all_repos_by_id,
     )
+
+
+def load_mapping_context_discovery(
+    client: src.SourcegraphClient,
+    mapping_rules: list[permission_types.MappingRule],
+    saml_groups_attribute_name_by_config_id: dict[str, str],
+) -> permission_types.MappingContext:
+    """Load provider and code-host metadata without scanning repos."""
+    providers, services, saml_groups_attribute_names = load_discovery(
+        client, saml_groups_attribute_name_by_config_id
+    )
+    services_by_id: dict[int, permission_types.ExternalService] = {
+        src.decode_external_service_id(service["id"]): service for service in services
+    }
+    return permission_types.MappingContext(
+        mapping_rules=mapping_rules,
+        providers=providers,
+        saml_groups_attribute_names=saml_groups_attribute_names,
+        services_by_id=services_by_id,
+        repos_by_external_service_id={},
+        all_repos_by_id={},
+    )
+
+
+def load_repos_for_mapping_context(
+    client: src.SourcegraphClient,
+    context: permission_types.MappingContext,
+    service_ids: set[int] | None = None,
+) -> permission_types.MappingContext:
+    """Return context with repos loaded for all or selected code hosts."""
+    services_by_id = (
+        context.services_by_id
+        if service_ids is None
+        else {
+            service_id: context.services_by_id[service_id]
+            for service_id in sorted(service_ids)
+            if service_id in context.services_by_id
+        }
+    )
+    repos_by_external_service_id = {
+        **context.repos_by_external_service_id,
+        **load_repos_by_external_service(client, services_by_id),
+    }
+    all_repos_by_id = index_repos_by_id(repos_by_external_service_id)
+    log.info(
+        "Received %d unique repo(s) across %d loaded code host connection(s).",
+        len(all_repos_by_id),
+        len(repos_by_external_service_id),
+    )
+    return permission_types.MappingContext(
+        mapping_rules=context.mapping_rules,
+        providers=context.providers,
+        saml_groups_attribute_names=context.saml_groups_attribute_names,
+        services_by_id=context.services_by_id,
+        repos_by_external_service_id=repos_by_external_service_id,
+        all_repos_by_id=all_repos_by_id,
+    )
+
+
+def mapping_context_with_repository_candidates(
+    context: permission_types.MappingContext,
+    candidates: list[permissions_sourcegraph.RepositoryCandidate],
+) -> permission_types.MappingContext:
+    """Return context limited to selected repository candidates."""
+    repos_by_external_service_id: dict[int, list[permission_types.Repository]] = {}
+    all_repos_by_id: dict[str, permission_types.Repository] = {}
+    for candidate in candidates:
+        repository = candidate.repository
+        all_repos_by_id[repository["id"]] = repository
+        for external_service_id in candidate.external_service_ids:
+            decoded_service_id = src.decode_external_service_id(external_service_id)
+            if decoded_service_id not in context.services_by_id:
+                continue
+            repos_by_external_service_id.setdefault(decoded_service_id, []).append(repository)
+    log.info(
+        "Selected %d repo(s) across %d code host connection(s).",
+        len(all_repos_by_id),
+        len(repos_by_external_service_id),
+    )
+    return permission_types.MappingContext(
+        mapping_rules=context.mapping_rules,
+        providers=context.providers,
+        saml_groups_attribute_names=context.saml_groups_attribute_names,
+        services_by_id=context.services_by_id,
+        repos_by_external_service_id=repos_by_external_service_id,
+        all_repos_by_id=all_repos_by_id,
+    )
+
+
+def load_repository_candidates_by_names(
+    client: src.SourcegraphClient,
+    repository_names: tuple[str, ...],
+) -> list[permissions_sourcegraph.RepositoryCandidate]:
+    """Load exact repository-name matches or exit with missing names."""
+    candidates = permissions_sourcegraph.list_repository_candidates_by_names(
+        client,
+        repository_names,
+    )
+    found_names = {candidate.repository["name"] for candidate in candidates}
+    missing_names = [name for name in repository_names if name not in found_names]
+    if missing_names:
+        raise SystemExit("No Sourcegraph repo found for: " + ", ".join(sorted(missing_names)))
+    log.info("Selected %d repo(s) by exact name.", len(candidates))
+    return candidates
+
+
+def load_repository_candidates_created_on_or_after(
+    client: src.SourcegraphClient,
+    value: str,
+    flag_name: str,
+) -> list[permissions_sourcegraph.RepositoryCandidate]:
+    """Load repositories whose Sourcegraph row was created on or after a CLI date."""
+    filter_value = sourcegraph_datetime_filter(parse_cli_date(value, flag_name))
+    candidates = permissions_sourcegraph.list_repository_candidates_created_on_or_after(
+        client,
+        filter_value,
+    )
+    log.info(
+        "Selected %d Sourcegraph repo(s) created on or after %s.",
+        len(candidates),
+        value,
+    )
+    return candidates
 
 
 def snapshot_path(
@@ -282,7 +405,7 @@ def projected_snapshot_repo_for_id(
             return None
         return {
             "name": repo_names[repo_id],
-            "explicit_permissions_users": list(usernames),
+            "users": list(usernames),
         }
     return before_snapshot["repos"].get(repo_id)
 
@@ -316,7 +439,7 @@ def projected_snapshot_stats(
         if repo_id in expected_users:
             continue
         repo_count += 1
-        usernames = repo["explicit_permissions_users"]
+        usernames = repo["users"]
         users_with_explicit_grants.update(usernames)
         total_grants += len(usernames)
     for usernames in expected_users.values():
@@ -450,7 +573,7 @@ def validate_post_apply(
     for repo_id in mutated_repo_ids:
         expected = list(expected_users.get(repo_id, ()))
         actual_repo = after["repos"].get(repo_id)
-        actual = actual_repo["explicit_permissions_users"] if actual_repo else []
+        actual = actual_repo["users"] if actual_repo else []
         if expected == actual:
             continue
         expected_set = set(expected)

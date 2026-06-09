@@ -135,6 +135,33 @@ class MappingTests(unittest.TestCase):
         self.assertFalse(mapping.mapping_rules_need_user_emails(rules_without_email_filters))
         self.assertTrue(mapping.mapping_rules_need_user_emails(rules_with_email_filters))
 
+    def test_mapping_rules_need_saml_account_data_tracks_saml_group_filters(self) -> None:
+        rules_without_saml_group_filters = cast(
+            list[permission_types.MappingRule],
+            [
+                {
+                    "name": "provider only",
+                    "users": {"authProvider": {"type": "saml"}},
+                    "repos": {"names": ["github.com/example/private-repo"]},
+                }
+            ],
+        )
+        rules_with_saml_group_filters = cast(
+            list[permission_types.MappingRule],
+            [
+                {
+                    "name": "saml group",
+                    "users": {"authProvider": {"type": "saml", "samlGroup": "eng"}},
+                    "repos": {"names": ["github.com/example/private-repo"]},
+                }
+            ],
+        )
+
+        self.assertFalse(
+            mapping.mapping_rules_need_saml_account_data(rules_without_saml_group_filters)
+        )
+        self.assertTrue(mapping.mapping_rules_need_saml_account_data(rules_with_saml_group_filters))
+
     def test_user_filter_matchers_intersect_without_expanding_selection(self) -> None:
         providers: list[shared_types.AuthProvider] = [
             {
@@ -264,6 +291,39 @@ class MappingTests(unittest.TestCase):
                 )
             ),
         )
+
+    def test_service_ids_required_by_repository_selectors_uses_code_host_filter(self) -> None:
+        services_by_id = {
+            1: self.make_external_service(1, "GITHUB", "GitHub Enterprise", "enterprise-sync"),
+            2: self.make_external_service(2, "GITHUB", "GitHub Cloud", "cloud-sync"),
+        }
+
+        service_ids = mapping.service_ids_required_by_repository_selectors(
+            services_by_id,
+            [
+                cast(
+                    permission_types.RepositorySelector,
+                    {"codeHostConnection": {"displayName": "GitHub Enterprise"}},
+                )
+            ],
+        )
+
+        self.assertEqual({1}, service_ids)
+
+    def test_service_ids_required_by_repository_selectors_loads_all_for_global_filter(
+        self,
+    ) -> None:
+        services_by_id = {
+            1: self.make_external_service(1, "GITHUB", "GitHub Enterprise"),
+            2: self.make_external_service(2, "GITLAB", "GitLab"),
+        }
+
+        service_ids = mapping.service_ids_required_by_repository_selectors(
+            services_by_id,
+            [cast(permission_types.RepositorySelector, {"nameRegexes": [".*"]})],
+        )
+
+        self.assertEqual({1, 2}, service_ids)
 
     def test_validate_mapping_rules_accepts_flat_text_selector_lists(self) -> None:
         mapping.validate_mapping_rules(
@@ -538,3 +598,15 @@ class QueryTests(unittest.TestCase):
         self.assertNotIn("emails {", permission_queries.QUERY_USER_BY_ID)
         self.assertNotIn("emails {", permission_queries.query_user_by_id())
         self.assertIn("emails {", permission_queries.query_user_by_id(include_emails=True))
+
+    def test_account_data_fields_are_opt_out(self) -> None:
+        self.assertIn("accountData", shared_queries.QUERY_USERS)
+        self.assertIn("accountData", shared_queries.query_users())
+        self.assertNotIn("accountData", shared_queries.query_users(include_account_data=False))
+
+        self.assertIn("accountData", permission_queries.QUERY_USER_BY_ID)
+        self.assertIn("accountData", permission_queries.query_user_by_id())
+        self.assertNotIn(
+            "accountData",
+            permission_queries.query_user_by_id(include_account_data=False),
+        )

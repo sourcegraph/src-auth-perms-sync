@@ -551,7 +551,7 @@ def list_external_services(client: src.SourcegraphClient) -> list[ExternalServic
             )
         )
     if not services:
-        raise SystemExit("No external services found on the Sourcegraph instance")
+        raise SystemExit("No code hosts found on the Sourcegraph instance")
     return services
 
 

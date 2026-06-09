@@ -36,11 +36,15 @@ def list_users_with_accounts(
     client: src.SourcegraphClient,
     *,
     include_emails: bool = False,
+    include_account_data: bool = True,
 ) -> list[shared_types.User]:
     return [
         cast(shared_types.User, node)
         for node in client.stream_connection_nodes(
-            queries.query_users(include_emails=include_emails),
+            queries.query_users(
+                include_emails=include_emails,
+                include_account_data=include_account_data,
+            ),
             connection_path=("users",),
             page_size=DEFAULT_PAGE_SIZE,
         )
@@ -52,6 +56,7 @@ def list_users_streaming(
     collect_into: list[shared_types.User] | None = None,
     *,
     include_emails: bool = False,
+    include_account_data: bool = True,
 ) -> Iterator[shared_types.User]:
     """Stream ListUsers pages one at a time, yielding each User as it arrives.
 
@@ -65,7 +70,10 @@ def list_users_streaming(
     streaming benefit in one pass — no double-pagination.
     """
     for node in client.stream_connection_nodes(
-        queries.query_users(include_emails=include_emails),
+        queries.query_users(
+            include_emails=include_emails,
+            include_account_data=include_account_data,
+        ),
         connection_path=("users",),
         page_size=DEFAULT_PAGE_SIZE,
     ):

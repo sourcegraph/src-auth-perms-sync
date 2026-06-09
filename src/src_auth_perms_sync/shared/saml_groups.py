@@ -6,8 +6,8 @@ Sourcegraph stores the full gosaml2 `AssertionInfo` JSON as the
 attribute named by the provider's `groupsAttributeName` site config
 (default `"groups"`).
 
-This module does NOT fetch — it only parses what `list_users_with_accounts`
-already pulled. Two on-disk shapes are handled defensively:
+This module does NOT fetch — it only parses user rows fetched with
+`include_account_data=True`. Two on-disk shapes are handled defensively:
 
   1. Raw `*saml2.AssertionInfo`:
          accountData["Assertions"][i]["AttributeStatement"]["Attributes"][j]

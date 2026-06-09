@@ -1576,6 +1576,12 @@ def invalid_configuration_cases(config: EndToEndConfig) -> list[CommandCase]:
                 must_contain=("choose at most one",),
             ),
             CommandCase(
+                name="invalid-set-full-and-created-after",
+                arguments=("set", "--full", "--created-after", config.future_date),
+                expected_exit_code=2,
+                must_contain=("--full cannot be combined with --created-after",),
+            ),
+            CommandCase(
                 name="invalid-user-filter-conflict",
                 arguments=("get", "--users", config.user, "--users-without-explicit-perms"),
                 expected_exit_code=2,
@@ -1682,10 +1688,9 @@ def read_only_cases(config: EndToEndConfig) -> list[CommandCase]:
 def run_safe_set_cases(config: EndToEndConfig, runner: CommandPermutationRunner) -> None:
     runner.run(
         CommandCase(
-            name="set-explicit-full-no-op-apply",
+            name="set-created-after-no-op-apply",
             arguments=(
                 "set",
-                "--full",
                 "--created-after",
                 config.future_date,
                 "--apply",
@@ -1693,8 +1698,8 @@ def run_safe_set_cases(config: EndToEndConfig, runner: CommandPermutationRunner)
                 "--parallelism",
                 str(config.parallelism),
             ),
-            expected_log_command="set_full",
-            must_contain=("No repos resolved across any mapping",),
+            expected_log_command="set_created_after",
+            must_contain=("No users selected",),
         )
     )
 

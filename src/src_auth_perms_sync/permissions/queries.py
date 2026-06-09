@@ -48,6 +48,67 @@ query ReposByExternalService($esID: ID!, $first: Int!, $after: String) {
 }
 """
 
+REPOSITORY_CANDIDATE_FIELDS = """
+id
+name
+createdAt
+externalServices(first: 50) {
+  nodes { id }
+}
+"""
+
+QUERY_REPOSITORIES_BY_NAMES = f"""
+query RepositoriesByNames($names: [String!]!, $first: Int!, $after: String) {{
+  repositories(
+    names: $names
+    first: $first
+    after: $after
+    cloned: true
+    notCloned: true
+  ) {{
+    nodes {{
+      {REPOSITORY_CANDIDATE_FIELDS}
+    }}
+    pageInfo {{ hasNextPage endCursor }}
+  }}
+}}
+"""
+
+QUERY_REPOSITORY_CANDIDATES = f"""
+query RepositoryCandidates($first: Int!, $after: String) {{
+  repositories(
+    first: $first
+    after: $after
+    cloned: true
+    notCloned: true
+    orderBy: REPOSITORY_NAME
+  ) {{
+    nodes {{
+      {REPOSITORY_CANDIDATE_FIELDS}
+    }}
+    pageInfo {{ hasNextPage endCursor }}
+  }}
+}}
+"""
+
+QUERY_REPOSITORY_CANDIDATES_BY_CREATED_AT = f"""
+query RepositoryCandidatesByCreatedAt($first: Int!, $after: String) {{
+  repositories(
+    first: $first
+    after: $after
+    cloned: true
+    notCloned: true
+    orderBy: REPO_CREATED_AT
+    descending: true
+  ) {{
+    nodes {{
+      {REPOSITORY_CANDIDATE_FIELDS}
+    }}
+    pageInfo {{ hasNextPage endCursor }}
+  }}
+}}
+"""
+
 MUTATION_SET_REPO_PERMISSIONS = """
 mutation SetRepoPerms($repo: ID!, $userPerms: [UserPermissionInput!]!) {
   setRepositoryPermissionsForUsers(repository: $repo, userPermissions: $userPerms) {
@@ -75,7 +136,7 @@ mutation RemoveRepoPerm($repo: ID!, $user: ID!) {
 }
 """
 
-USER_FIELDS = """
+USER_BASE_FIELDS = """
 id
 username
 builtinAuth
@@ -84,10 +145,12 @@ externalAccounts(first: 50) {
     serviceType
     serviceID
     clientID
-    accountData
+__ACCOUNT_DATA_FIELD__
   }
 }
 """
+
+USER_ACCOUNT_DATA_FIELD = "    accountData"
 
 USER_EMAIL_FIELDS = """
 emails {
@@ -97,39 +160,59 @@ emails {
 """
 
 
-def user_fields(*, include_emails: bool = False) -> str:
-    """Return user fields, adding emails only when downstream matching needs them."""
+def user_fields(
+    *,
+    include_emails: bool = False,
+    include_account_data: bool = True,
+) -> str:
+    """Return user fields, adding heavier fields only when downstream needs them."""
+    fields = USER_BASE_FIELDS.replace(
+        "__ACCOUNT_DATA_FIELD__",
+        USER_ACCOUNT_DATA_FIELD if include_account_data else "",
+    )
     if include_emails:
-        return f"{USER_FIELDS}\n{USER_EMAIL_FIELDS}"
-    return USER_FIELDS
+        return f"{fields}\n{USER_EMAIL_FIELDS}"
+    return fields
 
 
-def query_user_by_username(*, include_emails: bool = False) -> str:
+def query_user_by_username(
+    *,
+    include_emails: bool = False,
+    include_account_data: bool = True,
+) -> str:
     return f"""
 query UserByUsername($username: String!) {{
   user(username: $username) {{
-    {user_fields(include_emails=include_emails)}
+    {user_fields(include_emails=include_emails, include_account_data=include_account_data)}
   }}
 }}
 """
 
 
-def query_user_by_email(*, include_emails: bool = False) -> str:
+def query_user_by_email(
+    *,
+    include_emails: bool = False,
+    include_account_data: bool = True,
+) -> str:
     return f"""
 query UserByEmail($email: String!) {{
   user(email: $email) {{
-    {user_fields(include_emails=include_emails)}
+    {user_fields(include_emails=include_emails, include_account_data=include_account_data)}
   }}
 }}
 """
 
 
-def query_user_by_id(*, include_emails: bool = False) -> str:
+def query_user_by_id(
+    *,
+    include_emails: bool = False,
+    include_account_data: bool = True,
+) -> str:
     return f"""
 query UserByID($id: ID!) {{
   node(id: $id) {{
     ... on User {{
-      {user_fields(include_emails=include_emails)}
+      {user_fields(include_emails=include_emails, include_account_data=include_account_data)}
     }}
   }}
 }}
@@ -172,20 +255,6 @@ query UserExplicitRepos($id: ID!, $first: Int!, $after: String) {
             id
           }
           pageInfo { hasNextPage endCursor }
-        }
-      }
-    }
-  }
-}
-"""
-
-QUERY_USER_EXPLICIT_REPO_EXISTS = """
-query UserExplicitRepoExists($id: ID!) {
-  node(id: $id) {
-    ... on User {
-      permissionsInfo {
-        repositories(source: API, first: 1) {
-          nodes { id }
         }
       }
     }

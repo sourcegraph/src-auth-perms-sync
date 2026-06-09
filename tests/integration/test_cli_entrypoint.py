@@ -53,7 +53,7 @@ class CliEntrypointTests(unittest.TestCase):
         )
 
         self.assertNotIn("--apply", get_help.stdout)
-        self.assertNotIn("--no-backup", get_help.stdout)
+        self.assertIn("--no-backup", get_help.stdout)
         self.assertNotIn("--sync-saml-orgs", get_help.stdout)
         self.assertIn("--users USERS", get_help.stdout)
         self.assertNotIn("--user USER", get_help.stdout)

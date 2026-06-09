@@ -8,7 +8,7 @@ import json
 import logging
 import time
 from collections.abc import Callable, Iterable, Sequence
-from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, as_completed, wait
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, TextIO, TypeAlias, TypedDict, cast
@@ -25,7 +25,7 @@ log = logging.getLogger(__name__)
 
 class RepoSnapshot(TypedDict):
     name: str
-    explicit_permissions_users: list[str]
+    users: list[str]
 
 
 class SnapshotStats(TypedDict):
@@ -62,7 +62,7 @@ def compact_snapshot_users(users: Iterable[shared_types.User]) -> list[SnapshotU
 
 class UserScopedUserSnapshot(TypedDict):
     id: str
-    explicit_repositories: list[permission_types.Repository]
+    repos: list[permission_types.Repository]
 
 
 class UserScopedSnapshotStats(TypedDict):
@@ -152,7 +152,7 @@ class UserScopedSnapshotDiff(TypedDict):
     users: list[UserScopedSnapshotDiffEntry]
 
 
-SNAPSHOT_SCHEMA_VERSION: int = 3
+SNAPSHOT_SCHEMA_VERSION: int = 5
 USER_SCOPED_SNAPSHOT_KIND = "user_scope"
 SNAPSHOT_DIFF_SCHEMA_VERSION: int = 1
 
@@ -162,8 +162,9 @@ def capture_explicit_grants(
     users: Iterable[SnapshotUserInput],
     parallelism: int,
     explicit_permissions_batch_size: int,
-    total_users: int | None = None,
+    expected_user_count: int | None = None,
     worker_pool: ThreadPoolExecutor | None = None,
+    selected_repository_ids: set[str] | None = None,
 ) -> tuple[dict[str, RepoSnapshot], int]:
     """Build the per-repo inverse index of explicit-API grants.
 
@@ -178,17 +179,17 @@ def capture_explicit_grants(
     scale this overlaps the entire ListUsers pagination time with capture
     work, removing it from the critical path.
 
-    `total_users`, when supplied, enables percentage + ETA in the
+    `expected_user_count`, when supplied, enables percentage + ETA in the
     progress log lines. Callers that have already paid for `count_users()`
     (e.g. `cmd_set` / `cmd_restore` in their --apply branches) should pass
     it through; otherwise progress reports just show running counts and
-    rate. Reports fire at every ~10% of `total_users` (or every 1000
+    rate. Reports fire at every ~10% of `expected_user_count` (or every 1000
     completed when total is unknown).
 
     Sourcegraph only supports READ repository permissions, so snapshots
     store only the usernames that have explicit repository grants.
 
-    Returns `(repos, user_count)` so callers (e.g. `build_snapshot`)
+    Returns `(repos, scanned_user_count)` so callers (e.g. `build_snapshot`)
     that need the user-count statistic don't have to materialize the
     iterator twice or measure it themselves.
     """
@@ -209,7 +210,7 @@ def capture_explicit_grants(
             "user_explicit_repos_batch_fetch",
             level="DEBUG",
             omit_success_status=True,
-            user_count=len(batch_users),
+            batch_user_count=len(batch_users),
         ) as fetch_event:
             try:
                 repository_ids_by_user_id = permissions_sourcegraph.list_users_explicit_repo_ids(
@@ -233,7 +234,8 @@ def capture_explicit_grants(
             fetch_event["fetched_grant_count"] = sum(
                 len(repository_ids) for repository_ids in repository_ids_by_username.values()
             )
-            fetch_event["per_user_failures"] = failures
+            if failures:
+                fetch_event["user_permission_lookup_failures"] = failures
             return repository_ids_by_username, failures
 
     def _fetch_one_user_at_a_time(
@@ -259,140 +261,147 @@ def capture_explicit_grants(
                 repository_ids_by_user_id[user["id"]] = []
         return repository_ids_by_user_id, failures
 
-    with src.span(
-        "capture_explicit_grants",
-        total_users=total_users,
-        explicit_permissions_batch_size=explicit_permissions_batch_size,
-    ) as capture_event:
-        capture_failures = 0
-        futures: dict[Any, list[SnapshotUserInput]] = {}
-        submitted_user_count = 0
-        max_pending_batches = max(1, parallelism * 2)
+    span_fields: dict[str, Any] = {}
+    if expected_user_count is not None:
+        span_fields["expected_user_count"] = expected_user_count
 
-        def _submit_batch(
-            executor: ThreadPoolExecutor,
-            batch_users: list[SnapshotUserInput],
-        ) -> None:
-            nonlocal submitted_user_count
-            if not batch_users:
-                return
-            submitted_batch = list(batch_users)
-            submitted_user_count += len(submitted_batch)
-            future = src.submit_with_log_context(executor, _fetch, submitted_batch)
-            futures[future] = submitted_batch
+    with src.span("capture_explicit_grants", **span_fields) as capture_event:
+        capture_failures = 0
+        scanned_user_count = 0
+        max_pending_batches = max(1, parallelism * 2)
 
         # Progress reporting: every 10% when total is known (max 10
         # lines), every 1000 otherwise. Avoids drowning the operator on
         # tiny instances and gives steady feedback on large ones.
-        progress_step = max(1, total_users // 10) if total_users else 1000
-        # Start the timer BEFORE submission. The submit-while-iterating
-        # loop blocks on ListUsers pagination, but workers process
-        # already-submitted tasks during those blocks — so by the time
-        # the submit loop finishes, many futures may already be done.
-        # Anchoring `progress_started` here means the first progress
-        # line shows real wall-clock work time, not zero.
+        progress_step = max(1, expected_user_count // 10) if expected_user_count else 1000
+        # Start the timer BEFORE submission. Iterating `users` may block on
+        # ListUsers pagination, but workers process already-submitted tasks
+        # during those blocks — so progress reflects real wall-clock work.
         progress_started = time.perf_counter()
         completed = 0
         next_progress_report = progress_step
-        all_users_submitted = False
+        last_reported_completed = 0
 
-        def _record_completed_futures(done_futures: Iterable[Any]) -> None:
-            nonlocal capture_failures, completed, next_progress_report
-            for future in done_futures:
-                submitted_batch = futures.pop(future)
-                completed += len(submitted_batch)
-                try:
-                    repository_ids_by_username, failures = future.result()
-                    capture_failures += failures
-                    for username, repository_ids in repository_ids_by_username.items():
-                        for repository_id in repository_ids:
-                            usernames_by_repository_id.setdefault(
-                                repository_id,
-                                [],
-                            ).append(username)
-                except Exception as exception:
-                    # Don't blow up the whole capture; warn so the operator
-                    # can see the users whose grants were treated as empty.
-                    capture_failures += len(submitted_batch)
-                    log.warning(
-                        "Failed to fetch explicit grants for %d user(s): %s",
-                        len(submitted_batch),
-                        exception,
-                    )
-
-                if completed >= next_progress_report or (
-                    all_users_submitted and completed == submitted_user_count
-                ):
-                    elapsed = time.perf_counter() - progress_started
-                    rate = completed / elapsed if elapsed > 0 else 0.0
-                    if total_users:
-                        remaining = max(total_users - completed, 0)
-                        eta_seconds = remaining / rate if rate > 0 else 0.0
-                        log.info(
-                            "Captured explicit permissions for %d / %d users (%.0f%%) "
-                            "in %.0fs (%.0f users/sec, ETA %.0fs).",
-                            completed,
-                            total_users,
-                            100.0 * completed / total_users,
-                            elapsed,
-                            rate,
-                            eta_seconds,
-                        )
-                    else:
-                        log.info(
-                            "Captured explicit permissions for %d users in %.0fs (%.0f users/sec).",
-                            completed,
-                            elapsed,
-                            rate,
-                        )
-                    while next_progress_report <= completed:
-                        next_progress_report += progress_step
-
-        # Submit-while-iterating. Iterating `users` may block on each
-        # ListUsers page when a streaming iterator is passed; during those
-        # blocks, workers continue processing already-submitted tasks.
-        with run_context.thread_pool(parallelism, worker_pool) as executor:
+        def _user_batches() -> Iterable[list[SnapshotUserInput]]:
             batch_users: list[SnapshotUserInput] = []
             for user in users:
                 batch_users.append(user)
                 if len(batch_users) >= explicit_permissions_batch_size:
-                    _submit_batch(executor, batch_users)
+                    yield list(batch_users)
                     batch_users = []
-                    if len(futures) >= max_pending_batches:
-                        done_futures, _ = wait(futures, return_when=FIRST_COMPLETED)
-                        _record_completed_futures(done_futures)
-            _submit_batch(executor, batch_users)
-            all_users_submitted = True
+            if batch_users:
+                yield list(batch_users)
 
-            while futures:
-                done_futures, _ = wait(futures, return_when=FIRST_COMPLETED)
-                _record_completed_futures(done_futures)
-        capture_event["user_count"] = submitted_user_count
-        capture_event["per_user_failures"] = capture_failures
-        capture_event["max_pending_batches"] = max_pending_batches
+        def _log_progress(*, force: bool = False) -> None:
+            nonlocal last_reported_completed, next_progress_report
+            if completed == 0 or (not force and completed < next_progress_report):
+                return
+            if completed == last_reported_completed:
+                return
+            elapsed = time.perf_counter() - progress_started
+            rate = completed / elapsed if elapsed > 0 else 0.0
+            if expected_user_count:
+                remaining = max(expected_user_count - completed, 0)
+                eta_seconds = remaining / rate if rate > 0 else 0.0
+                log.info(
+                    "Captured explicit permissions for %d / %d users (%.0f%%) "
+                    "in %.0fs (%.0f users/sec, ETA %.0fs).",
+                    completed,
+                    expected_user_count,
+                    100.0 * completed / expected_user_count,
+                    elapsed,
+                    rate,
+                    eta_seconds,
+                )
+            else:
+                log.info(
+                    "Captured explicit permissions for %d users in %.0fs (%.0f users/sec).",
+                    completed,
+                    elapsed,
+                    rate,
+                )
+            last_reported_completed = completed
+            while next_progress_report <= completed:
+                next_progress_report += progress_step
+
+        def _record_completed_batch(
+            result: run_context.ParallelResult[
+                list[SnapshotUserInput],
+                tuple[dict[str, list[str]], int],
+            ],
+        ) -> None:
+            nonlocal capture_failures, completed, scanned_user_count
+            submitted_batch = result.item
+            completed += len(submitted_batch)
+            scanned_user_count += len(submitted_batch)
+            if result.exception is not None:
+                # Don't blow up the whole capture; warn so the operator can
+                # see the users whose grants were treated as empty.
+                capture_failures += len(submitted_batch)
+                log.warning(
+                    "Failed to fetch explicit grants for %d user(s): %s",
+                    len(submitted_batch),
+                    result.exception,
+                )
+                _log_progress()
+                return
+            if result.value is None:
+                raise RuntimeError("explicit-grant batch fetch returned no result")
+            repository_ids_by_username, failures = result.value
+            capture_failures += failures
+            for username, user_repository_ids in repository_ids_by_username.items():
+                for repository_id in user_repository_ids:
+                    if (
+                        selected_repository_ids is not None
+                        and repository_id not in selected_repository_ids
+                    ):
+                        continue
+                    usernames_by_repository_id.setdefault(
+                        repository_id,
+                        [],
+                    ).append(username)
+            _log_progress()
+
+        # Submit-while-iterating. Iterating `users` may block on each
+        # ListUsers page when a streaming iterator is passed; during those
+        # blocks, workers continue processing already-submitted tasks.
+        run_context.parallel_process(
+            _fetch,
+            _user_batches(),
+            parallelism=parallelism,
+            worker_pool=worker_pool,
+            handle_result=_record_completed_batch,
+            max_pending=max_pending_batches,
+        )
+        _log_progress(force=True)
+        capture_event["scanned_user_count"] = scanned_user_count
+        if capture_failures:
+            capture_event["user_permission_lookup_failures"] = capture_failures
 
     # Stable sort: users alphabetical within each repo.
     for usernames in usernames_by_repository_id.values():
         usernames.sort()
 
+    repository_count = len(usernames_by_repository_id)
     with src.span(
-        "hydrate_explicit_repository_names",
-        repository_count=len(usernames_by_repository_id),
+        "hydrate_explicit_repository_names", repository_count=repository_count
     ) as hydrate_event:
         repositories_by_id = permissions_sourcegraph.list_repositories_by_ids(
             client,
             usernames_by_repository_id.keys(),
         )
-        hydrate_event["hydrated_repository_count"] = len(repositories_by_id)
+        missing_repository_count = repository_count - len(repositories_by_id)
+        if missing_repository_count:
+            hydrate_event["missing_repository_count"] = missing_repository_count
 
     repos_out: dict[str, RepoSnapshot] = {}
     for repository_id, usernames in usernames_by_repository_id.items():
         repos_out[repository_id] = {
             "name": _snapshot_repository_name(repositories_by_id, repository_id),
-            "explicit_permissions_users": usernames,
+            "users": usernames,
         }
 
-    return repos_out, submitted_user_count
+    return repos_out, scanned_user_count
 
 
 def _snapshot_repository_name(
@@ -416,9 +425,10 @@ def build_snapshot(
     bind_id_mode: str,
     config_path: Path | None = None,
     *,
-    total_users: int | None = None,
+    expected_user_count: int | None = None,
     explicit_permissions_batch_size: int,
     worker_pool: ThreadPoolExecutor | None = None,
+    selected_repository_ids: set[str] | None = None,
 ) -> Snapshot:
     """Capture a full Snapshot: explicit grants + pending-bindIDs + metadata.
 
@@ -427,17 +437,18 @@ def build_snapshot(
     batched work as the iterator yields, so ListUsers pagination overlaps
     with UserExplicitRepos work.
 
-    `total_users`, when known, drives percentage + ETA in the per-batch
-    progress log lines emitted by `capture_explicit_grants`.
+    `expected_user_count`, when known, drives percentage + ETA in the
+    per-batch progress log lines emitted by `capture_explicit_grants`.
     """
-    with src.span("build_snapshot", bind_id_mode=bind_id_mode) as build_event:
-        repos, user_count = capture_explicit_grants(
+    with src.span("build_snapshot") as build_event:
+        repos, scanned_user_count = capture_explicit_grants(
             client,
             users,
             parallelism,
             explicit_permissions_batch_size,
-            total_users=total_users,
+            expected_user_count=expected_user_count,
             worker_pool=worker_pool,
+            selected_repository_ids=selected_repository_ids,
         )
         pending = permissions_sourcegraph.list_pending_bind_ids(client)
 
@@ -448,14 +459,15 @@ def build_snapshot(
         distinct_users: set[str] = set()
         total_grants = 0
         for repo in repos.values():
-            for username in repo["explicit_permissions_users"]:
+            for username in repo["users"]:
                 distinct_users.add(username)
                 total_grants += 1
-        build_event["user_count"] = user_count
+        build_event["scanned_user_count"] = scanned_user_count
         build_event["repos_with_explicit_grants"] = len(repos)
         build_event["users_with_explicit_grants"] = len(distinct_users)
         build_event["total_grants"] = total_grants
-        build_event["pending_bindIDs_count"] = len(pending)
+        if pending:
+            build_event["pending_bindIDs_count"] = len(pending)
 
         return {
             "schema_version": SNAPSHOT_SCHEMA_VERSION,
@@ -466,13 +478,46 @@ def build_snapshot(
             "config_sha256": config_sha,
             "pending_bindIDs": sorted(pending),
             "stats": {
-                "total_users_scanned": user_count,
+                "total_users_scanned": scanned_user_count,
                 "users_with_explicit_grants": len(distinct_users),
                 "repos_with_explicit_grants": len(repos),
                 "total_grants": total_grants,
             },
             "repos": dict(sorted(repos.items())),  # sort by repo_id for stable file
         }
+
+
+def snapshot_with_repository_filter(
+    snapshot: Snapshot,
+    selected_repository_ids: set[str],
+) -> Snapshot:
+    """Return a snapshot containing only selected repository entries."""
+    repos = {
+        repository_id: repo
+        for repository_id, repo in snapshot["repos"].items()
+        if repository_id in selected_repository_ids
+    }
+    distinct_users: set[str] = set()
+    total_grants = 0
+    for repo in repos.values():
+        distinct_users.update(repo["users"])
+        total_grants += len(repo["users"])
+    return {
+        "schema_version": snapshot["schema_version"],
+        "captured_at": snapshot["captured_at"],
+        "endpoint": snapshot["endpoint"],
+        "bindID_mode": snapshot["bindID_mode"],
+        "config_file": snapshot["config_file"],
+        "config_sha256": snapshot["config_sha256"],
+        "pending_bindIDs": list(snapshot["pending_bindIDs"]),
+        "stats": {
+            "total_users_scanned": snapshot["stats"]["total_users_scanned"],
+            "users_with_explicit_grants": len(distinct_users),
+            "repos_with_explicit_grants": len(repos),
+            "total_grants": total_grants,
+        },
+        "repos": dict(sorted(repos.items())),
+    }
 
 
 def capture_user_scoped_explicit_grants(
@@ -495,31 +540,33 @@ def capture_user_scoped_explicit_grants(
             fetch_event["repo_count"] = len(repos)
             return user, repos
 
+    def _fetch_or_empty(
+        user: SnapshotUser,
+    ) -> tuple[SnapshotUser, list[permission_types.Repository]]:
+        try:
+            return _fetch(user)
+        except Exception as exception:
+            log.warning(
+                "Failed to fetch scoped explicit grants for user=%s: %s",
+                user["username"],
+                exception,
+            )
+            return user, []
+
     with src.span("capture_user_scoped_explicit_grants") as capture_event:
-        futures: dict[Any, SnapshotUser] = {}
-        with run_context.thread_pool(parallelism, worker_pool) as executor:
-            for user in users:
-                futures[src.submit_with_log_context(executor, _fetch, user)] = user
-            for future in as_completed(futures):
-                user = futures[future]
-                fetched_user: SnapshotUser
-                repos: list[permission_types.Repository]
-                try:
-                    fetched_user, repos = future.result()
-                except Exception as exception:
-                    log.warning(
-                        "Failed to fetch scoped explicit grants for user=%s: %s",
-                        user["username"],
-                        exception,
-                    )
-                    fetched_user, repos = user, []
-                scoped_users[fetched_user["username"]] = {
-                    "id": fetched_user["id"],
-                    "explicit_repositories": sorted(repos, key=lambda repo: repo["name"]),
-                }
-        capture_event["user_count"] = len(scoped_users)
+        for fetched_user, repos in run_context.parallel_map(
+            _fetch_or_empty,
+            users,
+            parallelism=parallelism,
+            worker_pool=worker_pool,
+        ):
+            scoped_users[fetched_user["username"]] = {
+                "id": fetched_user["id"],
+                "repos": sorted(repos, key=lambda repo: repo["name"]),
+            }
+        capture_event["scanned_user_count"] = len(scoped_users)
         capture_event["total_grants"] = sum(
-            len(user_snapshot["explicit_repositories"]) for user_snapshot in scoped_users.values()
+            len(user_snapshot["repos"]) for user_snapshot in scoped_users.values()
         )
     return dict(sorted(scoped_users.items()))
 
@@ -533,7 +580,7 @@ def build_user_scoped_snapshot(
     worker_pool: ThreadPoolExecutor | None = None,
 ) -> UserScopedSnapshot:
     """Capture a reversible snapshot for only the supplied users."""
-    with src.span("build_user_scoped_snapshot", bind_id_mode=bind_id_mode) as build_event:
+    with src.span("build_user_scoped_snapshot") as build_event:
         scoped_users = capture_user_scoped_explicit_grants(
             client,
             users,
@@ -544,13 +591,11 @@ def build_user_scoped_snapshot(
         if config_path is not None and config_path.exists():
             config_sha = hashlib.sha256(config_path.read_bytes()).hexdigest()
 
-        total_grants = sum(
-            len(user_snapshot["explicit_repositories"]) for user_snapshot in scoped_users.values()
-        )
+        total_grants = sum(len(user_snapshot["repos"]) for user_snapshot in scoped_users.values())
         users_with_explicit_grants = sum(
-            1 for user_snapshot in scoped_users.values() if user_snapshot["explicit_repositories"]
+            1 for user_snapshot in scoped_users.values() if user_snapshot["repos"]
         )
-        build_event["user_count"] = len(scoped_users)
+        build_event["scanned_user_count"] = len(scoped_users)
         build_event["users_with_explicit_grants"] = users_with_explicit_grants
         build_event["total_grants"] = total_grants
 
@@ -569,6 +614,49 @@ def build_user_scoped_snapshot(
             },
             "users": scoped_users,
         }
+
+
+def build_user_scoped_snapshot_from_repos(
+    client: src.SourcegraphClient,
+    users: Iterable[SnapshotUser],
+    repos_by_user_id: dict[str, list[permission_types.Repository]],
+    bind_id_mode: str,
+    config_path: Path | None = None,
+) -> UserScopedSnapshot:
+    """Build a user-scoped snapshot from explicit repos already fetched."""
+    scoped_users: dict[str, UserScopedUserSnapshot] = {
+        user["username"]: {
+            "id": user["id"],
+            "repos": sorted(
+                repos_by_user_id.get(user["id"], []),
+                key=lambda repo: repo["name"],
+            ),
+        }
+        for user in users
+    }
+    config_sha: str | None = None
+    if config_path is not None and config_path.exists():
+        config_sha = hashlib.sha256(config_path.read_bytes()).hexdigest()
+
+    total_grants = sum(len(user_snapshot["repos"]) for user_snapshot in scoped_users.values())
+    users_with_explicit_grants = sum(
+        1 for user_snapshot in scoped_users.values() if user_snapshot["repos"]
+    )
+    return {
+        "schema_version": SNAPSHOT_SCHEMA_VERSION,
+        "snapshot_kind": USER_SCOPED_SNAPSHOT_KIND,
+        "captured_at": datetime.datetime.now(datetime.UTC).isoformat(timespec="seconds"),
+        "endpoint": client.endpoint,
+        "bindID_mode": bind_id_mode,
+        "config_file": str(config_path.resolve()) if config_path else None,
+        "config_sha256": config_sha,
+        "stats": {
+            "total_users_scanned": len(scoped_users),
+            "users_with_explicit_grants": users_with_explicit_grants,
+            "total_grants": total_grants,
+        },
+        "users": dict(sorted(scoped_users.items())),
+    }
 
 
 def _write_pretty_json(path: Path, value: Any) -> int:
@@ -612,8 +700,8 @@ def _write_repo_snapshot_value(output: TextIO, repo: RepoSnapshot, indent: int) 
     output.write(f'{field_indent}"name": ')
     json.dump(repo["name"], output)
     output.write(",\n")
-    output.write(f'{field_indent}"explicit_permissions_users": ')
-    _write_string_list(output, repo["explicit_permissions_users"], indent + 2)
+    output.write(f'{field_indent}"users": ')
+    _write_string_list(output, repo["users"], indent + 2)
     output.write("\n" + " " * indent + "}")
 
 
@@ -654,8 +742,8 @@ def _write_user_scoped_snapshot_value(
     output.write(f'{field_indent}"id": ')
     json.dump(user_snapshot["id"], output)
     output.write(",\n")
-    output.write(f'{field_indent}"explicit_repositories": ')
-    _write_repository_list(output, user_snapshot["explicit_repositories"], indent + 2)
+    output.write(f'{field_indent}"repos": ')
+    _write_repository_list(output, user_snapshot["repos"], indent + 2)
     output.write("\n" + " " * indent + "}")
 
 
@@ -807,13 +895,25 @@ def _validate_snapshot_schema_version(path: Path, version: object) -> None:
     )
 
 
+def _encode_repo_snapshot_raw(path: Path, repo_id: str, raw_repo: dict[str, Any]) -> RepoSnapshot:
+    raw_usernames = raw_repo.get("users")
+    if not isinstance(raw_usernames, list):
+        raise SystemExit(f"{path}: repo {repo_id} is missing a users list.")
+    usernames = cast(list[object], raw_usernames)
+    return {
+        "name": cast(str, raw_repo["name"]),
+        "users": [str(username) for username in usernames],
+    }
+
+
 def _encode_full_snapshot_raw(path: Path, raw: dict[str, Any]) -> Snapshot:
     _validate_snapshot_schema_version(path, raw.get("schema_version"))
     if raw.get("snapshot_kind") == USER_SCOPED_SNAPSHOT_KIND:
         raise SystemExit(f"{path}: snapshot_kind is 'user_scope', expected full repo snapshot.")
-    on_disk_repos = cast(dict[str, RepoSnapshot], raw.get("repos", {}))
+    on_disk_repos = cast(dict[str, dict[str, Any]], raw.get("repos", {}))
     raw["repos"] = {
-        src.encode_repository_id(int(repo_id)): repo for repo_id, repo in on_disk_repos.items()
+        src.encode_repository_id(int(repo_id)): _encode_repo_snapshot_raw(path, repo_id, repo)
+        for repo_id, repo in on_disk_repos.items()
     }
     return cast(Snapshot, raw)
 
@@ -828,12 +928,12 @@ def _encode_user_scoped_snapshot_raw(path: Path, raw: dict[str, Any]) -> UserSco
     raw["users"] = {
         username: {
             "id": user_snapshot["id"],
-            "explicit_repositories": [
+            "repos": [
                 {
                     "id": src.encode_repository_id(int(repo["id"])),
                     "name": cast(str, repo["name"]),
                 }
-                for repo in cast(list[dict[str, Any]], user_snapshot["explicit_repositories"])
+                for repo in cast(list[dict[str, Any]], user_snapshot["repos"])
             ],
         }
         for username, user_snapshot in on_disk_users.items()
@@ -891,7 +991,7 @@ def _sorted_usernames(values: Sequence[str]) -> Sequence[str]:
 def _repo_usernames(repo: RepoSnapshot | None) -> Sequence[str]:
     if repo is None:
         return ()
-    return repo["explicit_permissions_users"]
+    return repo["users"]
 
 
 def _sorted_username_diff_counts(
@@ -1476,16 +1576,13 @@ def _repositories_by_id(
 ) -> dict[str, str]:
     if user_snapshot is None:
         return {}
-    return {
-        repository["id"]: repository["name"]
-        for repository in user_snapshot["explicit_repositories"]
-    }
+    return {repository["id"]: repository["name"] for repository in user_snapshot["repos"]}
 
 
 def _permission_count(repo_snapshot: RepoSnapshot | None) -> int:
     if repo_snapshot is None:
         return 0
-    return len(repo_snapshot["explicit_permissions_users"])
+    return len(repo_snapshot["users"])
 
 
 def _snapshot_diff_side(snapshot: Snapshot | UserScopedSnapshot) -> SnapshotDiffSide:

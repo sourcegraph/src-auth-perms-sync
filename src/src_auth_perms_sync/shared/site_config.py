@@ -98,13 +98,6 @@ def validate_site_config(client: src.SourcegraphClient) -> SiteConfig:
     enabled = bool(user_mapping.get("enabled", False))
     enable_username_changes = bool(contents.get("auth.enableUsernameChanges", False))
 
-    log.info(
-        "Site config: permissions.userMapping.enabled=%s  bindID=%s  auth.enableUsernameChanges=%s",
-        enabled,
-        bind_id_enum,
-        enable_username_changes,
-    )
-
     safety_errors: list[str] = []
 
     if not enabled:
@@ -155,6 +148,16 @@ def validate_site_config(client: src.SourcegraphClient) -> SiteConfig:
                 + bullet.join(saml_groups_errors)
             )
         raise SystemExit("FATAL: " + "\n\n".join(message_sections))
+
+    log.info(
+        "Site config validation passed: "
+        "permissions.userMapping.enabled=%s  "
+        "bindID=%s  "
+        "auth.enableUsernameChanges=%s",
+        enabled,
+        bind_id_enum,
+        enable_username_changes,
+    )
 
     return SiteConfig(
         bind_id_mode=bind_id_enum,

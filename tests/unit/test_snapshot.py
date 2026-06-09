@@ -66,25 +66,25 @@ class SnapshotTests(unittest.TestCase):
                 side_effect=list_repositories_by_ids,
             ),
         ):
-            repos, user_count = permission_snapshot.capture_explicit_grants(
+            repos, scanned_user_count = permission_snapshot.capture_explicit_grants(
                 cast(src.SourcegraphClient, object()),
                 users,
                 parallelism=1,
                 explicit_permissions_batch_size=25,
-                total_users=len(users),
+                expected_user_count=len(users),
             )
 
-        self.assertEqual(3, user_count)
+        self.assertEqual(3, scanned_user_count)
         self.assertEqual([repo_one_id, repo_two_id], hydrated_repository_ids)
         self.assertEqual(
             {
                 repo_one_id: {
                     "name": "github.com/sourcegraph/one",
-                    "explicit_permissions_users": ["alice", "carol"],
+                    "users": ["alice", "carol"],
                 },
                 repo_two_id: {
                     "name": "github.com/sourcegraph/two",
-                    "explicit_permissions_users": ["carol"],
+                    "users": ["carol"],
                 },
             },
             repos,
@@ -95,7 +95,7 @@ class SnapshotTests(unittest.TestCase):
             {"id": f"user-{index}", "username": f"user-{index}"} for index in range(9)
         ]
         pending_counts: list[int] = []
-        real_wait = permission_snapshot.wait
+        real_wait = permission_snapshot.run_context.wait
 
         def recording_wait(futures: Iterable[Future[Any]], **kwargs: Any) -> Any:
             futures_list = list(futures)
@@ -121,17 +121,17 @@ class SnapshotTests(unittest.TestCase):
                 "list_repositories_by_ids",
                 return_value={},
             ),
-            patch.object(permission_snapshot, "wait", side_effect=recording_wait),
+            patch.object(permission_snapshot.run_context, "wait", side_effect=recording_wait),
         ):
-            _, user_count = permission_snapshot.capture_explicit_grants(
+            _, scanned_user_count = permission_snapshot.capture_explicit_grants(
                 cast(src.SourcegraphClient, object()),
                 users,
                 parallelism=2,
                 explicit_permissions_batch_size=1,
-                total_users=len(users),
+                expected_user_count=len(users),
             )
 
-        self.assertEqual(9, user_count)
+        self.assertEqual(9, scanned_user_count)
         self.assertTrue(pending_counts)
         self.assertLessEqual(max(pending_counts), 4)
 
@@ -225,7 +225,7 @@ class SnapshotTests(unittest.TestCase):
         self.assertEqual(repo_two["id"], calls[2][1]["repo1"])
         self.assertEqual(repo_three["id"], calls[2][1]["repo2"])
 
-    def test_write_snapshot_uses_username_list_for_explicit_permissions(self) -> None:
+    def test_write_snapshot_uses_short_users_key_for_explicit_permissions(self) -> None:
         snapshot = self.make_snapshot()
 
         with tempfile.TemporaryDirectory() as directory_name:
@@ -233,18 +233,65 @@ class SnapshotTests(unittest.TestCase):
 
             permission_snapshot.write_snapshot(snapshot_path, snapshot)
             on_disk = json.loads(snapshot_path.read_text())
+            loaded_snapshot = permission_snapshot.read_snapshot(snapshot_path)
 
         self.assertEqual(
             ["alice", "bob"],
-            on_disk["repos"]["1"]["explicit_permissions_users"],
+            on_disk["repos"]["1"]["users"],
         )
-        self.assertNotIn("explicit_user_permissions", on_disk["repos"]["1"])
+        self.assertEqual(
+            ["alice", "bob"],
+            loaded_snapshot["repos"][src.encode_repository_id(1)]["users"],
+        )
+        self.assertEqual({"name", "users"}, set(on_disk["repos"]["1"]))
+
+    def test_write_user_scoped_snapshot_uses_short_repos_key(self) -> None:
+        repo_id = src.encode_repository_id(1)
+        snapshot: permission_snapshot.UserScopedSnapshot = {
+            "schema_version": permission_snapshot.SNAPSHOT_SCHEMA_VERSION,
+            "snapshot_kind": permission_snapshot.USER_SCOPED_SNAPSHOT_KIND,
+            "captured_at": "2026-05-26T00:00:00+00:00",
+            "endpoint": "https://sourcegraph.example.com",
+            "bindID_mode": "USERNAME",
+            "config_file": None,
+            "config_sha256": None,
+            "stats": {
+                "total_users_scanned": 1,
+                "users_with_explicit_grants": 1,
+                "total_grants": 1,
+            },
+            "users": {
+                "alice": {
+                    "id": "user-1",
+                    "repos": [
+                        {
+                            "id": repo_id,
+                            "name": "github.com/sourcegraph/example",
+                        }
+                    ],
+                }
+            },
+        }
+
+        with tempfile.TemporaryDirectory() as directory_name:
+            snapshot_path = Path(directory_name) / "before.json"
+
+            permission_snapshot.write_user_scoped_snapshot(snapshot_path, snapshot)
+            on_disk = json.loads(snapshot_path.read_text())
+            loaded_snapshot = permission_snapshot.read_user_scoped_snapshot(snapshot_path)
+
+        self.assertEqual(
+            [{"id": 1, "name": "github.com/sourcegraph/example"}],
+            on_disk["users"]["alice"]["repos"],
+        )
+        self.assertNotIn("explicit_repositories", on_disk["users"]["alice"])
+        self.assertEqual(repo_id, loaded_snapshot["users"]["alice"]["repos"][0]["id"])
 
     def test_snapshot_diff_omits_unchanged_users(self) -> None:
         before = self.make_snapshot()
         after = self.make_snapshot()
         repo_id = src.encode_repository_id(1)
-        after["repos"][repo_id]["explicit_permissions_users"] = ["alice", "carol"]
+        after["repos"][repo_id]["users"] = ["alice", "carol"]
 
         diff = permission_snapshot.build_snapshot_diff(before, after)
 
@@ -292,11 +339,11 @@ class SnapshotTests(unittest.TestCase):
         self.assertEqual({}, after["repos"])
         self.assertEqual(
             ["alice", "carol"],
-            after_on_disk["repos"]["1"]["explicit_permissions_users"],
+            after_on_disk["repos"]["1"]["users"],
         )
         self.assertEqual(
             ["dana"],
-            after_on_disk["repos"]["2"]["explicit_permissions_users"],
+            after_on_disk["repos"]["2"]["users"],
         )
         self.assertEqual(2, diff_on_disk["summary"]["repos_changed"])
         self.assertEqual(2, diff_on_disk["summary"]["grants_added"])
@@ -330,7 +377,26 @@ class SnapshotTests(unittest.TestCase):
             with self.assertRaises(SystemExit) as exit_context:
                 permission_snapshot.read_snapshot(snapshot_path)
 
-        self.assertIn("expected 3", str(exit_context.exception))
+        self.assertIn("expected 5", str(exit_context.exception))
+
+    def test_snapshot_with_repository_filter_recomputes_stats(self) -> None:
+        snapshot = self.make_snapshot()
+        second_repo_id = src.encode_repository_id(2)
+        snapshot["repos"][second_repo_id] = {
+            "name": "github.com/sourcegraph/second",
+            "users": ["alice", "carol"],
+        }
+
+        filtered = permission_snapshot.snapshot_with_repository_filter(
+            snapshot,
+            {second_repo_id},
+        )
+
+        self.assertEqual({second_repo_id}, set(filtered["repos"]))
+        self.assertEqual(2, filtered["stats"]["users_with_explicit_grants"])
+        self.assertEqual(1, filtered["stats"]["repos_with_explicit_grants"])
+        self.assertEqual(2, filtered["stats"]["total_grants"])
+        self.assertEqual(2, filtered["stats"]["total_users_scanned"])
 
     def make_snapshot(self) -> permission_snapshot.Snapshot:
         return {
@@ -350,7 +416,7 @@ class SnapshotTests(unittest.TestCase):
             "repos": {
                 src.encode_repository_id(1): {
                     "name": "github.com/sourcegraph/example",
-                    "explicit_permissions_users": ["alice", "bob"],
+                    "users": ["alice", "bob"],
                 }
             },
         }

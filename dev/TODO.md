@@ -1,21 +1,5 @@
 # TODO
 
-## High priority: Sync modes
-
-### Fast
-
-- Additive modes, to add new users’ perms quickly,
-  without the extraneous load on the database of a full sync
-- Take a list of usernames and/or email addresses as input,
-  query users on the instance for these,
-  then trigger a perms sync for found users
-- Query the instance for all new users, which do not yet have explicit perms
-- Query the instance for all new repos, which do not yet have explicit perms
-
-### Full: Overwrite all perms
-
-- Separate full sync mode with an arg
-
 ## High priority: Remote trigger on demand
 
 - Sourcegraph webhook for new user coming in v7.4.0

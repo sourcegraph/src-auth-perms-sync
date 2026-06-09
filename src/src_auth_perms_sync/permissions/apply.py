@@ -6,14 +6,7 @@ import logging
 import threading
 from collections import deque
 from collections.abc import Sequence
-from concurrent.futures import (
-    FIRST_COMPLETED,
-    CancelledError,
-    Future,
-    ThreadPoolExecutor,
-    as_completed,
-    wait,
-)
+from concurrent.futures import CancelledError, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import TypeAlias, cast
 
@@ -221,61 +214,65 @@ def _apply_permission_changes(
         canceled = 0
         skipped = 0
         breaker = CircuitBreaker()
-        with run_context.thread_pool(parallelism, worker_pool) as executor:
-            futures = {
-                src.submit_with_log_context(
-                    executor,
-                    _mutate_repo_permission_for_user,
-                    client,
-                    change,
-                    mutation,
-                    event_name,
-                ): change
-                for change in changes
-            }
-            for future in as_completed(futures):
-                change = futures[future]
-                try:
-                    future.result()
-                    succeeded += 1
-                    breaker.record(success=True)
-                    log.info(
-                        "  OK %s %s → %s (id=%d).",
-                        action,
-                        change.username,
-                        change.repo_name,
-                        src.decode_repository_id(change.repo_id),
-                    )
-                except CancelledError:
-                    canceled += 1
-                    continue
-                except Exception as exception:
-                    if is_missing_mutation_resource_error(exception):
-                        skipped += 1
-                        log.warning(
-                            "  SKIP %s %s → %s (id=%d): repo/user no longer exists: %s",
-                            action,
-                            change.username,
-                            change.repo_name,
-                            src.decode_repository_id(change.repo_id),
-                            exception,
-                        )
-                        continue
-                    failed += 1
-                    breaker.record(success=False)
-                    log.error(
-                        "  FAIL %s %s → %s (id=%d): %s",
-                        action,
-                        change.username,
-                        change.repo_name,
-                        src.decode_repository_id(change.repo_id),
-                        exception,
-                    )
 
-                if breaker.is_open():
-                    for pending_future in futures:
-                        if not pending_future.done():
-                            pending_future.cancel()
+        def mutate_change(change: PermissionChange) -> None:
+            _mutate_repo_permission_for_user(
+                client,
+                change,
+                mutation,
+                event_name,
+            )
+
+        def record_result(result: run_context.ParallelResult[PermissionChange, None]) -> None:
+            nonlocal succeeded, failed, canceled, skipped
+            change = result.item
+            exception = result.exception
+            if exception is None:
+                succeeded += 1
+                breaker.record(success=True)
+                log.debug(
+                    "  OK %s %s → %s (id=%d).",
+                    action,
+                    change.username,
+                    change.repo_name,
+                    src.decode_repository_id(change.repo_id),
+                )
+                return
+            if isinstance(exception, CancelledError):
+                canceled += 1
+                return
+            if is_missing_mutation_resource_error(exception):
+                skipped += 1
+                log.warning(
+                    "  SKIP %s %s → %s (id=%d): repo/user no longer exists: %s",
+                    action,
+                    change.username,
+                    change.repo_name,
+                    src.decode_repository_id(change.repo_id),
+                    exception,
+                )
+                return
+            failed += 1
+            breaker.record(success=False)
+            log.error(
+                "  FAIL %s %s → %s (id=%d): %s",
+                action,
+                change.username,
+                change.repo_name,
+                src.decode_repository_id(change.repo_id),
+                exception,
+            )
+
+        summary = run_context.parallel_process(
+            mutate_change,
+            changes,
+            parallelism=parallelism,
+            worker_pool=worker_pool,
+            handle_result=record_result,
+            should_stop=breaker.is_open,
+        )
+        if breaker.is_open():
+            canceled += summary.unsubmitted_count
         batch_event["succeeded"] = succeeded
         batch_event["failed"] = failed
         batch_event["canceled"] = canceled
@@ -348,101 +345,74 @@ def _apply_repo_overwrite_plans(
         failed = 0
         canceled = 0
         skipped = 0
-        submitted_count = 0
-        submissions_stopped = False
         breaker = CircuitBreaker()
-        overwrite_iterator = iter(overwrites)
-        futures: dict[Future[None], permission_types.RepositoryUsernameOverwrite] = {}
 
-        def _submit_next(executor: ThreadPoolExecutor) -> bool:
-            nonlocal submitted_count
-            try:
-                overwrite = next(overwrite_iterator)
-            except StopIteration:
-                return False
-            future = cast(
-                Future[None],
-                src.submit_with_log_context(
-                    executor,
-                    set_repo_permissions_for_usernames,
-                    client,
-                    overwrite.repository_id,
-                    overwrite.usernames,
-                ),
+        def apply_overwrite(overwrite: permission_types.RepositoryUsernameOverwrite) -> None:
+            set_repo_permissions_for_usernames(
+                client,
+                overwrite.repository_id,
+                overwrite.usernames,
             )
-            futures[future] = overwrite
-            submitted_count += 1
-            return True
 
-        def _stop_submissions() -> None:
-            nonlocal submissions_stopped
-            if submissions_stopped:
+        def record_result(
+            result: run_context.ParallelResult[
+                permission_types.RepositoryUsernameOverwrite,
+                None,
+            ],
+        ) -> None:
+            nonlocal succeeded, failed, canceled, skipped
+            overwrite = result.item
+            exception = result.exception
+            if exception is None:
+                succeeded += 1
+                breaker.record(success=True)
+                log.info(
+                    "  OK %s (id=%d) — %d users.",
+                    overwrite.repository_name,
+                    src.decode_repository_id(overwrite.repository_id),
+                    len(overwrite.usernames),
+                )
                 return
-            submissions_stopped = True
-            for pending_future in futures:
-                if not pending_future.done():
-                    pending_future.cancel()
+            if isinstance(exception, CancelledError):
+                # Cancelled by the breaker; not counted as a failure because
+                # we never gave the server a chance to apply it.
+                canceled += 1
+                return
+            if is_missing_mutation_resource_error(exception):
+                skipped += 1
+                log.warning(
+                    "  SKIP %s (id=%d): repo/user no longer exists: %s",
+                    overwrite.repository_name,
+                    src.decode_repository_id(overwrite.repository_id),
+                    exception,
+                )
+                return
+            failed += 1
+            breaker.record(success=False)
+            log.error(
+                "  FAIL %s (id=%d): %s",
+                overwrite.repository_name,
+                src.decode_repository_id(overwrite.repository_id),
+                exception,
+            )
 
-        with run_context.thread_pool(parallelism, worker_pool) as executor:
-            while len(futures) < max_pending_futures and _submit_next(executor):
-                pass
-
-            while futures:
-                done_futures, _ = wait(futures, return_when=FIRST_COMPLETED)
-                for future in done_futures:
-                    overwrite = futures.pop(future)
-                    try:
-                        future.result()
-                        succeeded += 1
-                        breaker.record(success=True)
-                        log.info(
-                            "  OK %s (id=%d) — %d users.",
-                            overwrite.repository_name,
-                            src.decode_repository_id(overwrite.repository_id),
-                            len(overwrite.usernames),
-                        )
-                    except CancelledError:
-                        # Cancelled by the breaker; not counted as a failure
-                        # because we never gave the server a chance to apply it.
-                        canceled += 1
-                        continue
-                    except Exception as exception:
-                        if is_missing_mutation_resource_error(exception):
-                            skipped += 1
-                            log.warning(
-                                "  SKIP %s (id=%d): repo/user no longer exists: %s",
-                                overwrite.repository_name,
-                                src.decode_repository_id(overwrite.repository_id),
-                                exception,
-                            )
-                            continue
-                        failed += 1
-                        breaker.record(success=False)
-                        log.error(
-                            "  FAIL %s (id=%d): %s",
-                            overwrite.repository_name,
-                            src.decode_repository_id(overwrite.repository_id),
-                            exception,
-                        )
-
-                    if breaker.is_open():
-                        _stop_submissions()
-
-                while (
-                    not submissions_stopped
-                    and len(futures) < max_pending_futures
-                    and _submit_next(executor)
-                ):
-                    pass
-
-        if submissions_stopped:
-            canceled += len(overwrites) - submitted_count
+        summary = run_context.parallel_process(
+            apply_overwrite,
+            overwrites,
+            parallelism=parallelism,
+            worker_pool=worker_pool,
+            handle_result=record_result,
+            should_stop=breaker.is_open,
+            max_pending=max_pending_futures,
+        )
+        if breaker.is_open():
+            canceled += summary.unsubmitted_count
         batch_event["succeeded"] = succeeded
         batch_event["failed"] = failed
         batch_event["canceled"] = canceled
         batch_event["skipped"] = skipped
         batch_event["circuit_broken"] = breaker.is_open()
-        batch_event["submitted"] = submitted_count
+        batch_event["submitted"] = summary.submitted_count
         return shared_types.MutationCounts(
             succeeded=succeeded,
             failed=failed,
