@@ -269,7 +269,6 @@ def capture_explicit_grants(
         futures: dict[Any, list[SnapshotUserInput]] = {}
         scanned_user_count = 0
         max_pending_batches = max(1, parallelism * 2)
-        src.debug("capture_explicit_grants_queue", max_pending_batches=max_pending_batches)
 
         def _submit_batch(
             executor: ThreadPoolExecutor,

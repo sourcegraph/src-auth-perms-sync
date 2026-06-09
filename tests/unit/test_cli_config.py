@@ -449,6 +449,14 @@ class CliConfigTests(unittest.TestCase):
 
         self.assertEqual(True, fields["no_backup"])
 
+    def test_startup_config_fields_include_derived_queue_limit(self) -> None:
+        configuration = make_config(parallelism=3)
+
+        fields = cli.startup_config_fields(configuration)
+
+        self.assertEqual(6, fields["SRC_AUTH_PERMS_SYNC_MAX_PENDING_BATCHES"])
+        self.assertEqual("provided", fields["SRC_ACCESS_TOKEN"])
+
     def test_run_get_passes_no_backup_to_permission_command(self) -> None:
         configuration = make_config(no_backup=True)
         client = cast(
