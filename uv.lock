@@ -548,7 +548,7 @@ dev = [
 requires-dist = [
     { name = "json5", specifier = ">=0.14.0" },
     { name = "pyyaml", specifier = ">=6.0.3" },
-    { name = "src-py-lib", extras = ["otel"], git = "https://github.com/sourcegraph/src-py-lib.git?rev=amp%2Fotel-standard-instrumentation" },
+    { name = "src-py-lib", extras = ["otel"], specifier = "==0.2.1" },
 ]
 
 [package.metadata.requires-dev]
@@ -560,13 +560,17 @@ dev = [
 
 [[package]]
 name = "src-py-lib"
-version = "0.1.10.dev5+g1c6337441"
-source = { git = "https://github.com/sourcegraph/src-py-lib.git?rev=amp%2Fotel-standard-instrumentation#1c633744169aba16fa629ae4e65144e6a53a886b" }
+version = "0.2.1"
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "httpx" },
     { name = "opentelemetry-api" },
     { name = "pydantic" },
     { name = "python-dotenv" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/31/62/6bfbc05c31522ebabe054175505d833516ecb5a52e46776fabb37629f45e/src_py_lib-0.2.1.tar.gz", hash = "sha256:ad1b4ea92245cc9b144f48dd8a985003309fd0ee028ff2d25e55f73647abdd78", size = 88498, upload-time = "2026-06-09T06:26:57.789Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/e9/b8/ab4433e688deeb321aa992c8098681f2eefe3b705d0f52ebd2186c823596/src_py_lib-0.2.1-py3-none-any.whl", hash = "sha256:d1f736717b4d559974ee61f89c0dff360d33064850d27ec07bfbd41495baa198", size = 49749, upload-time = "2026-06-09T06:26:56.476Z" },
 ]
 
 [package.optional-dependencies]
