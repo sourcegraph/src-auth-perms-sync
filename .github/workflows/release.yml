@@ -455,9 +455,6 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    environment:
-      name: pypi
-      url: https://pypi.org/project/src-auth-perms-sync/
 
     steps:
       - name: Download built distribution
