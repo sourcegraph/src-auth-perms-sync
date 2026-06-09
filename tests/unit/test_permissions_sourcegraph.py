@@ -54,6 +54,7 @@ class _ExplicitReposClient:
     def __init__(self, explicit_user_ids: set[str]) -> None:
         self.explicit_user_ids = explicit_user_ids
         self.calls: list[src.JSONDict] = []
+        self.queries: list[str] = []
 
     def graphql(
         self,
@@ -62,12 +63,12 @@ class _ExplicitReposClient:
         *,
         follow_pages: bool = True,
     ) -> src.JSONDict:
-        del query
         if variables is None:
             raise AssertionError("expected explicit-repo variables")
         if follow_pages:
             raise AssertionError("existence batch should not ask the client to follow pages")
         self.calls.append(dict(variables))
+        self.queries.append(query)
 
         response: dict[str, object] = {}
         for variable_name, variable_value in variables.items():
@@ -83,7 +84,6 @@ class _ExplicitReposClient:
                 "permissionsInfo": {
                     "repositories": {
                         "nodes": permission_nodes,
-                        "pageInfo": {"hasNextPage": False, "endCursor": None},
                     }
                 }
             }
@@ -118,11 +118,18 @@ class PermissionsSourcegraphTests(unittest.TestCase):
         )
 
         self.assertEqual(explicit_user_ids, {"user-2", "user-3"})
-        self.assertEqual([call["first"] for call in client.calls], [1, 1])
+        for query in client.queries:
+            self.assertIn("query UserExplicitRepoExistsBatch", query)
+            self.assertIn("repositories(source: API, first: 1)", query)
+            self.assertNotIn("pageInfo", query)
+            self.assertNotIn("after", query)
         self.assertEqual(
             [[call.get("user0"), call.get("user1")] for call in client.calls],
             [["user-1", "user-2"], ["user-3", None]],
         )
+        for call in client.calls:
+            self.assertNotIn("first", call)
+            self.assertFalse(any(variable_name.startswith("after") for variable_name in call))
 
 
 def _site_users_call_page_args(calls: list[src.JSONDict]) -> tuple[list[int], list[int]]:

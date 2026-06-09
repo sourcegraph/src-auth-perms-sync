@@ -246,7 +246,7 @@ def _user_ids_with_explicit_repos_batch(
     user_ids: Sequence[str],
 ) -> set[str]:
     data = client.graphql(
-        _user_explicit_repos_batch_query(len(user_ids)),
+        _user_explicit_repo_exists_batch_query(len(user_ids)),
         _user_explicit_repo_exists_batch_variables(user_ids),
         follow_pages=False,
     )
@@ -259,10 +259,9 @@ def _user_ids_with_explicit_repos_batch(
 
 
 def _user_explicit_repo_exists_batch_variables(user_ids: Sequence[str]) -> src.JSONDict:
-    variables: src.JSONDict = {"first": 1}
+    variables: src.JSONDict = {}
     for index, user_id in enumerate(user_ids):
         variables[f"user{index}"] = user_id
-        variables[f"after{index}"] = None
     return variables
 
 
@@ -409,6 +408,30 @@ def _user_explicit_repos_batch_query(batch_size: int) -> str:
   }}"""
         )
     return "query UserExplicitReposBatch(" + ", ".join(variables) + ") {" + "".join(fields) + "\n}"
+
+
+def _user_explicit_repo_exists_batch_query(batch_size: int) -> str:
+    variables = [f"$user{index}: ID!" for index in range(batch_size)]
+    fields = [
+        f"""
+  user{index}: node(id: $user{index}) {{
+    ... on User {{
+      permissionsInfo {{
+        repositories(source: API, first: 1) {{
+          nodes {{ id }}
+        }}
+      }}
+    }}
+  }}"""
+        for index in range(batch_size)
+    ]
+    return (
+        "query UserExplicitRepoExistsBatch("
+        + ", ".join(variables)
+        + ") {"
+        + "".join(fields)
+        + "\n}"
+    )
 
 
 def _user_explicit_repos_batch_variables(
