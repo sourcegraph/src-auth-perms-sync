@@ -4,6 +4,7 @@ import json
 import unittest
 from collections.abc import Iterator, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, NotRequired, TypedDict, cast
 
@@ -78,6 +79,41 @@ class FixtureCase(TypedDict):
     description: str
     set: FixtureSetOptions
     expectedMutations: NotRequired[int]
+
+
+@dataclass(frozen=True, slots=True)
+class FixtureStateCounts:
+    users: int
+    repos: int
+    permission_pairs: int
+
+
+@dataclass(frozen=True, slots=True)
+class FixtureRunResult:
+    name: str
+    description: str
+    before_counts: FixtureStateCounts
+    expected_counts: FixtureStateCounts
+    actual_counts: FixtureStateCounts
+    expected_mutations: int | None
+    actual_mutations: int
+    expected_state: FixtureState
+    actual_state: FixtureState
+    command_failure: str | None = None
+
+    @property
+    def failure(self) -> str | None:
+        if self.command_failure is not None:
+            return self.command_failure
+        if self.expected_state != self.actual_state:
+            return "actual state did not match after.json"
+        if self.expected_mutations is not None and self.expected_mutations != self.actual_mutations:
+            return f"expected {self.expected_mutations} mutation(s), got {self.actual_mutations}"
+        return None
+
+    @property
+    def passed(self) -> bool:
+        return self.failure is None
 
 
 class FakeSourcegraphClient:
@@ -408,20 +444,20 @@ class FakeSourcegraphClient:
         return src.encode_sourcegraph_node_id("ExternalService", external_service_id)
 
 
-class PermissionFixtureCaseTests(unittest.TestCase):
-    maxDiff = None
+def fixture_case_dirs() -> list[Path]:
+    return sorted(path for path in FIXTURES_DIR.iterdir() if path.is_dir())
 
-    def test_permission_fixture_cases(self) -> None:
-        for case_dir in sorted(path for path in FIXTURES_DIR.iterdir() if path.is_dir()):
-            with self.subTest(case=case_dir.name):
-                self.run_fixture_case(case_dir)
 
-    def run_fixture_case(self, case_dir: Path) -> None:
-        case = self.load_case(case_dir / "case.json")
-        client = FakeSourcegraphClient(self.load_state(case_dir / "before.json"))
-        config = self.config_for_case(case, case_dir / "maps.yaml", client.endpoint)
+def run_fixture_case(case_dir: Path) -> FixtureRunResult:
+    case = load_case(case_dir / "case.json")
+    before_state = load_state(case_dir / "before.json")
+    expected_state = FakeSourcegraphClient(load_state(case_dir / "after.json")).export_state()
+    client = FakeSourcegraphClient(before_state)
+    command_failure: str | None = None
+
+    try:
+        config = config_for_case(case, case_dir / "maps.yaml", client.endpoint)
         command = cli.resolve_command("set", config)
-
         with ThreadPoolExecutor(max_workers=config.parallelism) as worker_pool:
             cli.run_command(
                 config,
@@ -429,38 +465,73 @@ class PermissionFixtureCaseTests(unittest.TestCase):
                 cast(src.SourcegraphClient, client),
                 worker_pool,
             )
+    except SystemExit as exception:
+        command_failure = f"SystemExit: {exception.code!r}"
+    except Exception as exception:
+        command_failure = f"{type(exception).__name__}: {exception}"
 
-        expected_state = FakeSourcegraphClient(
-            self.load_state(case_dir / "after.json")
-        ).export_state()
-        self.assertEqual(expected_state, client.export_state())
-        if "expectedMutations" in case:
-            self.assertEqual(case["expectedMutations"], client.mutation_count)
+    actual_state = client.export_state()
+    return FixtureRunResult(
+        name=case_dir.name,
+        description=case["description"],
+        before_counts=state_counts(before_state),
+        expected_counts=state_counts(expected_state),
+        actual_counts=state_counts(actual_state),
+        expected_mutations=case.get("expectedMutations"),
+        actual_mutations=client.mutation_count,
+        expected_state=expected_state,
+        actual_state=actual_state,
+        command_failure=command_failure,
+    )
 
-    def config_for_case(self, case: FixtureCase, maps_path: Path, endpoint: str) -> cli.Config:
-        set_options = case["set"]
-        updates: dict[str, object] = {
-            "maps_path": maps_path,
-            "apply": True,
-            "no_backup": True,
-            "parallelism": 1,
-            "full": bool(set_options.get("full", False)),
-            "users": tuple(set_options.get("users", [])),
-            "users_without_explicit_perms": bool(
-                set_options.get("usersWithoutExplicitPerms", False)
-            ),
-            "created_after": set_options.get("createdAfter"),
-        }
-        return cli.Config(
-            src_endpoint=endpoint,
-            src_access_token="fixture-token",
-        ).model_copy(update=updates)
 
-    def load_case(self, path: Path) -> FixtureCase:
-        return cast(FixtureCase, json.loads(path.read_text(encoding="utf-8")))
+def state_counts(state: FixtureState) -> FixtureStateCounts:
+    return FixtureStateCounts(
+        users=len(state["users"]),
+        repos=len(state["repos"]),
+        permission_pairs=sum(
+            len(repository["explicitPermissionsUsers"]) for repository in state["repos"]
+        ),
+    )
 
-    def load_state(self, path: Path) -> FixtureState:
-        return cast(FixtureState, json.loads(path.read_text(encoding="utf-8")))
+
+def config_for_case(case: FixtureCase, maps_path: Path, endpoint: str) -> cli.Config:
+    set_options = case["set"]
+    updates: dict[str, object] = {
+        "maps_path": maps_path,
+        "apply": True,
+        "no_backup": True,
+        "parallelism": 1,
+        "full": bool(set_options.get("full", False)),
+        "users": tuple(set_options.get("users", [])),
+        "users_without_explicit_perms": bool(set_options.get("usersWithoutExplicitPerms", False)),
+        "created_after": set_options.get("createdAfter"),
+    }
+    return cli.Config(
+        src_endpoint=endpoint,
+        src_access_token="fixture-token",
+    ).model_copy(update=updates)
+
+
+def load_case(path: Path) -> FixtureCase:
+    return cast(FixtureCase, json.loads(path.read_text(encoding="utf-8")))
+
+
+def load_state(path: Path) -> FixtureState:
+    return cast(FixtureState, json.loads(path.read_text(encoding="utf-8")))
+
+
+class PermissionFixtureCaseTests(unittest.TestCase):
+    maxDiff = None
+
+    def test_permission_fixture_cases(self) -> None:
+        for case_dir in fixture_case_dirs():
+            with self.subTest(case=case_dir.name):
+                result = run_fixture_case(case_dir)
+                self.assertIsNone(result.command_failure)
+                self.assertEqual(result.expected_state, result.actual_state)
+                if result.expected_mutations is not None:
+                    self.assertEqual(result.expected_mutations, result.actual_mutations)
 
 
 if __name__ == "__main__":
