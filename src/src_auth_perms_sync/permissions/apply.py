@@ -26,6 +26,12 @@ from . import types as permission_types
 
 log = logging.getLogger(__name__)
 
+MISSING_MUTATION_RESOURCE_TERMS = (
+    "repo",
+    "repository",
+    "user",
+)
+
 
 @dataclass
 class CircuitBreaker:
@@ -179,6 +185,21 @@ def _mutate_repo_permission_for_user(
         )
 
 
+def is_missing_mutation_resource_error(exception: BaseException) -> bool:
+    """Return whether a mutation failed because its repo/user disappeared.
+
+    Sourcegraph instances are live systems: users and repos can be deleted
+    between discovery/planning and the eventual mutation. Those races should
+    be logged and skipped, not treated as backend-health failures.
+    """
+    if not isinstance(exception, src.GraphQLError):
+        return False
+    message = str(exception).lower()
+    if not any(term in message for term in MISSING_MUTATION_RESOURCE_TERMS):
+        return False
+    return "not found" in message or "could not resolve" in message
+
+
 def _apply_permission_changes(
     client: src.SourcegraphClient,
     changes: Sequence[PermissionChange],
@@ -198,6 +219,7 @@ def _apply_permission_changes(
         succeeded = 0
         failed = 0
         canceled = 0
+        skipped = 0
         breaker = CircuitBreaker()
         with run_context.thread_pool(parallelism, worker_pool) as executor:
             futures = {
@@ -228,6 +250,17 @@ def _apply_permission_changes(
                     canceled += 1
                     continue
                 except Exception as exception:
+                    if is_missing_mutation_resource_error(exception):
+                        skipped += 1
+                        log.warning(
+                            "  SKIP %s %s → %s (id=%d): repo/user no longer exists: %s",
+                            action,
+                            change.username,
+                            change.repo_name,
+                            src.decode_repository_id(change.repo_id),
+                            exception,
+                        )
+                        continue
                     failed += 1
                     breaker.record(success=False)
                     log.error(
@@ -246,11 +279,13 @@ def _apply_permission_changes(
         batch_event["succeeded"] = succeeded
         batch_event["failed"] = failed
         batch_event["canceled"] = canceled
+        batch_event["skipped"] = skipped
         batch_event["circuit_broken"] = breaker.is_open()
         return shared_types.MutationCounts(
             succeeded=succeeded,
             failed=failed,
             canceled=canceled,
+            skipped=skipped,
         )
 
 
@@ -301,17 +336,18 @@ def _apply_repo_overwrite_plans(
 ) -> shared_types.MutationCounts:
     """Dispatch per-repo overwrite mutations with bounded in-flight work."""
     max_pending_futures = max(1, parallelism * 2)
-    total_users = sum(len(overwrite.usernames) for overwrite in overwrites)
+    payload_grant_count = sum(len(overwrite.usernames) for overwrite in overwrites)
     with src.event(
         "apply_username_overwrites",
         payload_count=len(overwrites),
         parallelism=parallelism,
-        total_users=total_users,
+        payload_grant_count=payload_grant_count,
         max_pending_futures=max_pending_futures,
     ) as batch_event:
         succeeded = 0
         failed = 0
         canceled = 0
+        skipped = 0
         submitted_count = 0
         submissions_stopped = False
         breaker = CircuitBreaker()
@@ -371,6 +407,15 @@ def _apply_repo_overwrite_plans(
                         canceled += 1
                         continue
                     except Exception as exception:
+                        if is_missing_mutation_resource_error(exception):
+                            skipped += 1
+                            log.warning(
+                                "  SKIP %s (id=%d): repo/user no longer exists: %s",
+                                overwrite.repository_name,
+                                src.decode_repository_id(overwrite.repository_id),
+                                exception,
+                            )
+                            continue
                         failed += 1
                         breaker.record(success=False)
                         log.error(
@@ -395,12 +440,14 @@ def _apply_repo_overwrite_plans(
         batch_event["succeeded"] = succeeded
         batch_event["failed"] = failed
         batch_event["canceled"] = canceled
+        batch_event["skipped"] = skipped
         batch_event["circuit_broken"] = breaker.is_open()
         batch_event["submitted"] = submitted_count
         return shared_types.MutationCounts(
             succeeded=succeeded,
             failed=failed,
             canceled=canceled,
+            skipped=skipped,
         )
 
 

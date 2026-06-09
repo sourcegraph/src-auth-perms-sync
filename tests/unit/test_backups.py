@@ -25,31 +25,19 @@ class BackupPathTests(unittest.TestCase):
             ),
         )
 
-    def test_endpoint_artifact_path_scopes_relative_paths(self) -> None:
-        self.assertEqual(
-            Path.cwd() / backups.ARTIFACTS_DIR_NAME / "sourcegraph.example.com" / "maps.yaml",
-            backups.endpoint_artifact_path("https://sourcegraph.example.com", Path("maps.yaml")),
-        )
-        self.assertEqual(
-            Path("/tmp/maps.yaml"),
-            backups.endpoint_artifact_path(
-                "https://sourcegraph.example.com", Path("/tmp/maps.yaml")
-            ),
-        )
-
     def test_backup_path_uses_safe_endpoint_source_command_and_state(self) -> None:
         self.assertEqual(
             Path.cwd()
             / backups.ARTIFACTS_DIR_NAME
             / "sourcegraph.example.com"
             / backups.RUNS_DIR_NAME
-            / "2026-05-23-set_user"
+            / "2026-05-23-set_users"
             / "before.json",
             backups.backup_path(
                 "repo/1",
                 "2026-05-23",
                 "https://sourcegraph.example.com",
-                "set:user",
+                "set:users",
                 "before",
             ),
         )

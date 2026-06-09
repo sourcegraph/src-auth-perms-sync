@@ -318,7 +318,6 @@ wheels = [
 
 [[package]]
 name = "src-auth-perms-sync"
-version = "0.2.2"
 source = { editable = "." }
 dependencies = [
     { name = "json5" },

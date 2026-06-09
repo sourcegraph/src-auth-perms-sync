@@ -8,7 +8,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 import src_py_lib as src
 
@@ -43,7 +43,7 @@ class _ResolvedMapping:
 
     index: int
     name: str
-    users_section: dict[str, object]
+    user_selector: permission_types.UserSelector
     repos: list[permission_types.Repository]
 
 
@@ -52,9 +52,9 @@ def resolve_additive_mappings(context: permission_types.MappingContext) -> list[
     resolved: list[_ResolvedMapping] = []
     for mapping_index, mapping in enumerate(context.mapping_rules, start=1):
         name = mapping.get("name", f"<unnamed mapping #{mapping_index}>")
-        repos_section = cast(dict[str, object], mapping["repos"])
+        repository_selector = mapping["repos"]
         matched_repos = permissions_mapping.resolve_repos(
-            repos_section,
+            repository_selector,
             context.services_by_id,
             context.repos_by_external_service_id,
             context.all_repos_by_id,
@@ -72,7 +72,7 @@ def resolve_additive_mappings(context: permission_types.MappingContext) -> list[
             _ResolvedMapping(
                 index=mapping_index,
                 name=name,
-                users_section=cast(dict[str, object], mapping["users"]),
+                user_selector=mapping["users"],
                 repos=matched_repos,
             )
         )
@@ -85,7 +85,7 @@ def cmd_get(
     auth_providers_path: Path,
     maps_path: Path,
     *,
-    user_identifier: str | None,
+    user_identifiers: tuple[str, ...],
     users_without_explicit_perms: bool,
     user_created_after: str | None,
     parallelism: int,
@@ -120,7 +120,7 @@ def cmd_get(
         code_hosts_path=str(code_hosts_path),
         auth_providers_path=str(auth_providers_path),
         maps_path=str(maps_path),
-        user_identifier=user_identifier,
+        user_identifiers=user_identifiers,
         users_without_explicit_perms=users_without_explicit_perms,
         user_created_after=user_created_after,
         parallelism=parallelism,
@@ -134,7 +134,7 @@ def cmd_get(
 
         users = _load_get_users(
             client,
-            user_identifier=user_identifier,
+            user_identifiers=user_identifiers,
             users_without_explicit_perms=users_without_explicit_perms,
             user_created_after=user_created_after,
         )
@@ -206,7 +206,7 @@ def cmd_get(
                 raw_providers,
                 attribute_names_by_provider,
             )
-            if user_identifier is None
+            if not user_identifiers
             and not users_without_explicit_perms
             and user_created_after is None
             and retain_saml_group_users
@@ -221,24 +221,27 @@ def cmd_get(
 def _load_get_users(
     client: src.SourcegraphClient,
     *,
-    user_identifier: str | None,
+    user_identifiers: tuple[str, ...],
     users_without_explicit_perms: bool,
     user_created_after: str | None,
 ) -> list[shared_types.User]:
     """Load the Sourcegraph users selected by get/set-compatible user filters."""
-    if user_identifier is not None:
-        user = _resolve_user_identifier(client, user_identifier)
+    if user_identifiers:
+        users = _resolve_user_identifiers(client, user_identifiers)
         if user_created_after is None:
-            return [user]
+            return users
         candidate_user_ids = user_ids_created_on_or_after(client, user_created_after)
-        if user["id"] in candidate_user_ids:
-            return [user]
-        log.info(
-            "User %s was not created on or after %s — no user metadata selected.",
-            user["username"],
-            user_created_after,
-        )
-        return []
+        selected_users: list[shared_types.User] = []
+        for user in users:
+            if user["id"] in candidate_user_ids:
+                selected_users.append(user)
+                continue
+            log.info(
+                "User %s was not created on or after %s — no user metadata selected.",
+                user["username"],
+                user_created_after,
+            )
+        return selected_users
 
     if users_without_explicit_perms or user_created_after is not None:
         created_after_filter: str | None = None
@@ -317,7 +320,7 @@ def cmd_set(
     retain_saml_group_users: bool = False,
     worker_pool: ThreadPoolExecutor | None = None,
 ) -> run_context.CommandData:
-    """Dispatch the selected `--set` mode."""
+    """Dispatch the selected set mode."""
     if options.mode == "full":
         return permissions_full_set.cmd_set_full(
             client,
@@ -332,12 +335,12 @@ def cmd_set(
             retain_saml_group_users,
             worker_pool,
         )
-    if options.mode == "user":
-        assert options.user_identifier is not None
-        return cmd_set_additive_user(
+    if options.mode == "users":
+        assert options.user_identifiers
+        return cmd_set_additive_users(
             client,
             input_path,
-            options.user_identifier,
+            options.user_identifiers,
             options.user_created_after,
             dry_run,
             parallelism,
@@ -361,10 +364,10 @@ def cmd_set(
     return run_context.CommandData()
 
 
-def cmd_set_additive_user(
+def cmd_set_additive_users(
     client: src.SourcegraphClient,
     input_path: Path,
-    user_identifier: str,
+    user_identifiers: tuple[str, ...],
     user_created_after: str | None,
     dry_run: bool,
     parallelism: int,
@@ -373,11 +376,11 @@ def cmd_set_additive_user(
     do_backup: bool,
     worker_pool: ThreadPoolExecutor | None = None,
 ) -> run_context.CommandData:
-    """Add missing mapped permissions for one resolved user."""
+    """Add missing mapped permissions for resolved users."""
     with src.event(
-        "cmd_set_additive_user",
+        "cmd_set_additive_users",
         input_path=str(input_path),
-        user_identifier=user_identifier,
+        user_identifiers=user_identifiers,
         user_created_after=user_created_after,
         dry_run=dry_run,
         parallelism=parallelism,
@@ -386,33 +389,50 @@ def cmd_set_additive_user(
         context = load_mapping_context(client, input_path, saml_groups_attribute_name_by_config_id)
         if context is None:
             return run_context.CommandData()
-        user = _resolve_user_identifier(client, user_identifier)
+        include_user_emails = permissions_mapping.mapping_rules_need_user_emails(
+            context.mapping_rules
+        )
+        users = _resolve_user_identifiers(
+            client,
+            user_identifiers,
+            include_emails=include_user_emails,
+        )
         if user_created_after is not None:
             candidate_user_ids = user_ids_created_on_or_after(client, user_created_after)
-            if user["id"] not in candidate_user_ids:
+            selected_users: list[shared_types.User] = []
+            for user in users:
+                if user["id"] in candidate_user_ids:
+                    selected_users.append(user)
+                    continue
                 log.info(
                     "User %s was not created on or after %s — nothing to do.",
                     user["username"],
                     user_created_after,
                 )
+            users = selected_users
+            if not users:
                 return run_context.CommandData(auth_providers=context.providers)
         resolved_mappings = resolve_additive_mappings(context)
-        additions = _plan_additions_for_user(
-            client,
-            context,
-            resolved_mappings,
-            user,
-        )
+        additions: list[permissions_apply.PermissionAddition] = []
+        for user in users:
+            additions.extend(
+                _plan_additions_for_user(
+                    client,
+                    context,
+                    resolved_mappings,
+                    user,
+                )
+            )
         _run_additive_apply(
             client,
             input_path,
-            [user],
+            users,
             additions,
             dry_run=dry_run,
             parallelism=parallelism,
             bind_id_mode=bind_id_mode,
             do_backup=do_backup,
-            command_name="set-add-user",
+            command_name="set-add-users",
             worker_pool=worker_pool,
         )
         return run_context.CommandData(auth_providers=context.providers)
@@ -446,6 +466,9 @@ def cmd_set_additive_users_without_explicit_perms(
         context = load_mapping_context(client, input_path, saml_groups_attribute_name_by_config_id)
         if context is None:
             return run_context.CommandData()
+        include_user_emails = permissions_mapping.mapping_rules_need_user_emails(
+            context.mapping_rules
+        )
         resolved_mappings = resolve_additive_mappings(context)
         candidates = permissions_sourcegraph.list_site_user_candidates(client, created_after_filter)
         log.info("Received %d non-deleted user candidate(s).", len(candidates))
@@ -455,7 +478,11 @@ def cmd_set_additive_users_without_explicit_perms(
         for candidate in candidates:
             if permissions_sourcegraph.user_has_explicit_repos(client, candidate["id"]):
                 continue
-            user = permissions_sourcegraph.get_user_by_id(client, candidate["id"])
+            user = permissions_sourcegraph.get_user_by_id(
+                client,
+                candidate["id"],
+                include_emails=include_user_emails,
+            )
             if user is None:
                 log.warning(
                     "Skipping user candidate %s: user no longer exists.",
@@ -491,19 +518,56 @@ def cmd_set_additive_users_without_explicit_perms(
         return run_context.CommandData(auth_providers=context.providers)
 
 
+def _resolve_user_identifiers(
+    client: src.SourcegraphClient,
+    user_identifiers: tuple[str, ...],
+    *,
+    include_emails: bool = False,
+) -> list[shared_types.User]:
+    """Resolve username/email inputs to distinct Sourcegraph users in caller order."""
+    users: list[shared_types.User] = []
+    seen_user_ids: set[str] = set()
+    for user_identifier in user_identifiers:
+        user = _resolve_user_identifier(
+            client,
+            user_identifier,
+            include_emails=include_emails,
+        )
+        if user["id"] in seen_user_ids:
+            continue
+        seen_user_ids.add(user["id"])
+        users.append(user)
+    return users
+
+
 def _resolve_user_identifier(
-    client: src.SourcegraphClient, user_identifier: str
+    client: src.SourcegraphClient,
+    user_identifier: str,
+    *,
+    include_emails: bool = False,
 ) -> shared_types.User:
     """Resolve username/email input to one Sourcegraph user."""
     user: shared_types.User | None
     if "@" in user_identifier:
         user = permissions_sourcegraph.get_user_by_email(
-            client, user_identifier
-        ) or permissions_sourcegraph.get_user_by_username(client, user_identifier)
+            client,
+            user_identifier,
+            include_emails=include_emails,
+        ) or permissions_sourcegraph.get_user_by_username(
+            client,
+            user_identifier,
+            include_emails=include_emails,
+        )
     else:
         user = permissions_sourcegraph.get_user_by_username(
-            client, user_identifier
-        ) or permissions_sourcegraph.get_user_by_email(client, user_identifier)
+            client,
+            user_identifier,
+            include_emails=include_emails,
+        ) or permissions_sourcegraph.get_user_by_email(
+            client,
+            user_identifier,
+            include_emails=include_emails,
+        )
     if user is None:
         raise SystemExit(f"No Sourcegraph user found for {user_identifier!r}.")
     if user["username"] != user_identifier:
@@ -521,8 +585,8 @@ def _plan_additions_for_user(
     """Return missing additive permission edges for one user."""
     desired_repos: dict[str, permission_types.Repository] = {}
     for resolved_mapping in resolved_mappings:
-        if not permissions_mapping.user_matches_users_section(
-            resolved_mapping.users_section,
+        if not permissions_mapping.user_matches_user_selector(
+            resolved_mapping.user_selector,
             user,
             context.providers,
             context.saml_groups_attribute_names,
@@ -648,8 +712,9 @@ def _apply_additive_permissions(
             worker_pool=worker_pool,
         )
     log.info(
-        "Additive apply done. %d succeeded, %d failed, %d canceled.",
+        "Additive apply done. %d succeeded, %d skipped, %d failed, %d canceled.",
         mutations.succeeded,
+        mutations.skipped,
         mutations.failed,
         mutations.canceled,
     )

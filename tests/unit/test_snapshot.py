@@ -177,22 +177,14 @@ class SnapshotTests(unittest.TestCase):
             ),
         ]
 
-        class FakeGraphQLClient:
-            def __init__(self, **_kwargs: object) -> None:
-                pass
-
-            def execute(
-                self,
-                query: str,
-                variables: src.JSONDict,
-                *,
-                follow_pages: bool = True,
-            ) -> src.JSONDict:
-                calls.append((query, dict(variables), follow_pages))
-                return responses.pop(0)
-
-        def graphql(query: str, variables: object = None) -> src.JSONDict:
-            return FakeGraphQLClient().execute(query, cast(src.JSONDict, variables or {}))
+        def graphql(
+            query: str,
+            variables: object = None,
+            *,
+            follow_pages: bool = True,
+        ) -> src.JSONDict:
+            calls.append((query, dict(cast(src.JSONDict, variables or {})), follow_pages))
+            return responses.pop(0)
 
         client = cast(
             src.SourcegraphClient,
@@ -203,12 +195,11 @@ class SnapshotTests(unittest.TestCase):
                 graphql=graphql,
             ),
         )
-        with patch.object(permissions_sourcegraph.src, "GraphQLClient", FakeGraphQLClient):
-            repos_by_user_id = permissions_sourcegraph.list_users_explicit_repos(
-                client,
-                ["user-1", "user-2"],
-                batch_size=2,
-            )
+        repos_by_user_id = permissions_sourcegraph.list_users_explicit_repos(
+            client,
+            ["user-1", "user-2"],
+            batch_size=2,
+        )
 
         self.assertEqual(
             {

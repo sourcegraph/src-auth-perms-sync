@@ -1,27 +1,48 @@
-# Auth provider → code host connection mapping rules
-# Maintain this file using auth-providers.yaml and code-hosts.yaml as references.
-# Those files are generated under src-auth-perms-sync-runs/<endpoint>/.
+# User → Repo permission mapping rules
+
+# Maintain your maps.yaml file, using the values from auth-providers.yaml and code-hosts.yaml,
+# which are created by the --get command, under `src-auth-perms-sync-runs/<endpoint>/`
+
+# Schema details:
+# maps: list[map]
+#   - name: string
+#     users: map
+#       authProvider: map
+#         type: string
+#         serviceID: string
+#         clientID: string
+#         displayName: string
+#         configID: string
+#         samlGroup: string
+#       emails: list[string]           # exact verified email addresses
+#       emailRegexes: list[string]     # Python regexes for verified email addresses
+#       usernames: list[string]        # exact Sourcegraph usernames
+#       usernameRegexes: list[string]  # Python regexes for Sourcegraph usernames
+#     repos: map
+#       codeHostConnection: map
+#         displayName: string
+#         kind: string
+#         url: string
+#         username: string
+#       names: list[string]            # exact Sourcegraph repo names
+#       nameRegexes: list[string]      # Python regexes for Sourcegraph repo names
+
+# Filter scopes:
+# - Children of lists are ORed together (casting a wider net)
+# - Children of maps are ANDed together (casting a narrower net)
 
 maps:
 
-- name: All users from Line of Business 1 - User Group 1 get access to all repos synced from service account 1
+# Widest net
+- name: All users get all repos
   users:
-    authProvider:
-      samlGroup: LOB1-GROUP1
+    usernameRegexes:
+      - '.*'
   repos:
-    codeHostConnection:
-      config:
-        username: LOB1-SA1
+    nameRegexes:
+      - '.*'
 
-- name: All users from Line of Business 1 - User Group 2 get access to all repos synced from service account 2
-  users:
-    authProvider:
-      samlGroup: LOB1-GROUP2
-  repos:
-    codeHostConnection:
-      config:
-        username: LOB1-SA2
-
+# Wide net
 - name: All Okta SAML users get access to all Bitbucket repos
   users:
     authProvider:
@@ -31,9 +52,79 @@ maps:
     codeHostConnection:
       kind: BITBUCKETSERVER
 
-- name: All builtin users get access to all repos under the github.com/example org, from any code host connection
+# Medium net
+- name: |
+    Members of samlGroup LOB1-GROUP1, from any auth provider
+    get any repos cloned using username LOB1-SA1, from any code host
   users:
     authProvider:
-      type: builtin
+      samlGroup: LOB1-GROUP1
   repos:
-    regex: https://github.com/example/.*
+    codeHostConnection:
+      username: LOB1-SA1
+
+# Narrower net
+- name: |
+    Members of samlGroup LOB1-GROUP1 from the okta saml provider
+    get repos cloned from a specific Bitbucket code host connection
+  users:
+    authProvider:
+      configID: okta
+      samlGroup: LOB1-GROUP1
+      type: saml
+  repos:
+    codeHostConnection:
+      displayName: 'BITBUCKETSERVER #1'
+      kind: BITBUCKETSERVER
+      url: https://bitbucket.example.com/
+      username: LOB1-SA1
+
+# Even narrower net
+- name: |
+    Alice and Bob get access to bitbucket.example.com/example/private-repo,
+    if they are members of LOB1-GROUP1 from okta saml
+  users:
+    authProvider:
+      configID: okta
+      samlGroup: LOB1-GROUP1
+      type: saml
+    emails:
+      - alice@example.com
+      - bob@example.com
+  repos:
+    codeHostConnection:
+      displayName: Bitbucket
+      kind: BITBUCKETSERVER
+      url: https://bitbucket.example.com/
+      username: LOB1-SA1
+    names:
+      - bitbucket.example.com/example/private-repo
+
+# Narrowest net
+- name: Alice gets private-repo repo, if all stars align
+  users:
+    authProvider:
+      clientID: https://sourcegraph.example.com/.auth/saml/metadata
+      configID: okta
+      displayName: Okta
+      samlGroup: LOB1-GROUP1
+      serviceID: http://www.okta.com/example123
+      type: saml
+    emails:
+      - alice@example.com
+    emailRegexes:
+      - '@example\.com$'
+    usernames:
+      - alice
+    usernameRegexes:
+      - '^alice$'
+  repos:
+    codeHostConnection:
+      displayName: 'BITBUCKETSERVER #1'
+      kind: BITBUCKETSERVER
+      url: https://bitbucket.example.com/
+      username: LOB1-SA1
+    names:
+      - bitbucket.example.com/example/private-repo
+    nameRegexes:
+      - '^bitbucket\.example\.com/example/private-repo$'

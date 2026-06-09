@@ -1,9 +1,42 @@
 # TODO
 
-## High priority: Bump src-py-lib after Node ID helper release
+## High priority: Instrument with OpenTelemetry — in progress
 
-- After releasing `src-py-lib` with Sourcegraph Node ID helpers, update
-  `pyproject.toml` and `uv.lock` to depend on that new version.
+- [ ] Add OTel-native traces, metrics, and wide log events in `src-py-lib`.
+- [ ] Add shared OTel bootstrap config/helpers with `--otel` and standard
+  `OTEL_*` env-var-backed CLI args.
+- [ ] Replace custom trace-context propagation with OTel W3C propagation.
+- [ ] Instrument shared HTTP and GraphQL clients manually, preserving safe
+  sanitized attributes and Sourcegraph-specific metadata.
+- [ ] Rename Sourcegraph debug tracing from `--trace` to `--fetch-sg-traces`.
+- [ ] Wire `src-auth-perms-sync` to the shared OTel bootstrap without doing
+  import-time logger/provider setup.
+- [ ] Verify pyright, tests, and CLI help in both repos.
+
+## High priority: End to End test cases
+
+- Create test cases. Each test case should contain:
+  - Before state
+  - maps.yaml file
+  - Expected after state
+- Script to run the script, and verify the after state matches the expected after state
+
+## High priority: Verify perms are updated when a user's SAML groups change
+
+- If a user gets added to a new SAML group, which hits a mapping, ensure they
+  get the new perms
+
+## High priority: Reduce worst-case full-permission sync load
+
+- Use the stress-run evidence in
+  [memory-efficiency.md](./memory-efficiency.md)
+  to request Sourcegraph bulk explicit-permission read and write APIs.
+- Add an explicit destructive/performance-test mode to the e2e runner so giant
+  stress runs can skip or defer full restore cleanup when the goal is finding
+  the server-side breaking point.
+- Revisit full snapshot capture once Sourcegraph exposes a bulk read path;
+  replace aliased `User.permissionsInfo.repositories(source: API)` calls before
+  raising concurrency further.
 
 ## Medium priority: Lightweight incremental updates
 
@@ -24,11 +57,6 @@
   Sourcegraph executor?
 - How do we avoid stampedes (e.g., bulk repo sync triggering thousands
   of re-runs)?
-
-## Medium priority: Verify perms are updated when a user's SAML groups change
-
-- If a user gets added to a new SAML group, which hits a mapping, ensure they
-  get the new perms
 
 ## Low priority: Repo-centric path, when users > repos, or for cross-checking
 
@@ -69,7 +97,14 @@ If/when we revisit:
 3. Add a CLI flag (e.g. `--cross-check-capture`) gated behind a clear
    "this doubles capture cost" warning.
 
-## Low priority:  Expand group-membership filters beyond SAML
+## Low priority: Grouped full-set plan if memory is still too high
+
+Phase 1 now avoids per-repo username sets for non-overlapping full-set maps.
+If memory remains too high after re-measuring, implement the Phase 2 grouped
+plan in [mapping-efficiency.md](./mapping-efficiency.md): combine map-entry
+overlays into final groups of repos that share the same desired username tuple.
+
+## Low priority: Expand group-membership filters beyond SAML
 
 `allowGroups`-style enforcement exists on more than just SAML, but only
 SAML actually persists the group list. Recovery options for each:

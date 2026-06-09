@@ -6,7 +6,7 @@ import logging
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 import src_py_lib as src
 
@@ -98,6 +98,7 @@ def _capture_full_set_snapshot_state(
     explicit_permissions_batch_size: int,
     bind_id_mode: str,
     worker_pool: ThreadPoolExecutor | None = None,
+    include_user_emails: bool = False,
 ) -> _FullSetUserState:
     """Load users while capturing the before-snapshot."""
     total_users = shared_sourcegraph.count_users(client)
@@ -110,7 +111,11 @@ def _capture_full_set_snapshot_state(
     before_timestamp = backups.backup_timestamp()
     before_snapshot = permission_snapshot.build_snapshot(
         client,
-        shared_sourcegraph.list_users_streaming(client, collect_into=users),
+        shared_sourcegraph.list_users_streaming(
+            client,
+            collect_into=users,
+            include_emails=include_user_emails,
+        ),
         parallelism,
         bind_id_mode,
         input_path,
@@ -140,6 +145,7 @@ def _load_full_set_snapshot_state(
     bind_id_mode: str,
     capture_before: bool,
     worker_pool: ThreadPoolExecutor | None = None,
+    include_user_emails: bool = False,
 ) -> _FullSetUserState:
     """Load all users, optionally with a before-snapshot."""
     if capture_before:
@@ -150,10 +156,14 @@ def _load_full_set_snapshot_state(
             explicit_permissions_batch_size,
             bind_id_mode,
             worker_pool,
+            include_user_emails=include_user_emails,
         )
 
     log.info("Loading users from %s ...", client.endpoint)
-    users = shared_sourcegraph.list_users_with_accounts(client)
+    users = shared_sourcegraph.list_users_with_accounts(
+        client,
+        include_emails=include_user_emails,
+    )
     log.info("Received %d total users.", len(users))
     return _FullSetUserState(users=users)
 
@@ -256,23 +266,24 @@ def _write_noop_full_set_snapshots(
     return before_path, after_path, diff_path, maps_backup_path
 
 
-def _plan_full_set_permissions(
+def plan_full_set_permissions(
     context: permission_types.MappingContext,
     users: list[shared_types.User],
 ) -> _FullSetPlan:
     """Resolve mapping rules into one repo-to-users overwrite plan."""
-    repo_usernames: dict[str, set[str]] = {}
+    expected_users: dict[str, tuple[str, ...]] = {}
+    union_usernames_by_repo_id: dict[str, set[str]] = {}
     repo_names: dict[str, str] = {}
 
     for mapping_index, mapping in enumerate(context.mapping_rules, start=1):
         name = mapping.get("name", f"<unnamed mapping #{mapping_index}>")
         log.info("=== Mapping %d / %d: %s ===", mapping_index, len(context.mapping_rules), name)
 
-        users_section = cast(dict[str, object], mapping["users"])
-        repos_section = cast(dict[str, object], mapping["repos"])
+        user_selector = mapping["users"]
+        repository_selector = mapping["repos"]
 
         matched_users = permissions_mapping.resolve_users(
-            users_section,
+            user_selector,
             users,
             context.providers,
             context.saml_groups_attribute_names,
@@ -283,7 +294,7 @@ def _plan_full_set_permissions(
             continue
 
         matched_repos = permissions_mapping.resolve_repos(
-            repos_section,
+            repository_selector,
             context.services_by_id,
             context.repos_by_external_service_id,
             context.all_repos_by_id,
@@ -293,15 +304,28 @@ def _plan_full_set_permissions(
             log.warning("  No repos matched — skipping rule.")
             continue
 
-        matched_usernames = tuple(user["username"] for user in matched_users)
+        matched_usernames = tuple(sorted({user["username"] for user in matched_users}))
         for repo in matched_repos:
-            bucket = repo_usernames.setdefault(repo["id"], set())
-            repo_names[repo["id"]] = repo["name"]
-            bucket.update(matched_usernames)
+            repo_id = repo["id"]
+            repo_names[repo_id] = repo["name"]
+            union_usernames = union_usernames_by_repo_id.get(repo_id)
+            if union_usernames is not None:
+                union_usernames.update(matched_usernames)
+                continue
 
-    expected_users = {
-        repo_id: tuple(sorted(usernames)) for repo_id, usernames in repo_usernames.items()
-    }
+            existing_usernames = expected_users.get(repo_id)
+            if existing_usernames is not None:
+                union_usernames = set(existing_usernames)
+                union_usernames.update(matched_usernames)
+                union_usernames_by_repo_id[repo_id] = union_usernames
+                del expected_users[repo_id]
+                continue
+
+            expected_users[repo_id] = matched_usernames
+
+    for repo_id, usernames in union_usernames_by_repo_id.items():
+        expected_users[repo_id] = tuple(sorted(usernames))
+
     total_grants = sum(len(usernames) for usernames in expected_users.values())
     if expected_users:
         log.info(
@@ -480,8 +504,9 @@ def _apply_full_set_plans(
             worker_pool=worker_pool,
         )
     log.info(
-        "Apply done. %d succeeded, %d failed, %d canceled.",
+        "Apply done. %d succeeded, %d skipped, %d failed, %d canceled.",
         mutations.succeeded,
+        mutations.skipped,
         mutations.failed,
         mutations.canceled,
     )
@@ -501,6 +526,7 @@ def _record_full_set_event_fields(
     command_event["repo_count"] = len(plan.expected_users)
     command_event["total_grants"] = plan.total_grants
     command_event["mutations_succeeded"] = apply_result.mutations.succeeded
+    command_event["mutations_skipped"] = apply_result.mutations.skipped
     command_event["mutations_failed"] = apply_result.mutations.failed
     command_event["mutations_canceled"] = apply_result.mutations.canceled
     command_event["full_short_circuit"] = apply_result.full_short_circuit
@@ -562,7 +588,7 @@ def _finish_full_set_apply_with_backup(
     log.info(
         "To roll back the explicit-permissions state captured in "
         "the before-snapshot, run:\n"
-        "  uv run src-auth-perms-sync --restore %s --apply",
+        "  uv run src-auth-perms-sync restore --restore-path %s --apply",
         before_path,
     )
 
@@ -576,7 +602,7 @@ def _raise_for_failed_full_set_apply(
     log.error(
         "RUN FAILED: %d mutation(s) failed, %d canceled by circuit "
         "breaker (out of %d planned). Review the log file and the "
-        "before/after snapshots for details, then re-run --set --apply "
+        "before/after snapshots for details, then re-run set --apply "
         "(after addressing the underlying cause) to retry the "
         "remaining work.",
         apply_result.mutations.failed,
@@ -656,6 +682,7 @@ def _load_full_set_plan(
     retain_saml_group_users: bool,
     worker_pool: ThreadPoolExecutor | None = None,
 ) -> _FullSetLoadedPlan:
+    include_user_emails = permissions_mapping.mapping_rules_need_user_emails(mapping_rules)
     user_state = _load_full_set_snapshot_state(
         client,
         input_path,
@@ -664,6 +691,7 @@ def _load_full_set_plan(
         bind_id_mode,
         capture_before=capture_before,
         worker_pool=worker_pool,
+        include_user_emails=include_user_emails,
     )
     before_path: Path | None = None
     if capture_before:
@@ -687,7 +715,7 @@ def _load_full_set_plan(
         user_state.users,
         user_created_after,
     )
-    plan = _plan_full_set_permissions(context, users)
+    plan = plan_full_set_permissions(context, users)
     snapshot_state = _compact_full_set_snapshot_state(user_state, users)
     saml_group_users = (
         saml_groups.compact_saml_group_users(

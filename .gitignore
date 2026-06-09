@@ -11,9 +11,11 @@ __pycache__
 *.gql
 *.py[cod]
 *.py[oc]
+*.swp
 *.yaml
 build/
 dist/
+logs*/
 logs/
 src-auth-perms-sync-runs/
 wheels/

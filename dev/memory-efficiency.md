@@ -1,24 +1,25 @@
-# Sourcegraph explicit-permissions tracing
+# Memory efficiency testing
 
-Use this when full snapshot capture is slow. The goal is to correlate
-`src-auth-perms-sync` HTTP timings with Sourcegraph Jaeger spans, then use
-the evidence to ask Sourcegraph engineering for a bulk explicit-permissions
-read path.
+Use this when full snapshot capture or full-set apply is slow. The goal is to
+correlate `src-auth-perms-sync` structured logs with Sourcegraph Jaeger spans
+and pod/Postgres load, then use the evidence to ask Sourcegraph engineering for
+bulk explicit-permissions APIs.
 
-## Capture sampled traces
+## Capture a focused trace
 
-Run with `--trace` to send a sampled W3C `traceparent` header on every HTTP
-request. The trace ID is logged in each `http_request.request_headers` entry.
+Run a small command with `--trace`. This sends `X-Sourcegraph-Should-Trace` and
+a sampled W3C `traceparent` header on each GraphQL request. Sourcegraph may
+also return `x-trace`, `x-trace-span`, and `x-trace-url` response headers.
 
 ```bash
-uv run src-auth-perms-sync --get \
+uv run src-auth-perms-sync get \
   --trace \
   --sample-interval 0 \
   --parallelism 2 \
   --explicit-permissions-batch-size 25
 ```
 
-Find the slow GraphQL requests in the run log:
+Find the slow GraphQL HTTP requests in the run log:
 
 ```bash
 LOG=src-auth-perms-sync-runs/<endpoint>/runs/<run>/log.json
@@ -28,13 +29,15 @@ jq -r '
   select(.url | endswith("/.api/graphql")) |
   [
     .duration_ms,
-    .request_headers.traceparent,
-    (.response_headers["x-trace-url"] // "")
+    (.response_headers["x-trace"] // ""),
+    (.response_headers["x-trace-url"] // ""),
+    (.request_headers.traceparent // "")
   ] | @tsv
 ' "$LOG" | sort -nr | head -20
 ```
 
-Extract the W3C trace ID from a `traceparent` value:
+Prefer the `x-trace` value when present. If Sourcegraph did not return one,
+extract the trace ID from `traceparent`:
 
 ```bash
 TRACEPARENT=00-<trace-id>-<span-id>-01
@@ -50,15 +53,9 @@ curl -sS \
   > /tmp/sourcegraph-trace.json
 ```
 
-Jaeger ingestion can lag by a few seconds. If the API returns `trace not
-found`, wait briefly and retry the same URL.
-
-For long runs such as `dev/test-end-to-end.py --trace`, fetch the
-slow traces as soon as the relevant command finishes, or rerun a focused case
-and fetch those traces immediately. On the sgdev test instance, a fully traced
-end-to-end run can emit thousands of sampled traces; the in-memory Jaeger data
-may evict or restart before the whole matrix finishes, returning `trace not
-found` or temporary 502s for earlier trace IDs.
+Jaeger ingestion can lag. If the API returns `trace not found`, wait briefly
+and retry. For long runs, fetch traces as soon as the relevant command
+finishes; older trace IDs can disappear before a full matrix ends.
 
 Summarize the hottest spans:
 
@@ -85,18 +82,14 @@ for operation, durations in sorted(
 PY
 ```
 
-Do not commit tokens, customer URLs, or raw trace files. Keep trace JSON and
-benchmark CSVs in `/tmp` unless a human asks to preserve them.
+Do not commit tokens, customer URLs, raw trace JSON, benchmark CSVs, or monitor
+artifacts. Keep them in `/tmp` unless a human asks to preserve them.
 
-## Evidence to collect
+## Trace the end-to-end matrix
 
-To trace the full integration matrix, run the end-to-end script with its own
-`--trace` flag. The runner forwards it to every child CLI invocation, then
-tails each child run log and fetches all traced GraphQL Jaeger traces in the
-background while that child command is still running. The runner uses
-`src-py-lib` Config parsing, logging, Sourcegraph endpoint normalization,
-`SourcegraphClient.fetch_jaeger_trace_summary()`, and a shared HTTP pool, so
-trace summary and retry behavior match the CLI's Sourcegraph client:
+Prefer the end-to-end runner as the single orchestrator. With `--trace`, it
+passes tracing to every child CLI command, tails child JSON logs, and fetches
+Jaeger traces in the background while each child command is still running.
 
 ```bash
 uv run python dev/test-end-to-end.py \
@@ -107,22 +100,21 @@ uv run python dev/test-end-to-end.py \
   --results-csv /tmp/src-auth-perms-sync-end-to-end-trace.csv
 ```
 
-Use `--jaeger-trace-limit N` to fetch only the `N` slowest GraphQL traces per
-case, or `--jaeger-trace-limit 0` to disable in-run Jaeger fetching while still
-sending sampled trace headers. The default is to fetch every traced GraphQL
-request.
+Useful trace options:
 
-The runner writes trace summaries incrementally as JSON Lines. By default, it
-uses a sibling of `--results-json` or `--results-csv`, named
-`*-jaeger-traces.jsonl`. Override this with `--jaeger-trace-jsonl PATH`.
+- `--jaeger-trace-limit N`: fetch only the `N` slowest GraphQL traces per case.
+- `--jaeger-trace-limit 0`: send trace headers but skip Jaeger fetching.
+- `--jaeger-trace-parallelism N`: tune concurrent Jaeger fetches.
+- `--jaeger-trace-jsonl PATH`: stream compact trace summaries as JSON Lines.
+- `--jaeger-trace-dir PATH`: store complete raw Jaeger payloads.
 
-The shared `src-py-lib` `stream_jaeger_trace_summaries()` helper now fetches in
-parallel for in-process Sourcegraph clients. The end-to-end script still uses a
-bounded global worker pool because the traced requests happen in child
-processes and are discovered by tailing their JSON logs. Tune this with
-`--jaeger-trace-parallelism N` (default 16). The runner drains outstanding
-background collectors once at the end, before it writes JSON/CSV results, so
-Jaeger collection does not add a blocking phase between child cases.
+Raw trace files include:
+
+- `trace_request`: CLI-side HTTP and `graphql_query` correlation metadata,
+  including query name, page number, page size, cursor presence, query byte
+  count, variable names, response fields, status, and timing.
+- `jaeger_summary`: compact hot-operation and GraphQL-operation summary.
+- `jaeger_trace`: the complete Jaeger trace JSON returned by Sourcegraph.
 
 All runner flags are Config-backed. You can set them in the shell or `.env`
 with `SRC_AUTH_PERMS_SYNC_E2E_*` names, plus `SRC_ENDPOINT`,
@@ -131,33 +123,59 @@ with `SRC_AUTH_PERMS_SYNC_E2E_*` names, plus `SRC_ENDPOINT`,
 For each tested batch size and parallelism, record:
 
 - CLI `capture_explicit_grants` duration from the structured log
-- slowest `http_request` duration and its `x-trace` / `traceparent` metadata
+- slowest GraphQL `http_request` duration and its trace metadata
 - Jaeger counts and summed duration for `GraphQL Request`, `repos.Get`,
   `sql.conn.query`, and `database.PermsStore.LoadUserPermissions`
-- retries/timeouts from the CLI log
+- run-end `http_retry_count`, `http_request_attempt_count`, and timeout/error
+  counts
 
-In a traced sgdev end-to-end run after the matrix was trimmed to avoid
-overlapping code paths, all 36 cases passed. Child command time summed to about
-1,126 seconds. The JSONL trace summary file contained 3,256 GraphQL trace
-lookups, but Jaeger returned only 26 summaries; most lookups returned `trace
-not found`. The expensive cases were still dominated by full snapshot capture
-and full apply / restore paths:
+## Monitor Sourcegraph load during e2e runs
 
-| Case | Elapsed | GraphQL requests | Slowest GraphQL request | Dominant phase |
-| --- | ---: | ---: | ---: | --- |
-| `restore-full-apply-cleanup` | 234s | 913 | 3.2s | `capture_explicit_grants` / restore |
-| `set-full-apply` | 214s | 917 | 3.2s | `capture_explicit_grants` / apply |
-| `restore-full-no-backup-cleanup` | 135s | 510 | 3.2s | `capture_explicit_grants` / restore |
-| `set-full-no-backup-apply` | 129s | 129 | 1.2s | apply mutations |
-| `get-sync-saml-orgs-dry-run` | 116s | 510 | 3.2s | `capture_explicit_grants` |
+The runner can start the Sourcegraph pod/Postgres monitor and write monitor
+artifact paths into the result JSON:
 
-Fetch Jaeger traces immediately for long runs. In that same full matrix, older
-trace IDs were no longer available by the time the run finished. Focused reruns
-with immediate fetches gave stable Jaeger data.
+```bash
+uv run python dev/test-end-to-end.py \
+  --trace \
+  --monitor-sourcegraph-load \
+  --sample-interval 0 \
+  --external-sample-interval 0 \
+  --results-json /tmp/src-auth-perms-sync-end-to-end-trace.json \
+  --results-csv /tmp/src-auth-perms-sync-end-to-end-trace.csv
+```
 
-For current `src-auth-perms-sync`, `UserExplicitReposBatch` requests only repo
-IDs from `User.permissionsInfo.repositories(source: API)`. A focused traced
-batch for one user with 19 explicit repos showed per-user fanout:
+By default, monitor output is written beside `--results-json` or
+`--results-csv` as `*-sourcegraph-load`, and the monitor's stdout/stderr goes
+to `*-sourcegraph-load.log`. Override the location with
+`--monitor-output-dir PATH`. Tune Kubernetes targets and sample intervals with
+the `--monitor-*` flags if the test namespace or pod names differ.
+
+The lower-level helper remains available for focused profiling outside a full
+e2e run:
+
+```bash
+dev/memory-efficiency-monitor-sourcegraph.sh \
+  --namespace m \
+  --output-dir /tmp/src-auth-perms-sync-sourcegraph-load-$(date -u +%Y%m%d-%H%M%S)
+```
+
+Stop the helper with Ctrl-C, or add `--duration-seconds N`. It samples
+Kubernetes CPU/memory, frontend and Postgres processes, cgroup CPU/memory
+pressure, Postgres active queries/waits/locks, `pg_stat_statements` when
+enabled, and frontend logs. On startup it runs `CREATE EXTENSION IF NOT EXISTS
+pg_stat_statements` and `pg_stat_statements_reset()` through `kubectl exec`
+against `pod/pgsql-0`, so statement summaries start clean for the monitored
+run.
+
+## Current trace findings
+
+Current `src-auth-perms-sync` snapshots explicit API grants by calling
+`User.permissionsInfo.repositories(source: API)` through aliased
+`UserExplicitReposBatch` queries. It requests only permission repo IDs, then
+hydrates names separately with `RepositoryNamesByID`.
+
+A focused traced batch for one user with 19 explicit repos showed per-user
+fanout even when only IDs were requested:
 
 | User aliases | CLI request | Jaeger spans | `LoadUserPermissions` | `sql.conn.query` |
 | ---: | ---: | ---: | ---: | ---: |
@@ -165,9 +183,9 @@ batch for one user with 19 explicit repos showed per-user fanout:
 | 25 | 508ms | 157 | 25 | 127 |
 | 100 | 1,185ms | 607 | 100 | 502 |
 
-The remaining repository-name hydration is a second fanout. A traced
-`RepositoryNamesByID` query for 19 repos produced 46 spans, including 19
-`repos.Get` spans and 22 `sql.conn.query` spans.
+The second hydration query also fans out. A traced `RepositoryNamesByID` query
+for 19 repos produced 46 spans, including 19 `repos.Get` spans and 22
+`sql.conn.query` spans.
 
 An older trace shape that resolved repository objects directly inside
 `permissionsInfo.repositories` showed the per-repo resolver fanout more
@@ -175,12 +193,36 @@ dramatically:
 
 | Request shape | Root GraphQL span | Jaeger fanout |
 | --- | ---: | --- |
-| 25 user aliases, 19 explicit repos each | ~770 ms | 475 `repos.Get`, 603 `sql.conn.query` |
-| 100 user aliases, 19 explicit repos each | ~3,769 ms | 1,900 `repos.Get`, 2,403 `sql.conn.query` |
+| 25 user aliases, 19 explicit repos each | ~770ms | 475 `repos.Get`, 603 `sql.conn.query` |
+| 100 user aliases, 19 explicit repos each | ~3,769ms | 1,900 `repos.Get`, 2,403 `sql.conn.query` |
 
 Together these point to Sourcegraph server-side GraphQL / DB resolver fanout,
-not local Python CPU. Larger batches reduce request count but increase per
-request resolver and SQL work enough to create timeouts on this instance.
+not local Python CPU. Larger batches reduce request count but can increase
+per-request resolver and SQL work enough to cause timeouts on the test
+instance.
+
+One live-instance behavior is expected: if Sourcegraph returns a GraphQL
+application error showing that a repo/user disappeared between planning and the
+mutation, `src-auth-perms-sync` logs a skipped mutation and continues. The next
+scheduled run will re-plan against the then-current users/repos. Other GraphQL
+application errors still fail normally.
+
+## Stress-run evidence
+
+A prior hard stress map used about 10,001 users and about 1,000 repos, planning
+roughly 10 million explicit grants. That run showed Sourcegraph-side read and
+write costs were the bottleneck. `pg_stat_statements` attributed most database
+time to explicit-permissions helpers:
+
+| Sourcegraph operation | Calls | Total time | Mean time |
+| --- | ---: | ---: | ---: |
+| `permsStore.ListUserPermissions` | 19,974 | 30,862.6s | 1,545ms |
+| `permsStore.upsertUserRepoPermissions-range1` | 472 | 1,178.8s | 2,497ms |
+
+Compared with focused traces at normal scale, `ListUserPermissions` became much
+slower under the large explicit-perms state. This reinforces that the CLI needs
+better Sourcegraph bulk read and write APIs for very large explicit permission
+sets.
 
 ## Sourcegraph engineering request
 
@@ -204,7 +246,7 @@ from `github.com/sourcegraph/sourcegraph`:
   creating an N+1 query pattern for repository hydration.
 - Even when the client asks only for permission repo IDs, each aliased user
   still runs `LoadUserPermissions` and several SQL queries. Current
-  `src-auth-perms-sync` then has to hydrate repository names separately through
+  `src-auth-perms-sync` then hydrates repository names separately through
   `node(id)`, which also resolves as one `repos.Get` per repository ID.
 - `internal/database/perms_store.go` has bulk write helpers for setting repo
   permissions, but the read path uses per-user connection queries and repo
@@ -254,6 +296,11 @@ Important requirements:
 Expected benefit: replace hundreds or thousands of per-repo resolver SQL spans
 per request with one indexed `user_repo_permissions` join per user batch.
 
+The stress profile also needs attention on the write path. A purpose-built
+bulk overwrite API that accepts many repo/user edges at once, streams or stages
+the input server-side, and avoids repeated per-repo permission reconciliation
+would make worst-case full syncs much safer.
+
 ## Copy/paste request
 
 Title: Add a bulk GraphQL read path for explicit repository permissions
@@ -287,3 +334,6 @@ Acceptance criteria:
   latency visible.
 - `src-auth-perms-sync` can replace its aliased
   `User.permissionsInfo.repositories(source: API)` calls with this API.
+- Follow-up: evaluate a bulk overwrite API for large full-set applies. The
+  stress run planned roughly 10 million grants and observed
+  `permsStore.upsertUserRepoPermissions-range1` averaging about 2.5s per call.

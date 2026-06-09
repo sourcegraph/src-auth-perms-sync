@@ -1,16 +1,15 @@
 """Permission mapping resolution: validate rules and match users/repos.
 
-Each mapping rule has a `users:` section and a `repos:` section, each
-containing one or more matchers (today: `authProvider`,
-`codeHostConnection`, and `regex`). Within a matcher, the supplied
-keys AND together against the discovered auth-provider / external-
-service entries. Across mapping rules, `cmd_set` unions the per-repo
-user sets at apply time — see `src/src_auth_perms_sync/permissions/types.py` for the rationale.
+Each mapping rule has a `users:` section and a `repos:` section. Top-level
+selectors under each section AND together to keep each rule restrictive.
+Values inside each supplied selector list OR together. Across mapping rules,
+`cmd_set` unions the per-repo user sets at apply time — see
+`src/src_auth_perms_sync/permissions/types.py` for the rationale.
 
 Adding a new matcher type:
 
   1. Add the TypedDict in `src/src_auth_perms_sync/permissions/types.py`.
-  2. Add it as a sibling key on `UsersFilter` or `ReposFilter`.
+  2. Add it as a sibling key on `UserSelector` or `RepositorySelector`.
   3. Add a branch in `resolve_users` / `resolve_repos` below.
   4. Add structural validation in `validate_mapping_rules`.
   5. Add an example rule using the new matcher to `maps-example.yaml`.
@@ -20,7 +19,7 @@ from __future__ import annotations
 
 import logging
 import re
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping, Sequence
 from typing import Any, cast
 
 import json5
@@ -50,7 +49,7 @@ AUTH_PROVIDER_MATCHER_FIELDS: set[str] = {
     "configID",
     "samlGroup",
 }
-CODE_HOST_MATCHER_FIELDS: set[str] = {"id", "kind", "displayName", "url", "config"}
+CODE_HOST_MATCHER_FIELDS: set[str] = {"kind", "displayName", "url", "username"}
 AUTH_PROVIDER_VALUE_MATCHES: tuple[tuple[str, str], ...] = (
     ("type", "serviceType"),
     ("serviceID", "serviceID"),
@@ -58,7 +57,15 @@ AUTH_PROVIDER_VALUE_MATCHES: tuple[tuple[str, str], ...] = (
     ("displayName", "displayName"),
     ("configID", "configID"),
 )
-CODE_HOST_VALUE_MATCHES: tuple[str, ...] = ("kind", "displayName", "url")
+CODE_HOST_DIRECT_VALUE_MATCHES: tuple[str, ...] = ("kind", "displayName", "url")
+USER_SELECTOR_FIELDS: set[str] = {
+    "authProvider",
+    "emails",
+    "emailRegexes",
+    "usernames",
+    "usernameRegexes",
+}
+REPOSITORY_SELECTOR_FIELDS: set[str] = {"codeHostConnection", "names", "nameRegexes"}
 
 
 # ---------------------------------------------------------------------------
@@ -66,7 +73,7 @@ CODE_HOST_VALUE_MATCHES: tuple[str, ...] = ("kind", "displayName", "url")
 # ---------------------------------------------------------------------------
 
 
-def validate_mapping_rules(rules: list[permission_types.MappingRule]) -> None:
+def validate_mapping_rules(rules: Sequence[object]) -> None:
     """Fail fast on structural problems in the YAML before doing any work.
 
     Catches operator typos that would otherwise produce confusing partial
@@ -81,20 +88,37 @@ def validate_mapping_rules(rules: list[permission_types.MappingRule]) -> None:
     bugs.
     """
     errors: list[str] = []
-    for rule_index, rule in enumerate(rules, start=1):
+    for rule_index, rule_object in enumerate(rules, start=1):
+        if not isinstance(rule_object, dict):
+            errors.append(
+                f"mapping {rule_index}: each `maps:` entry must be a mapping "
+                f"(got {type(rule_object).__name__})"
+            )
+            continue
+
+        rule = cast(Mapping[str, object], rule_object)
         label = rule.get("name") or f"<unnamed rule #{rule_index}>"
         prefix = f"mapping {rule_index} ({label!r})"
 
-        users_section = cast(dict[str, object], rule.get("users") or {})
-        repos_section = cast(dict[str, object], rule.get("repos") or {})
-
-        if not users_section:
-            errors.append(f"{prefix}: `users:` section is empty (matches no users)")
-        if not repos_section:
-            errors.append(f"{prefix}: `repos:` section is empty (matches no repos)")
-
-        errors.extend(_validate_users_section(users_section, prefix))
-        errors.extend(_validate_repos_section(repos_section, prefix))
+        errors.extend(_validate_mapping_name(rule.get("name"), prefix))
+        errors.extend(
+            _validate_selector_section(
+                rule.get("users"),
+                prefix,
+                "users",
+                USER_SELECTOR_FIELDS,
+                _validate_user_selector,
+            )
+        )
+        errors.extend(
+            _validate_selector_section(
+                rule.get("repos"),
+                prefix,
+                "repos",
+                REPOSITORY_SELECTOR_FIELDS,
+                _validate_repository_selector,
+            )
+        )
 
     if errors:
         bullet = "\n  - "
@@ -103,30 +127,116 @@ def validate_mapping_rules(rules: list[permission_types.MappingRule]) -> None:
         )
 
 
-_KNOWN_USER_MATCHERS: set[str] = {"authProvider"}
+def mapping_rules_need_user_emails(mapping_rules: list[permission_types.MappingRule]) -> bool:
+    """Return whether any mapping rule filters users by verified email."""
+    return any(
+        "emails" in mapping["users"] or "emailRegexes" in mapping["users"]
+        for mapping in mapping_rules
+    )
 
 
-def _validate_users_section(section: dict[str, object], prefix: str) -> list[str]:
-    """Reject unknown matcher keys and validate each matcher's shape."""
+def _validate_mapping_name(value: object, prefix: str) -> list[str]:
+    """Validate the required human-readable mapping name."""
+    if value is None:
+        return [f"{prefix}: `name:` is missing"]
+    if not isinstance(value, str):
+        return [f"{prefix}: `name:` must be a string (got {type(value).__name__})"]
+    if not value:
+        return [f"{prefix}: `name:` is empty"]
+    return []
+
+
+def _validate_selector_section(
+    value: object,
+    prefix: str,
+    section_name: str,
+    known_fields: set[str],
+    validate_selector: Callable[[dict[str, object], str, str], list[str]],
+) -> list[str]:
+    """Validate a top-level user or repo selector mapping."""
+    if value is None:
+        return [f"{prefix}: `{section_name}:` section is missing"]
+    if not isinstance(value, dict):
+        return [
+            f"{prefix}: `{section_name}:` must be a selector mapping (got {type(value).__name__})"
+        ]
+
+    selector = cast(dict[str, object], value)
     errors: list[str] = []
-    for key in section:
-        if key not in _KNOWN_USER_MATCHERS:
-            errors.append(f"{prefix}: unknown users matcher {key!r}")
-    auth_provider = cast(dict[str, object] | None, section.get("authProvider"))
-    if auth_provider is not None:
-        unknown = set(auth_provider) - AUTH_PROVIDER_MATCHER_FIELDS
-        for field_name in sorted(unknown):
-            errors.append(f"{prefix}: unknown authProvider field {field_name!r}")
-        if not auth_provider:
-            errors.append(
-                f"{prefix}: authProvider is empty (would match every provider on the instance)"
-            )
-        if "samlGroup" in auth_provider:
-            errors.extend(_validate_saml_group(auth_provider, prefix))
+    if not selector:
+        errors.append(f"{prefix}: `{section_name}:` section is empty (matches nothing)")
+        return errors
+
+    for field_name in sorted(set(selector) - known_fields):
+        errors.append(f"{prefix}: unknown {section_name} field {field_name!r}")
+    errors.extend(validate_selector(selector, prefix, section_name))
     return errors
 
 
-def _validate_saml_group(auth_provider: dict[str, object], prefix: str) -> list[str]:
+def _validate_user_selector(
+    selector: dict[str, object], prefix: str, selector_path: str
+) -> list[str]:
+    """Validate one user selector's ANDed matcher fields."""
+    errors: list[str] = []
+    auth_provider = selector.get("authProvider")
+    if auth_provider is not None:
+        errors.extend(_validate_auth_provider_matcher(auth_provider, prefix, selector_path))
+    if "emails" in selector:
+        errors.extend(_validate_string_list(selector["emails"], prefix, f"{selector_path}.emails"))
+    if "emailRegexes" in selector:
+        errors.extend(
+            _validate_regexes(selector["emailRegexes"], prefix, f"{selector_path}.emailRegexes")
+        )
+    if "usernames" in selector:
+        errors.extend(
+            _validate_string_list(selector["usernames"], prefix, f"{selector_path}.usernames")
+        )
+    if "usernameRegexes" in selector:
+        errors.extend(
+            _validate_regexes(
+                selector["usernameRegexes"], prefix, f"{selector_path}.usernameRegexes"
+            )
+        )
+    return errors
+
+
+def _validate_repository_selector(
+    selector: dict[str, object], prefix: str, selector_path: str
+) -> list[str]:
+    """Validate one repository selector's ANDed matcher fields."""
+    errors: list[str] = []
+    code_host_connection = selector.get("codeHostConnection")
+    if code_host_connection is not None:
+        errors.extend(
+            _validate_code_host_connection_matcher(code_host_connection, prefix, selector_path)
+        )
+    if "names" in selector:
+        errors.extend(_validate_string_list(selector["names"], prefix, f"{selector_path}.names"))
+    if "nameRegexes" in selector:
+        errors.extend(
+            _validate_regexes(selector["nameRegexes"], prefix, f"{selector_path}.nameRegexes")
+        )
+    return errors
+
+
+def _validate_auth_provider_matcher(value: object, prefix: str, selector_path: str) -> list[str]:
+    """Validate an `authProvider:` matcher."""
+    path = f"{selector_path}.authProvider"
+    if not isinstance(value, dict):
+        return [f"{prefix}: {path} must be a mapping (got {type(value).__name__})"]
+
+    auth_provider = cast(dict[str, object], value)
+    errors: list[str] = []
+    for field_name in sorted(set(auth_provider) - AUTH_PROVIDER_MATCHER_FIELDS):
+        errors.append(f"{prefix}: unknown {path} field {field_name!r}")
+    if not auth_provider:
+        errors.append(f"{prefix}: {path} is empty (would match every provider on the instance)")
+    if "samlGroup" in auth_provider:
+        errors.extend(_validate_saml_group(auth_provider, prefix, path))
+    return errors
+
+
+def _validate_saml_group(auth_provider: dict[str, object], prefix: str, path: str) -> list[str]:
     """`authProvider.samlGroup`, if present, must be a non-empty string and
     incompatible with a non-SAML `type:` (the rule could never match).
     """
@@ -134,12 +244,12 @@ def _validate_saml_group(auth_provider: dict[str, object], prefix: str) -> list[
     value = auth_provider["samlGroup"]
     if not isinstance(value, str):
         errors.append(
-            f"{prefix}: authProvider.samlGroup must be a single group-name "
+            f"{prefix}: {path}.samlGroup must be a single group-name "
             f"string (got {type(value).__name__} {value!r}); to OR multiple "
-            f"groups, write multiple rules"
+            f"groups, add multiple top-level maps entries"
         )
     elif not value:
-        errors.append(f"{prefix}: authProvider.samlGroup is an empty string")
+        errors.append(f"{prefix}: {path}.samlGroup is an empty string")
     declared_type = auth_provider.get("type")
     if (
         isinstance(declared_type, str)
@@ -147,60 +257,71 @@ def _validate_saml_group(auth_provider: dict[str, object], prefix: str) -> list[
         and declared_type != saml_groups.SAML_SERVICE_TYPE
     ):
         errors.append(
-            f"{prefix}: authProvider.samlGroup is set but authProvider.type "
+            f"{prefix}: {path}.samlGroup is set but {path}.type "
             f"is {declared_type!r}; only SAML providers carry group claims"
         )
     return errors
 
 
-def _validate_repos_section(section: dict[str, object], prefix: str) -> list[str]:
-    """Reject unknown matcher keys and validate `codeHostConnection:` shape."""
+def _validate_code_host_connection_matcher(
+    value: object, prefix: str, selector_path: str
+) -> list[str]:
+    """Validate a `codeHostConnection:` matcher."""
+    path = f"{selector_path}.codeHostConnection"
+    if not isinstance(value, dict):
+        return [f"{prefix}: {path} must be a mapping (got {type(value).__name__})"]
+
+    code_host_section = cast(dict[str, object], value)
     errors: list[str] = []
-    for key in section:
-        if key not in {"codeHostConnection", "regex"}:
-            errors.append(f"{prefix}: unknown repos matcher {key!r}")
-    code_host_section = cast(dict[str, object] | None, section.get("codeHostConnection"))
-    if code_host_section is not None:
-        unknown = set(code_host_section) - CODE_HOST_MATCHER_FIELDS
-        for field_name in sorted(unknown):
-            errors.append(f"{prefix}: unknown codeHostConnection field {field_name!r}")
-        if not (set(code_host_section) & CODE_HOST_MATCHER_FIELDS):
+    for field_name in sorted(set(code_host_section) - CODE_HOST_MATCHER_FIELDS):
+        errors.append(f"{prefix}: unknown {path} field {field_name!r}")
+    if not code_host_section:
+        errors.append(
+            f"{prefix}: {path} is empty (would match every external service on "
+            f"the instance); supply at least one of {sorted(CODE_HOST_MATCHER_FIELDS)}"
+        )
+    for field_name in sorted(CODE_HOST_MATCHER_FIELDS & set(code_host_section)):
+        field_value = code_host_section[field_name]
+        if not isinstance(field_value, str):
             errors.append(
-                f"{prefix}: codeHostConnection is empty (would match every "
-                f"external service on the instance); supply at least one of "
-                f"{sorted(CODE_HOST_MATCHER_FIELDS)}"
+                f"{prefix}: {path}.{field_name} must be a string "
+                f"(got {type(field_value).__name__} {field_value!r})"
             )
-        if "id" in code_host_section:
-            external_service_id = code_host_section["id"]
-            if external_service_id is None or external_service_id == "":
-                errors.append(
-                    f"{prefix}: codeHostConnection.id, if supplied, must be "
-                    f"a non-empty integer (e.g. `id: 5`)"
-                )
-            elif not isinstance(external_service_id, int) or isinstance(external_service_id, bool):
-                errors.append(
-                    f"{prefix}: codeHostConnection.id must be an integer "
-                    f"(got {type(external_service_id).__name__} {external_service_id!r}); "
-                    f"the YAML config holds the decoded DB primary key, not the "
-                    f"opaque base64 GraphQL Node ID"
-                )
-        if "config" in code_host_section and not isinstance(code_host_section["config"], dict):
+        elif not field_value:
+            errors.append(f"{prefix}: {path}.{field_name} is an empty string")
+    return errors
+
+
+def _validate_regexes(value: object, prefix: str, path: str) -> list[str]:
+    """Validate list-based regex filters."""
+    errors = _validate_string_list(value, prefix, path)
+    if errors:
+        return errors
+
+    for index, pattern in enumerate(cast(list[str], value)):
+        try:
+            re.compile(pattern)
+        except re.error as exception:
+            errors.append(f"{prefix}: {path}[{index}] is not a valid Python regex: {exception}")
+    return errors
+
+
+def _validate_string_list(value: object, prefix: str, path: str) -> list[str]:
+    """Validate list-based exact-match filters."""
+    if not isinstance(value, list):
+        return [f"{prefix}: {path} must be a list of strings (got {type(value).__name__})"]
+
+    items = cast(list[object], value)
+    errors: list[str] = []
+    if not items:
+        errors.append(f"{prefix}: {path} is empty (matches nothing)")
+    for index, item in enumerate(items):
+        if not isinstance(item, str):
             errors.append(
-                f"{prefix}: codeHostConnection.config must be a mapping of "
-                f"key/value pairs to deep-subset-match against the service's "
-                f"parsed config (got {type(code_host_section['config']).__name__})"
+                f"{prefix}: {path}[{index}] must be a string (got {type(item).__name__} {item!r})"
             )
-    regex = section.get("regex")
-    if regex is not None:
-        if not isinstance(regex, str):
-            errors.append(f"{prefix}: repos.regex must be a string (got {type(regex).__name__})")
-        elif not regex:
-            errors.append(f"{prefix}: repos.regex is an empty string")
-        else:
-            try:
-                re.compile(regex)
-            except re.error as exception:
-                errors.append(f"{prefix}: repos.regex is not a valid Python regex: {exception}")
+        elif not item:
+            errors.append(f"{prefix}: {path}[{index}] is an empty string")
     return errors
 
 
@@ -210,12 +331,12 @@ def _validate_repos_section(section: dict[str, object], prefix: str) -> list[str
 
 
 def resolve_users(
-    section: dict[str, object],
+    selector: permission_types.UserSelector,
     all_users: list[shared_types.User],
     all_providers: list[shared_types.AuthProvider],
     saml_groups_attribute_names: saml_groups.SamlGroupsAttributeNameByProvider | None = None,
 ) -> list[shared_types.User]:
-    """Return users matching ALL matchers under `users:` (intersection).
+    """Return users matching ALL top-level selectors under `users:`.
 
     `saml_groups_attribute_names` overrides the default `"groups"` SAML
     assertion attribute name per (serviceID, clientID) — see
@@ -223,61 +344,178 @@ def resolve_users(
     `None`, every SAML provider falls back to the default. Only
     consulted by the `authProvider.samlGroup` sub-field.
 
-    Empty section returns an empty user set — `validate_mapping_rules`
+    Empty sections return an empty user set — `validate_mapping_rules`
     rejects this at config-load time, so this branch only fires for
     programmatic callers.
     """
-    if not section:
+    if not selector:
         return []
 
-    users_by_id: dict[str, shared_types.User] = {user["id"]: user for user in all_users}
-    matched_ids: set[str] | None = None
-    for key, matcher in section.items():
-        if key == "authProvider":
-            current_ids = {
+    selector_matches: list[set[str]] = []
+    auth_provider = selector.get("authProvider")
+    if auth_provider is not None:
+        selector_matches.append(
+            {
                 user["id"]
                 for user in _users_matching_auth_provider(
-                    cast(permission_types.AuthProviderMatcher, matcher),
+                    auth_provider,
                     all_users,
                     all_providers,
                     saml_groups_attribute_names,
                 )
             }
-        else:
-            # validate_mapping_rules catches this earlier with a clearer
-            # message; this only fires for programmatic callers.
-            raise ValueError(f"unknown users matcher {key!r}")
-        matched_ids = current_ids if matched_ids is None else matched_ids & current_ids
+        )
+
+    emails = selector.get("emails")
+    if emails is not None:
+        selector_matches.append(
+            {user["id"] for user in _users_matching_email_values(emails, all_users)}
+        )
+
+    email_regexes = selector.get("emailRegexes")
+    if email_regexes is not None:
+        selector_matches.append(
+            {user["id"] for user in _users_matching_email_regexes(email_regexes, all_users)}
+        )
+
+    usernames = selector.get("usernames")
+    if usernames is not None:
+        selector_matches.append(
+            {user["id"] for user in _users_matching_username_values(usernames, all_users)}
+        )
+
+    username_regexes = selector.get("usernameRegexes")
+    if username_regexes is not None:
+        selector_matches.append(
+            {user["id"] for user in _users_matching_username_regexes(username_regexes, all_users)}
+        )
+
+    if not selector_matches:
+        return []
+
+    matched_ids = selector_matches[0]
+    for current_ids in selector_matches[1:]:
+        matched_ids &= current_ids
         if not matched_ids:
             return []
-    assert matched_ids is not None
-    return [users_by_id[user_id] for user_id in matched_ids]
+    return [user for user in all_users if user["id"] in matched_ids]
 
 
-def user_matches_users_section(
-    section: dict[str, object],
+def user_matches_user_selector(
+    selector: permission_types.UserSelector,
     user: shared_types.User,
     all_providers: list[shared_types.AuthProvider],
     saml_groups_attribute_names: saml_groups.SamlGroupsAttributeNameByProvider | None = None,
 ) -> bool:
-    """Return whether one user matches ALL matchers under `users:`."""
-    if not section:
+    """Return whether one user matches ALL top-level selectors under `users:`."""
+    if not selector:
         return False
 
-    for key, matcher in section.items():
-        if key == "authProvider":
-            if not _user_matches_auth_provider(
-                cast(permission_types.AuthProviderMatcher, matcher),
-                user,
-                all_providers,
-                saml_groups_attribute_names,
-            ):
-                return False
-        else:
-            # validate_mapping_rules catches this earlier with a clearer
-            # message; this only fires for programmatic callers.
-            raise ValueError(f"unknown users matcher {key!r}")
-    return True
+    auth_provider = selector.get("authProvider")
+    if auth_provider is not None and not _user_matches_auth_provider(
+        auth_provider,
+        user,
+        all_providers,
+        saml_groups_attribute_names,
+    ):
+        return False
+
+    emails = selector.get("emails")
+    if emails is not None and not _user_matches_email(user, set(emails), []):
+        return False
+
+    email_regexes = selector.get("emailRegexes")
+    if email_regexes is not None and not _user_matches_email(
+        user, set(), _compiled_regexes(email_regexes)
+    ):
+        return False
+
+    usernames = selector.get("usernames")
+    if usernames is not None and not _text_matches(user["username"], set(usernames), []):
+        return False
+
+    username_regexes = selector.get("usernameRegexes")
+    if username_regexes is None:
+        return True
+    return _text_matches(user["username"], set(), _compiled_regexes(username_regexes))
+
+
+def _users_matching_email_values(
+    emails: list[str], all_users: list[shared_types.User]
+) -> list[shared_types.User]:
+    """Return users with at least one verified email equal to a listed email."""
+    exact_values = set(emails)
+    matched = [user for user in all_users if _user_matches_email(user, exact_values, [])]
+    log.info(
+        "    emails → %d user(s) matched %d email selector(s)",
+        len(matched),
+        len(exact_values),
+    )
+    return matched
+
+
+def _users_matching_email_regexes(
+    email_regexes: list[str], all_users: list[shared_types.User]
+) -> list[shared_types.User]:
+    """Return users with at least one verified email matching a listed regex."""
+    patterns = _compiled_regexes(email_regexes)
+    matched = [user for user in all_users if _user_matches_email(user, set(), patterns)]
+    log.info(
+        "    emailRegexes → %d user(s) matched %d email regex selector(s)",
+        len(matched),
+        len(set(email_regexes)),
+    )
+    return matched
+
+
+def _user_matches_email(
+    user: shared_types.User, exact_values: set[str], patterns: list[re.Pattern[str]]
+) -> bool:
+    """Match only verified emails, mirroring Sourcegraph's `user(email:)` lookup."""
+    return any(
+        user_email["verified"] and _text_matches(user_email["email"], exact_values, patterns)
+        for user_email in user.get("emails", [])
+    )
+
+
+def _users_matching_username_values(
+    usernames: list[str], all_users: list[shared_types.User]
+) -> list[shared_types.User]:
+    """Return users whose Sourcegraph username equals a listed username."""
+    exact_values = set(usernames)
+    matched = [user for user in all_users if _text_matches(user["username"], exact_values, [])]
+    log.info(
+        "    usernames → %d user(s) matched %d username selector(s)",
+        len(matched),
+        len(exact_values),
+    )
+    return matched
+
+
+def _users_matching_username_regexes(
+    username_regexes: list[str], all_users: list[shared_types.User]
+) -> list[shared_types.User]:
+    """Return users whose Sourcegraph username matches a listed regex."""
+    patterns = _compiled_regexes(username_regexes)
+    matched = [user for user in all_users if _text_matches(user["username"], set(), patterns)]
+    log.info(
+        "    usernameRegexes → %d user(s) matched %d username regex selector(s)",
+        len(matched),
+        len(set(username_regexes)),
+    )
+    return matched
+
+
+def _compiled_regexes(regexes: list[str]) -> list[re.Pattern[str]]:
+    """Return compiled regexes."""
+    return [re.compile(pattern) for pattern in regexes]
+
+
+def _text_matches(value: str, exact_values: set[str], patterns: list[re.Pattern[str]]) -> bool:
+    """Return whether text matches exact values or any regex."""
+    if value in exact_values:
+        return True
+    return any(pattern.search(value) for pattern in patterns)
 
 
 def _users_matching_auth_provider(
@@ -434,49 +672,78 @@ def _user_has_saml_group_in_provider(
 
 
 def resolve_repos(
-    section: dict[str, object],
+    selector: permission_types.RepositorySelector,
     services_by_id: dict[int, permission_types.ExternalService],
     repos_by_external_service_id: dict[int, list[permission_types.Repository]],
     all_repos_by_id: dict[str, permission_types.Repository],
 ) -> list[permission_types.Repository]:
-    """Return repos matching ALL matchers under `repos:` (intersection).
+    """Return repos matching ALL top-level selectors under `repos:`.
 
-    Empty section returns an empty repo set; `validate_mapping_rules`
+    Empty sections return an empty repo set; `validate_mapping_rules`
     rejects this at config-load time.
     """
-    if not section:
+    if not selector:
         return []
 
-    matched_ids: set[str] | None = None
-    repo_index: dict[str, permission_types.Repository] = {}
-    ordered_keys = [key for key in ("codeHostConnection", "regex") if key in section]
-    for key in ordered_keys:
-        matcher = section[key]
-        if key == "codeHostConnection":
-            repos = _repos_matching_code_host_connection(
-                cast(permission_types.CodeHostConnectionMatcher, matcher),
-                services_by_id,
-                repos_by_external_service_id,
-            )
-        elif key == "regex":
-            candidate_repos = (
-                [repo_index[repo_id] for repo_id in matched_ids]
-                if matched_ids is not None
-                else list(all_repos_by_id.values())
-            )
-            repos = _repos_matching_regex(cast(str, matcher), candidate_repos)
-        else:
-            # validate_mapping_rules catches this earlier with a clearer
-            # message; this only fires for programmatic callers.
-            raise ValueError(f"unknown repos matcher {key!r}")
-        current_ids = {repo["id"] for repo in repos}
-        for repo in repos:
-            repo_index[repo["id"]] = repo
-        matched_ids = current_ids if matched_ids is None else matched_ids & current_ids
+    selector_matches: list[set[str]] = []
+    repo_index = dict(all_repos_by_id)
+    candidate_repos = list(all_repos_by_id.values())
+    code_host_connection = selector.get("codeHostConnection")
+    if code_host_connection is not None:
+        repos = _repos_matching_code_host_connection(
+            code_host_connection,
+            services_by_id,
+            repos_by_external_service_id,
+        )
+        repo_index.update({repo["id"]: repo for repo in repos})
+        candidate_repos = repos
+        selector_matches.append({repo["id"] for repo in repos})
+
+    names = selector.get("names")
+    if names is not None:
+        selector_matches.append(_repo_ids_matching_names(names, candidate_repos))
+
+    name_regexes = selector.get("nameRegexes")
+    if name_regexes is not None:
+        selector_matches.append(_repo_ids_matching_name_regexes(name_regexes, candidate_repos))
+
+    if not selector_matches:
+        return []
+
+    matched_ids = selector_matches[0]
+    for current_ids in selector_matches[1:]:
+        matched_ids &= current_ids
         if not matched_ids:
             return []
-    assert matched_ids is not None
-    return [repo_index[repo_id] for repo_id in matched_ids]
+    return [repo for repo in repo_index.values() if repo["id"] in matched_ids]
+
+
+def _repo_ids_matching_names(
+    names: list[str], repos: list[permission_types.Repository]
+) -> set[str]:
+    """Return repo IDs whose Sourcegraph name equals a listed name."""
+    exact_values = set(names)
+    matched = {repo["id"] for repo in repos if _repo_name_matches(repo["name"], exact_values, [])}
+    log.info(
+        "    names → %d repo(s) matched %d name selector(s)",
+        len(matched),
+        len(exact_values),
+    )
+    return matched
+
+
+def _repo_ids_matching_name_regexes(
+    name_regexes: list[str], repos: list[permission_types.Repository]
+) -> set[str]:
+    """Return repo IDs whose Sourcegraph name matches a listed regex."""
+    patterns = _compiled_regexes(name_regexes)
+    matched = {repo["id"] for repo in repos if _repo_name_matches(repo["name"], set(), patterns)}
+    log.info(
+        "    nameRegexes → %d repo(s) matched %d name regex selector(s)",
+        len(matched),
+        len(set(name_regexes)),
+    )
+    return matched
 
 
 def _repos_matching_code_host_connection(
@@ -505,70 +772,47 @@ def _repos_matching_code_host_connection(
     return list(matched_repos.values())
 
 
-def _repos_matching_regex(
-    pattern: str, repos: list[permission_types.Repository]
-) -> list[permission_types.Repository]:
-    """Return repos whose name matches `pattern` using Python `re`.
+def _repo_name_matches(
+    repository_name: str, exact_values: set[str], patterns: list[re.Pattern[str]]
+) -> bool:
+    """Return whether a repo name matches exact values or regexes.
 
     Sourcegraph repo names usually omit the URL scheme (for example
-    `github.com/example/repo`). To keep URL-looking operator patterns
-    useful, also test `https://<repo name>`.
+    `github.com/example/repo`). To keep URL-looking operator regexes useful,
+    also test `https://<repo name>` for regex matches. Exact matches remain
+    exact Sourcegraph repo names.
     """
-    compiled = re.compile(pattern)
-    matched = [
-        repo
-        for repo in repos
-        if compiled.search(repo["name"]) or compiled.search(f"https://{repo['name']}")
-    ]
-    log.info("    regex → %d repo(s) matched %r", len(matched), pattern)
-    return matched
+    if repository_name in exact_values:
+        return True
+    return any(
+        pattern.search(repository_name) or pattern.search(f"https://{repository_name}")
+        for pattern in patterns
+    )
 
 
 def _services_matching(
     services_by_id: dict[int, permission_types.ExternalService],
     matcher: permission_types.CodeHostConnectionMatcher,
 ) -> list[permission_types.ExternalService]:
-    """AND across the supplied matcher fields. If `id` is supplied we
-    short-circuit to a single candidate; remaining fields then act as a
-    defensive cross-check against an ES recreated/renamed under the
-    same id. Without `id`, every other supplied field is a primary
-    discriminator across the full service list.
-    """
-    if "id" in matcher:
-        single_service = services_by_id.get(matcher["id"])
-        if single_service is None:
-            return []
-        candidates = [single_service]
-    else:
-        candidates = list(services_by_id.values())
-
+    """AND across the supplied human-readable code-host matcher fields."""
     matched: list[permission_types.ExternalService] = []
     matcher_values = cast(Mapping[str, object], matcher)
-    for service in candidates:
+    for service in services_by_id.values():
         service_values = cast(Mapping[str, object], service)
         if not all(
             field_name not in matcher_values
             or matcher_values[field_name] == service_values[field_name]
-            for field_name in CODE_HOST_VALUE_MATCHES
+            for field_name in CODE_HOST_DIRECT_VALUE_MATCHES
         ):
             continue
-        if "config" in matcher and not _config_subset_matches(
-            matcher["config"], _parsed_service_config(service)
-        ):
+        if "username" in matcher and matcher["username"] != _service_username(service):
             continue
         matched.append(service)
     return matched
 
 
 def _parsed_service_config(service: permission_types.ExternalService) -> dict[str, Any]:
-    """Best-effort parse of `ExternalService.config` (JSONC string).
-
-    Returns an empty dict if the config is missing or unparseable —
-    callers treat that as "no keys to match against", so a `config:`
-    matcher against such a service simply fails to match instead of
-    raising. Sourcegraph's resolver returns a JSON object string, so
-    parse failures here are anomalies worth not crashing on.
-    """
+    """Best-effort parse of `ExternalService.config` (JSONC string)."""
     raw_config = service.get("config")
     if not raw_config:
         return {}
@@ -581,46 +825,10 @@ def _parsed_service_config(service: permission_types.ExternalService) -> dict[st
     return cast(dict[str, Any], parsed)
 
 
-def _config_subset_matches(matcher_config: dict[str, Any], service_config: dict[str, Any]) -> bool:
-    """True iff every key in `matcher_config` is present in `service_config`
-    with a matching value. Nested dicts are matched recursively
-    (subset semantics); lists and scalars are matched by equality.
-
-    Sourcegraph's `REDACTED` sentinel is left as-is on the service side:
-    a matcher that names a redacted key (e.g. `token`) compares against
-    the literal `"REDACTED"` string and almost certainly fails to
-    match — exactly the semantics we want, since the operator can't
-    have known the real secret value.
-    """
-    for key, expected in matcher_config.items():
-        if key not in service_config:
-            return False
-        actual = service_config[key]
-        if isinstance(expected, dict) and isinstance(actual, dict):
-            if not _config_subset_matches(
-                cast(dict[str, Any], expected), cast(dict[str, Any], actual)
-            ):
-                return False
-            continue
-        if expected != actual:
-            return False
-    return True
-
-
-def referenced_external_service_ids(rules: list[permission_types.MappingRule]) -> set[int]:
-    """Collect all external_service IDs referenced by the mapping rules.
-
-    Returns integer DB primary keys (the YAML-facing form). Used by
-    `cmd_set` to pre-flight-warn about any IDs that the live instance
-    doesn't know about, before per-mapping resolution runs.
-    """
-    referenced: set[int] = set()
-    for rule in rules:
-        repos_section = rule.get("repos") or {}
-        code_host_section = repos_section.get("codeHostConnection")
-        if code_host_section and "id" in code_host_section:
-            referenced.add(code_host_section["id"])
-    return referenced
+def _service_username(service: permission_types.ExternalService) -> str | None:
+    """Return the code-host username from `ExternalService.config`, if present."""
+    username = _parsed_service_config(service).get("username")
+    return username if isinstance(username, str) else None
 
 
 def _format_matcher(matcher: dict[str, object]) -> str:

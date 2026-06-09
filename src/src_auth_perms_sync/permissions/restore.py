@@ -489,6 +489,12 @@ def _log_user_scoped_restore_done(mutations: _UserScopedRestoreMutationResult) -
         mutations.additions.succeeded,
         mutations.removals.succeeded,
     )
+    skipped = mutations.additions.skipped + mutations.removals.skipped
+    if skipped:
+        log.warning(
+            "Scoped restore skipped %d vanished repo/user mutation(s); the next run will re-plan.",
+            skipped,
+        )
 
 
 def _restore_command_name(dry_run: bool) -> str:
@@ -725,8 +731,9 @@ def _apply_restore_overwrites(
             worker_pool=worker_pool,
         )
     log.info(
-        "Restore done. %d succeeded, %d failed, %d canceled.",
+        "Restore done. %d succeeded, %d skipped, %d failed, %d canceled.",
         mutations.succeeded,
+        mutations.skipped,
         mutations.failed,
         mutations.canceled,
     )
@@ -744,6 +751,7 @@ def _record_restore_event_fields(
     command_event["repos_short_circuited"] = plan.skipped_repo_count
     command_event["snapshot_grants"] = snapshot_state.target_snapshot["stats"]["total_grants"]
     command_event["mutations_succeeded"] = mutations.succeeded
+    command_event["mutations_skipped"] = mutations.skipped
     command_event["mutations_failed"] = mutations.failed
     command_event["mutations_canceled"] = mutations.canceled
 

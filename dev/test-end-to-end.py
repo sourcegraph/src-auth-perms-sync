@@ -13,19 +13,22 @@ already covers that behavior.
 
 from __future__ import annotations
 
+import contextlib
 import csv
 import datetime
+import heapq
 import json
 import os
 import re
 import shlex
+import signal
 import statistics
 import subprocess
 import sys
 import threading
 import time
 from collections.abc import Iterable, Mapping, Sequence
-from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import Future
 from concurrent.futures import wait as wait_for_futures
 from dataclasses import dataclass
 from pathlib import Path
@@ -33,38 +36,42 @@ from typing import Any, TextIO, cast
 from urllib.parse import urlsplit
 
 import src_py_lib as src
-from src_py_lib.clients.sourcegraph import (
-    JAEGER_TRACE_RETRY_DELAYS_SECONDS,
-    sourcegraph_trace_from_headers,
-)
+from src_py_lib.clients.sourcegraph import sourcegraph_trace_from_headers, summarize_jaeger_trace
 
 LOG_PATH_PATTERN = re.compile(r"Writing log events to (.+?/log\.json)\.")
+SAFE_PATH_PART_PATTERN = re.compile(r"[^A-Za-z0-9_.-]+")
 DEFAULT_FUTURE_DATE = "2099-01-01"
 REMOVED_SRC_AUTH_PERMS_SYNC_ENVIRONMENT_PREFIX = "SRC_AUTH_PERMS_SYNC_"
 DEFAULT_SAMPLE_INTERVAL_SECONDS = 1.0
 DEFAULT_REPEAT_COUNT = 1
 DEFAULT_JAEGER_TRACE_LIMIT: int | None = None
-DEFAULT_JAEGER_TRACE_PARALLELISM = 16
+DEFAULT_JAEGER_TRACE_PARALLELISM = 8
+DEFAULT_JAEGER_INITIAL_DELAY_SECONDS = 35.0
+DEFAULT_JAEGER_RETRY_DELAYS_SECONDS = (
+    2.0,
+    5.0,
+    10.0,
+    20.0,
+    30.0,
+    60.0,
+    60.0,
+    60.0,
+    60.0,
+    60.0,
+    60.0,
+)
 DEFAULT_PARALLELISM = 4
 DEFAULT_FULL_RESTORE_PARALLELISM = 1
+DEFAULT_INCLUDE_REDUNDANT_SCALE_CASES = False
 DEFAULT_MEMORY_SUMMARY_LIMIT = 20
 DEFAULT_SRC_AUTH_PERMS_SYNC_COMMAND = "uv run src-auth-perms-sync"
-WORKLOAD_FIELDS = (
-    "user_count",
-    "total_users",
-    "total_users_scanned",
-    "repo_count",
-    "repos_with_explicit_grants",
-    "total_grants",
-    "mapping_count",
-    "plan_size",
-    "payload_count",
-    "target_organizations",
-    "desired_memberships",
-    "mutations_succeeded",
-    "mutations_failed",
-    "mutations_canceled",
-)
+DEFAULT_SOURCEGRAPH_MONITOR_NAMESPACE = "m"
+DEFAULT_SOURCEGRAPH_MONITOR_INTERVAL_SECONDS = 5
+DEFAULT_SOURCEGRAPH_MONITOR_POSTGRES_INTERVAL_SECONDS = 10
+DEFAULT_SOURCEGRAPH_MONITOR_STATEMENTS_INTERVAL_SECONDS = 30
+DEFAULT_SOURCEGRAPH_MONITOR_FRONTEND_TARGET = "deployment/sourcegraph-frontend"
+DEFAULT_SOURCEGRAPH_MONITOR_POSTGRES_TARGET = "pod/pgsql-0"
+DEFAULT_SOURCEGRAPH_MONITOR_PSQL_COMMAND = "psql -X -U sg -d sg"
 
 
 def format_jaeger_retry_delays(delays: Sequence[float]) -> str:
@@ -160,6 +167,16 @@ class EndToEndConfig(src.SourcegraphClientConfig, src.LoggingConfig):
             f"(default: {DEFAULT_FULL_RESTORE_PARALLELISM})"
         ),
     )
+    include_redundant_scale_cases: bool = src.config_field(
+        default=DEFAULT_INCLUDE_REDUNDANT_SCALE_CASES,
+        env_var="SRC_AUTH_PERMS_SYNC_E2E_INCLUDE_REDUNDANT_SCALE_CASES",
+        cli_flag="--include-redundant-scale-cases",
+        cli_action="store_true",
+        help=(
+            "Also run older overlapping full-scale cases. Default keeps one heavy full "
+            "snapshot path and uses smaller cases for overlapping coverage."
+        ),
+    )
     allow_non_test_endpoint: bool = src.config_field(
         default=False,
         env_var="SRC_AUTH_PERMS_SYNC_E2E_ALLOW_NON_TEST_ENDPOINT",
@@ -203,6 +220,17 @@ class EndToEndConfig(src.SourcegraphClientConfig, src.LoggingConfig):
             f"(default: {DEFAULT_JAEGER_TRACE_PARALLELISM})"
         ),
     )
+    jaeger_initial_delay_seconds: float = src.config_field(
+        default=DEFAULT_JAEGER_INITIAL_DELAY_SECONDS,
+        env_var="SRC_AUTH_PERMS_SYNC_E2E_JAEGER_INITIAL_DELAY_SECONDS",
+        cli_flag="--jaeger-initial-delay-seconds",
+        metavar="SECONDS",
+        ge=0,
+        help=(
+            "Seconds to wait before first fetching each Jaeger trace, to allow OTel tail "
+            f"sampling to decide (default: {DEFAULT_JAEGER_INITIAL_DELAY_SECONDS:g})"
+        ),
+    )
     jaeger_trace_jsonl: Path | None = src.config_field(
         default=None,
         env_var="SRC_AUTH_PERMS_SYNC_E2E_JAEGER_TRACE_JSONL",
@@ -213,14 +241,26 @@ class EndToEndConfig(src.SourcegraphClientConfig, src.LoggingConfig):
             "of --results-json or --results-csv when --trace is set."
         ),
     )
+    jaeger_trace_directory: Path | None = src.config_field(
+        default=None,
+        env_var="SRC_AUTH_PERMS_SYNC_E2E_JAEGER_TRACE_DIR",
+        cli_flag="--jaeger-trace-dir",
+        metavar="PATH",
+        help=(
+            "Directory where complete raw Jaeger trace JSON files are written. Defaults "
+            "to a sibling directory of --results-json or --results-csv when --trace is set."
+        ),
+    )
     jaeger_retry_delays: tuple[float, ...] = src.config_field(
-        default=JAEGER_TRACE_RETRY_DELAYS_SECONDS,
+        default=DEFAULT_JAEGER_RETRY_DELAYS_SECONDS,
         env_var="SRC_AUTH_PERMS_SYNC_E2E_JAEGER_RETRY_DELAYS",
         cli_flag="--jaeger-retry-delays",
         metavar="SECONDS[,SECONDS...]",
         help=(
-            "Comma-separated retry delays for Jaeger trace lookup lag "
-            f"(default: {format_jaeger_retry_delays(JAEGER_TRACE_RETRY_DELAYS_SECONDS)})"
+            "Comma-separated delays between queued Jaeger trace fetch retries. "
+            "Each value schedules one retry after the initial fetch; add more values "
+            "to try for longer "
+            f"(default: {format_jaeger_retry_delays(DEFAULT_JAEGER_RETRY_DELAYS_SECONDS)})"
         ),
     )
     sample_interval: float = src.config_field(
@@ -270,6 +310,103 @@ class EndToEndConfig(src.SourcegraphClientConfig, src.LoggingConfig):
             "Optional path to write per-command memory results as CSV; phase rows are written "
             "beside it as *-phases.csv"
         ),
+    )
+    monitor_sourcegraph_load: bool = src.config_field(
+        default=False,
+        env_var="SRC_AUTH_PERMS_SYNC_E2E_MONITOR_SOURCEGRAPH_LOAD",
+        cli_flag="--monitor-sourcegraph-load",
+        cli_action="store_true",
+        help=(
+            "Start the Sourcegraph pod/Postgres load monitor for this e2e run and write "
+            "its output beside the result artifacts."
+        ),
+    )
+    sourcegraph_monitor_namespace: str = src.config_field(
+        default=DEFAULT_SOURCEGRAPH_MONITOR_NAMESPACE,
+        env_var="SRC_AUTH_PERMS_SYNC_E2E_MONITOR_NAMESPACE",
+        cli_flag="--monitor-namespace",
+        metavar="NAME",
+        help=(
+            "Kubernetes namespace for Sourcegraph load monitoring "
+            f"(default: {DEFAULT_SOURCEGRAPH_MONITOR_NAMESPACE})"
+        ),
+    )
+    sourcegraph_monitor_output_dir: Path | None = src.config_field(
+        default=None,
+        env_var="SRC_AUTH_PERMS_SYNC_E2E_MONITOR_OUTPUT_DIR",
+        cli_flag="--monitor-output-dir",
+        metavar="PATH",
+        help="Directory for Sourcegraph load monitor output; defaults beside result artifacts.",
+    )
+    sourcegraph_monitor_interval_seconds: int = src.config_field(
+        default=DEFAULT_SOURCEGRAPH_MONITOR_INTERVAL_SECONDS,
+        env_var="SRC_AUTH_PERMS_SYNC_E2E_MONITOR_INTERVAL_SECONDS",
+        cli_flag="--monitor-interval-seconds",
+        metavar="SECONDS",
+        ge=1,
+        help=(
+            "Pod/process/cgroup monitor interval in seconds "
+            f"(default: {DEFAULT_SOURCEGRAPH_MONITOR_INTERVAL_SECONDS})"
+        ),
+    )
+    sourcegraph_monitor_postgres_interval_seconds: int = src.config_field(
+        default=DEFAULT_SOURCEGRAPH_MONITOR_POSTGRES_INTERVAL_SECONDS,
+        env_var="SRC_AUTH_PERMS_SYNC_E2E_MONITOR_POSTGRES_INTERVAL_SECONDS",
+        cli_flag="--monitor-postgres-interval-seconds",
+        metavar="SECONDS",
+        ge=1,
+        help=(
+            "Postgres activity monitor interval in seconds "
+            f"(default: {DEFAULT_SOURCEGRAPH_MONITOR_POSTGRES_INTERVAL_SECONDS})"
+        ),
+    )
+    sourcegraph_monitor_statements_interval_seconds: int = src.config_field(
+        default=DEFAULT_SOURCEGRAPH_MONITOR_STATEMENTS_INTERVAL_SECONDS,
+        env_var="SRC_AUTH_PERMS_SYNC_E2E_MONITOR_STATEMENTS_INTERVAL_SECONDS",
+        cli_flag="--monitor-statements-interval-seconds",
+        metavar="SECONDS",
+        ge=1,
+        help=(
+            "pg_stat_statements monitor interval in seconds "
+            f"(default: {DEFAULT_SOURCEGRAPH_MONITOR_STATEMENTS_INTERVAL_SECONDS})"
+        ),
+    )
+    sourcegraph_monitor_frontend_target: str = src.config_field(
+        default=DEFAULT_SOURCEGRAPH_MONITOR_FRONTEND_TARGET,
+        env_var="SRC_AUTH_PERMS_SYNC_E2E_MONITOR_FRONTEND_TARGET",
+        cli_flag="--monitor-frontend-target",
+        metavar="TARGET",
+        help=(
+            "kubectl target for Sourcegraph frontend "
+            f"(default: {DEFAULT_SOURCEGRAPH_MONITOR_FRONTEND_TARGET})"
+        ),
+    )
+    sourcegraph_monitor_postgres_target: str = src.config_field(
+        default=DEFAULT_SOURCEGRAPH_MONITOR_POSTGRES_TARGET,
+        env_var="SRC_AUTH_PERMS_SYNC_E2E_MONITOR_POSTGRES_TARGET",
+        cli_flag="--monitor-postgres-target",
+        metavar="TARGET",
+        help=(
+            "kubectl target for Sourcegraph Postgres "
+            f"(default: {DEFAULT_SOURCEGRAPH_MONITOR_POSTGRES_TARGET})"
+        ),
+    )
+    sourcegraph_monitor_psql_command: str = src.config_field(
+        default=DEFAULT_SOURCEGRAPH_MONITOR_PSQL_COMMAND,
+        env_var="SRC_AUTH_PERMS_SYNC_E2E_MONITOR_PSQL_COMMAND",
+        cli_flag="--monitor-psql-command",
+        metavar="COMMAND",
+        help=(
+            "psql command to run inside the Postgres pod "
+            f"(default: {DEFAULT_SOURCEGRAPH_MONITOR_PSQL_COMMAND})"
+        ),
+    )
+    sourcegraph_monitor_no_logs: bool = src.config_field(
+        default=False,
+        env_var="SRC_AUTH_PERMS_SYNC_E2E_MONITOR_NO_LOGS",
+        cli_flag="--monitor-no-logs",
+        cli_action="store_true",
+        help="Do not stream frontend logs while Sourcegraph load monitoring is enabled.",
     )
     fail_on_memory_regression_percent: float | None = src.config_field(
         default=None,
@@ -431,22 +568,136 @@ class ExternalProcessSampler:
         self.peak_rss_mb = max_optional_float(self.peak_rss_mb, rss_mb)
 
 
+class SourcegraphLoadMonitor:
+    """Run the Sourcegraph pod/Postgres monitor for the duration of the e2e suite."""
+
+    def __init__(self, config: EndToEndConfig, output_dir: Path) -> None:
+        self.config = config
+        self.output_dir = output_dir
+        self.log_path = output_dir.with_name(f"{output_dir.name}.log")
+        self._log_file: TextIO | None = None
+        self._process: subprocess.Popen[str] | None = None
+
+    def start(self) -> None:
+        script_path = sourcegraph_monitor_script_path()
+        if not script_path.exists():
+            raise RuntimeError(f"Sourcegraph load monitor script not found: {script_path}")
+        self.output_dir.parent.mkdir(parents=True, exist_ok=True)
+        self.log_path.parent.mkdir(parents=True, exist_ok=True)
+        command = [
+            str(script_path),
+            "--namespace",
+            self.config.sourcegraph_monitor_namespace,
+            "--output-dir",
+            str(self.output_dir),
+            "--interval-seconds",
+            str(self.config.sourcegraph_monitor_interval_seconds),
+            "--postgres-interval-seconds",
+            str(self.config.sourcegraph_monitor_postgres_interval_seconds),
+            "--statements-interval-seconds",
+            str(self.config.sourcegraph_monitor_statements_interval_seconds),
+            "--frontend-target",
+            self.config.sourcegraph_monitor_frontend_target,
+            "--postgres-target",
+            self.config.sourcegraph_monitor_postgres_target,
+            "--psql-command",
+            self.config.sourcegraph_monitor_psql_command,
+        ]
+        if self.config.sourcegraph_monitor_no_logs:
+            command.append("--no-logs")
+        print(f"Starting Sourcegraph load monitor: {self.output_dir}")
+        self._log_file = self.log_path.open("w", encoding="utf-8")
+        self._process = subprocess.Popen(  # noqa: S603 - command is trusted test config.
+            command,
+            cwd=Path.cwd(),
+            stdout=self._log_file,
+            stderr=subprocess.STDOUT,
+            text=True,
+            start_new_session=True,
+        )
+        self._wait_until_started()
+
+    def stop(self) -> None:
+        process = self._process
+        if process is None:
+            self._close_log_file()
+            return
+        if process.poll() is None:
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(process.pid, signal.SIGTERM)
+            try:
+                process.wait(timeout=15)
+            except subprocess.TimeoutExpired:
+                with contextlib.suppress(ProcessLookupError):
+                    os.killpg(process.pid, signal.SIGKILL)
+                process.wait(timeout=15)
+        return_code = process.returncode
+        self._close_log_file()
+        if return_code not in {0, -15, 143}:
+            print(
+                f"Sourcegraph load monitor exited with status {return_code}; see {self.log_path}",
+                file=sys.stderr,
+            )
+        else:
+            print(f"Stopped Sourcegraph load monitor. Output: {self.output_dir}")
+
+    def _wait_until_started(self) -> None:
+        process = self._process
+        if process is None:
+            return
+        deadline = time.monotonic() + 60
+        while time.monotonic() < deadline:
+            if process.poll() is not None:
+                raise RuntimeError(
+                    f"Sourcegraph load monitor exited before startup completed; see {self.log_path}"
+                )
+            if self.log_path.exists() and "Started kubectl-top" in self.log_path.read_text(
+                encoding="utf-8", errors="ignore"
+            ):
+                return
+            time.sleep(0.2)
+        raise RuntimeError(
+            f"Timed out waiting for Sourcegraph load monitor startup; see {self.log_path}"
+        )
+
+    def _close_log_file(self) -> None:
+        if self._log_file is not None:
+            self._log_file.close()
+            self._log_file = None
+
+
+@dataclass
+class JaegerTraceFetchTask:
+    """One trace fetch request that can be retried across the whole e2e run."""
+
+    trace_request: dict[str, Any]
+    future: Future[dict[str, Any]]
+    fetch_attempts: int = 0
+    first_fetch_at: str | None = None
+    last_fetch_at: str | None = None
+
+
 class JaegerTraceFetchPool:
-    """Fetch Sourcegraph Jaeger trace summaries through one bounded HTTP pool."""
+    """Fetch Sourcegraph Jaeger traces through one bounded retry queue."""
 
     def __init__(
         self,
         config: EndToEndConfig,
         *,
         parallelism: int,
+        initial_delay_seconds: float,
         retry_delays_seconds: Sequence[float],
         jsonl_path: Path | None,
+        trace_directory: Path | None,
     ) -> None:
+        self.initial_delay_seconds = initial_delay_seconds
         self.retry_delays_seconds = tuple(retry_delays_seconds)
-        self._executor = ThreadPoolExecutor(
-            max_workers=parallelism,
-            thread_name_prefix="JaegerTraceFetch",
-        )
+        self.max_fetch_attempts = len(self.retry_delays_seconds) + 1
+        self._trace_directory = trace_directory
+        self._tasks: list[tuple[float, int, JaegerTraceFetchTask]] = []
+        self._condition = threading.Condition()
+        self._sequence = 0
+        self._closed = False
         self._jsonl_file: TextIO | None = None
         self._lock = threading.Lock()
         http = src.HTTPClient(
@@ -459,36 +710,166 @@ class JaegerTraceFetchPool:
             jsonl_path.parent.mkdir(parents=True, exist_ok=True)
             self._jsonl_file = jsonl_path.open("w", encoding="utf-8")
             print(f"Writing Jaeger trace summaries incrementally to {jsonl_path}")
+        if self._trace_directory is not None:
+            self._trace_directory.mkdir(parents=True, exist_ok=True)
+            print(f"Writing complete Jaeger traces to {self._trace_directory}")
+        self._workers = [
+            threading.Thread(
+                target=self._worker,
+                name=f"JaegerTraceFetch-{worker_number}",
+                daemon=True,
+            )
+            for worker_number in range(1, parallelism + 1)
+        ]
+        for worker in self._workers:
+            worker.start()
 
     def submit(
         self,
         trace_request: dict[str, Any],
         collector: JaegerTraceCollector,
     ) -> Future[dict[str, Any]]:
-        future = src.submit_with_log_context(self._executor, self._fetch_summary, trace_request)
+        future: Future[dict[str, Any]] = Future()
         future.add_done_callback(lambda completed: self._record_summary(collector, completed))
+        task = JaegerTraceFetchTask(
+            trace_request=trace_request,
+            future=future,
+        )
+        self._schedule(task, self.initial_delay_seconds)
         return future
 
     def close(self) -> None:
-        self._executor.shutdown(wait=True)
+        with self._condition:
+            self._closed = True
+            self._condition.notify_all()
+        for worker in self._workers:
+            worker.join()
         self._client.http.close()
         if self._jsonl_file is not None:
             self._jsonl_file.close()
 
-    def _fetch_summary(self, trace_request: dict[str, Any]) -> dict[str, Any]:
+    def _schedule(self, task: JaegerTraceFetchTask, delay_seconds: float) -> None:
+        with self._condition:
+            self._sequence += 1
+            heapq.heappush(
+                self._tasks,
+                (time.monotonic() + delay_seconds, self._sequence, task),
+            )
+            self._condition.notify()
+
+    def _worker(self) -> None:
+        while True:
+            task = self._next_ready_task()
+            if task is None:
+                return
+            self._process(task)
+
+    def _next_ready_task(self) -> JaegerTraceFetchTask | None:
+        with self._condition:
+            while True:
+                if self._closed and not self._tasks:
+                    return None
+                if not self._tasks:
+                    self._condition.wait()
+                    continue
+                ready_at, _sequence, task = self._tasks[0]
+                delay_seconds = ready_at - time.monotonic()
+                if delay_seconds > 0:
+                    self._condition.wait(delay_seconds)
+                    continue
+                heapq.heappop(self._tasks)
+                return task
+
+    def _process(self, task: JaegerTraceFetchTask) -> None:
+        if task.future.done():
+            return
+        summary = self._fetch_summary(task)
+        if summary.get("jaeger_found") is True or not self._should_retry(task, summary):
+            task.future.set_result(summary)
+            return
+        self._schedule(task, self._retry_delay_seconds(task.fetch_attempts))
+
+    def _fetch_summary(self, task: JaegerTraceFetchTask) -> dict[str, Any]:
+        task.fetch_attempts += 1
+        now = datetime.datetime.now(datetime.UTC).isoformat(timespec="seconds")
+        if task.first_fetch_at is None:
+            task.first_fetch_at = now
+        task.last_fetch_at = now
         try:
-            trace = sourcegraph_trace_from_request(trace_request)
-            summary = self._client.fetch_jaeger_trace_summary(
-                trace,
-                retry_delays_seconds=self.retry_delays_seconds,
-            ).to_json()
-            return {**trace_request, **summary}
+            trace = sourcegraph_trace_from_request(task.trace_request)
+            jaeger_trace = self._client.fetch_jaeger_trace(
+                trace.trace_id,
+                retry_delays_seconds=(0.0,),
+            )
+            summary = summarize_jaeger_trace(trace, jaeger_trace).to_json()
+            try:
+                trace_path = self._write_complete_trace(task, jaeger_trace, summary)
+                if trace_path is not None:
+                    summary["jaeger_trace_path"] = str(trace_path)
+            except OSError as write_error:
+                summary["jaeger_trace_write_error"] = f"{type(write_error).__name__}: {write_error}"
+            return self._with_fetch_fields(task, summary)
         except Exception as exception:  # noqa: BLE001 - keep long-running evidence collection alive.
-            return {
-                **trace_request,
-                "jaeger_found": False,
-                "error": f"{type(exception).__name__}: {exception}",
-            }
+            return self._with_fetch_fields(
+                task,
+                {
+                    **task.trace_request,
+                    "jaeger_found": False,
+                    "error": f"{type(exception).__name__}: {exception}",
+                },
+            )
+
+    def _with_fetch_fields(
+        self, task: JaegerTraceFetchTask, summary: dict[str, Any]
+    ) -> dict[str, Any]:
+        return {
+            **task.trace_request,
+            **summary,
+            "fetch_attempts": task.fetch_attempts,
+            "first_fetch_at": task.first_fetch_at,
+            "last_fetch_at": task.last_fetch_at,
+            "max_fetch_attempts": self.max_fetch_attempts,
+        }
+
+    def _write_complete_trace(
+        self,
+        task: JaegerTraceFetchTask,
+        jaeger_trace: dict[str, Any],
+        summary: dict[str, Any],
+    ) -> Path | None:
+        if self._trace_directory is None:
+            return None
+        path = complete_jaeger_trace_path(self._trace_directory, task.trace_request)
+        payload = {
+            "collected_at": task.last_fetch_at,
+            "fetch_attempts": task.fetch_attempts,
+            "max_fetch_attempts": self.max_fetch_attempts,
+            "trace_request": task.trace_request,
+            "jaeger_summary": summary,
+            "jaeger_trace": jaeger_trace,
+        }
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary_path = path.with_name(
+            f".{path.name}.tmp-{threading.get_ident()}-{time.monotonic_ns()}"
+        )
+        temporary_path.write_text(
+            json.dumps(payload, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        temporary_path.replace(path)
+        return path
+
+    def _should_retry(self, task: JaegerTraceFetchTask, summary: dict[str, Any]) -> bool:
+        if self._closed or task.fetch_attempts >= self.max_fetch_attempts:
+            return False
+        error = str(summary.get("error") or "")
+        return error.startswith(("HTTP 404", "HTTP 502", "HTTP 503", "HTTP 504"))
+
+    def _retry_delay_seconds(self, fetch_attempts: int) -> float:
+        if not self.retry_delays_seconds:
+            return 0.0
+        delay_index = min(fetch_attempts - 1, len(self.retry_delays_seconds) - 1)
+        return self.retry_delays_seconds[delay_index]
 
     def _record_summary(
         self,
@@ -527,6 +908,8 @@ class JaegerTraceCollector:
         self.iteration = iteration
         self.case_name = case_name
         self.summaries: list[dict[str, Any]] = []
+        self._graphql_queries_by_span: dict[tuple[str, str], dict[str, Any]] = {}
+        self._trace_requests_by_graphql_span: dict[tuple[str, str], dict[str, Any]] = {}
         self._requests_by_trace_id: dict[str, dict[str, Any]] = {}
         self._queued_trace_ids: set[str] = set()
         self._futures: list[Future[dict[str, Any]]] = []
@@ -599,15 +982,22 @@ class JaegerTraceCollector:
             return
         if not isinstance(record, dict):
             return
+        self._record_graphql_query_metadata(cast(dict[str, Any], record))
         trace_request = graphql_trace_request_from_record(cast(dict[str, Any], record))
         if trace_request is None:
             return
         trace_request.update(
             {"variant": self.variant, "iteration": self.iteration, "case": self.case_name}
         )
+        graphql_span_key = self._graphql_span_key_for_http_record(cast(dict[str, Any], record))
         trace_id = trace_request["trace_id"]
         submit_request: dict[str, Any] | None = None
         with self._lock:
+            if graphql_span_key is not None:
+                graphql_query = self._graphql_queries_by_span.get(graphql_span_key)
+                if graphql_query is not None:
+                    trace_request["graphql_query"] = dict(graphql_query)
+                self._trace_requests_by_graphql_span[graphql_span_key] = trace_request
             existing_request = self._requests_by_trace_id.get(trace_id)
             if existing_request is None or trace_summary_duration_ms(
                 trace_request
@@ -620,6 +1010,29 @@ class JaegerTraceCollector:
             future = self.fetch_pool.submit(submit_request, self)
             with self._lock:
                 self._futures.append(future)
+
+    def _record_graphql_query_metadata(self, record: dict[str, Any]) -> None:
+        metadata = graphql_query_metadata_from_record(record)
+        if metadata is None:
+            return
+        span_key = graphql_query_span_key(record)
+        if span_key is None:
+            return
+        with self._lock:
+            existing_metadata = self._graphql_queries_by_span.get(span_key, {})
+            merged_metadata = existing_metadata | metadata
+            self._graphql_queries_by_span[span_key] = merged_metadata
+            trace_request = self._trace_requests_by_graphql_span.get(span_key)
+            if trace_request is not None:
+                trace_request["graphql_query"] = dict(merged_metadata)
+
+    @staticmethod
+    def _graphql_span_key_for_http_record(record: dict[str, Any]) -> tuple[str, str] | None:
+        trace_id = optional_string(record.get("trace"))
+        parent_span_id = optional_string(record.get("parent_span"))
+        if trace_id is None or parent_span_id is None:
+            return None
+        return trace_id, parent_span_id
 
     def _submit_limited_requests(self) -> None:
         if self.limit is None:
@@ -849,7 +1262,16 @@ class CommandPermutationRunner:
 
 def main() -> None:
     config = load_end_to_end_config()
-    with src.logging(config, command="test_end_to_end", git_cwd=Path.cwd()):
+    logging_settings = src.logging_settings_from_config(
+        config,
+        logs_dir=Path("logs-test-end-to-end"),
+    )
+    with src.logging(
+        config,
+        command="test_end_to_end",
+        git_cwd=Path.cwd(),
+        logging_config=logging_settings,
+    ):
         run_end_to_end(config)
 
 
@@ -879,14 +1301,22 @@ def run_end_to_end(config: EndToEndConfig) -> None:
     all_failures: list[str] = []
     all_jaeger_collectors: list[JaegerTraceCollector] = []
     jaeger_trace_fetch_pool = create_jaeger_trace_fetch_pool(config)
+    sourcegraph_load_monitor = create_sourcegraph_load_monitor(config)
     latest_baseline_repositories: set[str] = set()
     try:
+        if sourcegraph_load_monitor is not None:
+            sourcegraph_load_monitor.start()
         with src.event(
             "end_to_end_matrix",
             repeat=config.repeat,
             variant_count=len(variants),
             trace=config.trace,
+            sourcegraph_load_monitor=sourcegraph_load_monitor is not None,
         ) as matrix_summary:
+            if sourcegraph_load_monitor is not None:
+                matrix_summary["sourcegraph_load_monitor_dir"] = str(
+                    sourcegraph_load_monitor.output_dir
+                )
             for iteration in range(1, config.repeat + 1):
                 for variant in variants:
                     with src.stage("matrix_variant", variant=variant.name, iteration=iteration):
@@ -915,6 +1345,8 @@ def run_end_to_end(config: EndToEndConfig) -> None:
         wait_for_jaeger_trace_collectors(all_jaeger_collectors)
         if jaeger_trace_fetch_pool is not None:
             jaeger_trace_fetch_pool.close()
+        if sourcegraph_load_monitor is not None:
+            sourcegraph_load_monitor.stop()
     if all_failures:
         print("\nFailures:", file=sys.stderr)
         for failure in all_failures:
@@ -928,7 +1360,7 @@ def run_end_to_end(config: EndToEndConfig) -> None:
     print_phase_memory_summary(all_results, config.memory_summary_limit)
     comparisons = compare_variants(all_results)
     print_comparison_summary(comparisons)
-    write_results_files(all_results, comparisons, config)
+    write_results_files(all_results, comparisons, config, sourcegraph_load_monitor)
     raise_for_memory_regressions(comparisons, config)
 
 
@@ -955,8 +1387,10 @@ def create_jaeger_trace_fetch_pool(
     return JaegerTraceFetchPool(
         config,
         parallelism=config.jaeger_trace_parallelism,
+        initial_delay_seconds=config.jaeger_initial_delay_seconds,
         retry_delays_seconds=config.jaeger_retry_delays,
         jsonl_path=jaeger_trace_jsonl_path(config),
+        trace_directory=jaeger_trace_directory(config),
     )
 
 
@@ -969,6 +1403,56 @@ def jaeger_trace_jsonl_path(config: EndToEndConfig) -> Path | None:
         return anchor.with_name(f"{anchor.stem}-jaeger-traces.jsonl")
     stamp = datetime.datetime.now(datetime.UTC).strftime("%Y%m%d-%H%M%S")
     return Path("/tmp") / f"src-auth-perms-sync-end-to-end-jaeger-traces-{stamp}.jsonl"
+
+
+def jaeger_trace_directory(config: EndToEndConfig) -> Path:
+    """Return the directory where complete raw Jaeger traces should be stored."""
+    if config.jaeger_trace_directory is not None:
+        return config.jaeger_trace_directory
+    anchor = config.results_json or config.results_csv
+    if anchor is not None:
+        return anchor.with_name(f"{anchor.stem}-jaeger-traces")
+    stamp = datetime.datetime.now(datetime.UTC).strftime("%Y%m%d-%H%M%S")
+    return Path("/tmp") / f"src-auth-perms-sync-end-to-end-jaeger-traces-{stamp}"
+
+
+def create_sourcegraph_load_monitor(config: EndToEndConfig) -> SourcegraphLoadMonitor | None:
+    """Return the Sourcegraph load monitor for this run, if enabled."""
+    if not config.monitor_sourcegraph_load:
+        return None
+    return SourcegraphLoadMonitor(config, sourcegraph_monitor_output_dir(config))
+
+
+def sourcegraph_monitor_output_dir(config: EndToEndConfig) -> Path:
+    """Return where Sourcegraph pod/Postgres monitor artifacts should be stored."""
+    if config.sourcegraph_monitor_output_dir is not None:
+        return config.sourcegraph_monitor_output_dir
+    anchor = config.results_json or config.results_csv
+    if anchor is not None:
+        return anchor.with_name(f"{anchor.stem}-sourcegraph-load")
+    stamp = datetime.datetime.now(datetime.UTC).strftime("%Y%m%d-%H%M%S")
+    return Path("/tmp") / f"src-auth-perms-sync-end-to-end-sourcegraph-load-{stamp}"
+
+
+def sourcegraph_monitor_script_path() -> Path:
+    """Return the lower-level monitor script used by the e2e orchestrator."""
+    return Path(__file__).resolve().with_name("memory-efficiency-monitor-sourcegraph.sh")
+
+
+def complete_jaeger_trace_path(trace_directory: Path, trace_request: dict[str, Any]) -> Path:
+    """Return the stable per-trace path for a complete Jaeger trace payload."""
+    variant = safe_path_part(trace_request.get("variant"), default="variant")
+    iteration = int_field(trace_request, "iteration") or 0
+    case_name = safe_path_part(trace_request.get("case"), default="case")
+    trace_id = safe_path_part(trace_request.get("trace_id"), default="trace")
+    return trace_directory / variant / f"iteration-{iteration:04d}" / case_name / f"{trace_id}.json"
+
+
+def safe_path_part(value: object, *, default: str) -> str:
+    """Return a filesystem-safe path segment for generated trace artifacts."""
+    text = str(value) if value is not None else ""
+    safe_text = SAFE_PATH_PART_PATTERN.sub("-", text).strip("-.")
+    return safe_text[:120] or default
 
 
 def command_environment(config: EndToEndConfig) -> dict[str, str]:
@@ -1012,7 +1496,7 @@ def run_matrix(
     baseline_result: CommandResult | None = None
     for case in read_only_cases(config):
         result = runner.run(case)
-        if case.name == "implicit-get-user":
+        if case.name == "get-users-baseline":
             baseline_result = result
     assert baseline_result is not None
     baseline_repositories = repositories_for_user(snapshot_path(baseline_result), config.user)
@@ -1044,93 +1528,103 @@ def invalid_configuration_cases(config: EndToEndConfig) -> list[CommandCase]:
     restore_placeholder = "definitely-missing-before.json"
     missing_maps = "definitely-missing-command-permutation-maps.yaml"
     command_pairs: list[tuple[str, tuple[str, ...]]] = [
-        ("get-set", ("--get", "--set", "maps.yaml")),
-        ("get-restore", ("--get", "--restore", restore_placeholder)),
-        ("set-restore", ("--set", "maps.yaml", "--restore", restore_placeholder)),
+        ("get-set", ("get", "set")),
+        ("get-restore", ("get", "restore", "--restore-path", restore_placeholder)),
+        ("set-restore", ("set", "--maps-path", "maps.yaml", "restore")),
     ]
     cases = [
         CommandCase(
             name=f"invalid-multiple-commands-{name}",
             arguments=command_arguments,
             expected_exit_code=2,
-            must_contain=("choose only one",),
+            must_contain=("unrecognized arguments",),
         )
         for name, command_arguments in command_pairs
     ]
     cases.append(
         CommandCase(
             name="invalid-restore-sync-saml-orgs",
-            arguments=("--restore", restore_placeholder, "--sync-saml-orgs"),
+            arguments=("restore", "--restore-path", restore_placeholder, "--sync-saml-orgs"),
             expected_exit_code=2,
-            must_contain=("with --get or --set",),
+            must_contain=("unrecognized arguments",),
         )
     )
     cases.extend(
         [
             CommandCase(
                 name="invalid-full-without-set",
-                arguments=("--full",),
+                arguments=("get", "--full"),
                 expected_exit_code=2,
-                must_contain=("--full requires --set",),
+                must_contain=("unrecognized arguments",),
             ),
             CommandCase(
                 name="invalid-set-full-and-user",
-                arguments=("--set", "maps.yaml", "--full", "--user", config.user),
+                arguments=("set", "--full", "--users", config.user),
                 expected_exit_code=2,
                 must_contain=("choose at most one",),
             ),
             CommandCase(
                 name="invalid-set-full-and-users-without-explicit-perms",
-                arguments=("--set", "maps.yaml", "--full", "--users-without-explicit-perms"),
+                arguments=(
+                    "set",
+                    "--full",
+                    "--users-without-explicit-perms",
+                ),
                 expected_exit_code=2,
                 must_contain=("choose at most one",),
             ),
             CommandCase(
                 name="invalid-user-filter-conflict",
-                arguments=("--get", "--user", config.user, "--users-without-explicit-perms"),
+                arguments=("get", "--users", config.user, "--users-without-explicit-perms"),
                 expected_exit_code=2,
-                must_contain=("choose only one of --user or --users-without-explicit-perms",),
+                must_contain=("choose only one of --users or --users-without-explicit-perms",),
             ),
             CommandCase(
                 name="invalid-restore-user-filter",
-                arguments=("--restore", restore_placeholder, "--user", config.user),
+                arguments=(
+                    "restore",
+                    "--restore-path",
+                    restore_placeholder,
+                    "--users",
+                    config.user,
+                ),
                 expected_exit_code=2,
-                must_contain=("require --get or --set",),
+                must_contain=("unrecognized arguments",),
             ),
             CommandCase(
                 name="invalid-sync-created-after-filter",
-                arguments=("--sync-saml-orgs", "--created-after", config.future_date),
+                arguments=("sync-saml-orgs", "--created-after", config.future_date),
                 expected_exit_code=2,
-                must_contain=("require --get or --set",),
+                must_contain=("unrecognized arguments",),
             ),
             CommandCase(
                 name="invalid-date-shape",
-                arguments=("--get", "--created-after", "2026-1-01"),
+                arguments=("get", "--created-after", "2026-1-01"),
                 expected_exit_code=2,
             ),
             CommandCase(
                 name="invalid-date-value",
-                arguments=("--get", "--created-after", "2026-02-31"),
+                arguments=("get", "--created-after", "2026-02-31"),
                 expected_exit_code=1,
                 must_contain=("--created-after must use YYYY-MM-DD",),
             ),
             CommandCase(
                 name="invalid-missing-set-file",
-                arguments=("--set", missing_maps),
+                arguments=("set", "--maps-path", missing_maps),
                 expected_exit_code=1,
                 expected_log_command="set_full",
                 expected_log_status="error",
-                must_contain=("--set input file does not exist",),
+                must_contain=("set input file does not exist",),
             ),
             CommandCase(
                 name="invalid-removed-repositories-created-after-flag",
-                arguments=("--repositories-created-after", config.future_date),
+                arguments=("get", "--repositories-created-after", config.future_date),
                 expected_exit_code=2,
                 must_contain=("unrecognized arguments",),
             ),
             CommandCase(
                 name="invalid-removed-get-schema-flag",
-                arguments=("--get-schema", "definitely-missing-schema.gql"),
+                arguments=("get", "--get-schema", "definitely-missing-schema.gql"),
                 expected_exit_code=2,
                 must_contain=("unrecognized arguments",),
             ),
@@ -1144,30 +1638,24 @@ def read_only_cases(config: EndToEndConfig) -> list[CommandCase]:
         CommandCase(
             name="help",
             arguments=("--help",),
-            must_contain=("usage: src-auth-perms-sync", "--set [FILE]"),
+            must_contain=("usage: src-auth-perms-sync", "commands:"),
             must_not_contain=("--repositories-created-after", "--get-schema"),
         ),
         CommandCase(
-            name="implicit-get-user",
-            arguments=("--user", config.user),
-            expected_log_command="get",
-            must_contain=("Wrote before-snapshot",),
-        ),
-        CommandCase(
-            name="explicit-get-user",
-            arguments=("--get", "--user", config.user),
+            name="get-users-baseline",
+            arguments=("get", "--users", config.user),
             expected_log_command="get",
             must_contain=("Wrote before-snapshot",),
         ),
         CommandCase(
             name="get-created-after-future",
-            arguments=("--get", "--created-after", config.future_date),
+            arguments=("get", "--created-after", config.future_date),
             expected_log_command="get",
             must_contain=("Selected 0 user(s) for get output",),
         ),
         CommandCase(
             name="get-user-created-after-future",
-            arguments=("--get", "--user", config.user, "--created-after", config.future_date),
+            arguments=("get", "--users", config.user, "--created-after", config.future_date),
             expected_log_command="get",
             must_contain_one_of=(
                 "Selected 0 user(s) for get output",
@@ -1177,19 +1665,13 @@ def read_only_cases(config: EndToEndConfig) -> list[CommandCase]:
         CommandCase(
             name="get-users-without-explicit-perms-created-after-future",
             arguments=(
-                "--get",
+                "get",
                 "--users-without-explicit-perms",
                 "--created-after",
                 config.future_date,
             ),
             expected_log_command="get",
             must_contain=("Selected 0 user(s) for get output",),
-        ),
-        CommandCase(
-            name="get-sync-saml-orgs-dry-run",
-            arguments=("--get", "--sync-saml-orgs"),
-            expected_log_command="get_sync_saml_orgs",
-            must_contain=("Wrote before-snapshot", "Dry run complete"),
         ),
     ]
     return cases
@@ -1200,8 +1682,7 @@ def run_safe_set_cases(config: EndToEndConfig, runner: CommandPermutationRunner)
         CommandCase(
             name="set-explicit-full-no-op-apply",
             arguments=(
-                "--set",
-                "maps.yaml",
+                "set",
                 "--full",
                 "--created-after",
                 config.future_date,
@@ -1219,8 +1700,8 @@ def run_safe_set_cases(config: EndToEndConfig, runner: CommandPermutationRunner)
 def set_user_dry_run_case(config: EndToEndConfig) -> CommandCase:
     return CommandCase(
         name="set-user-dry-run",
-        arguments=("--set", "maps.yaml", "--user", config.user),
-        expected_log_command="set_user",
+        arguments=("set", "--users", config.user),
+        expected_log_command="set_users",
         must_contain=("Dry run complete",),
     )
 
@@ -1229,15 +1710,14 @@ def set_user_apply_case(config: EndToEndConfig) -> CommandCase:
     return CommandCase(
         name="set-user-apply",
         arguments=(
-            "--set",
-            "maps.yaml",
-            "--user",
+            "set",
+            "--users",
             config.user,
             "--apply",
             "--parallelism",
             str(config.parallelism),
         ),
-        expected_log_command="set_user",
+        expected_log_command="set_users",
         must_contain_one_of=(
             "VALIDATION OK: all",
             "All selected users already have the mapped explicit grants",
@@ -1249,8 +1729,7 @@ def users_without_explicit_permissions_no_op_case(config: EndToEndConfig) -> Com
     return CommandCase(
         name="set-users-without-explicit-perms-no-op-apply",
         arguments=(
-            "--set",
-            "maps.yaml",
+            "set",
             "--users-without-explicit-perms",
             "--created-after",
             config.future_date,
@@ -1268,7 +1747,8 @@ def restore_scoped_dry_run_case(snapshot: Path, config: EndToEndConfig) -> Comma
     return CommandCase(
         name="restore-scoped-dry-run",
         arguments=(
-            "--restore",
+            "restore",
+            "--restore-path",
             str(snapshot),
             "--parallelism",
             str(config.parallelism),
@@ -1282,7 +1762,8 @@ def restore_scoped_apply_case(snapshot: Path, config: EndToEndConfig) -> Command
     return CommandCase(
         name="restore-scoped-apply-cleanup",
         arguments=(
-            "--restore",
+            "restore",
+            "--restore-path",
             str(snapshot),
             "--apply",
             "--parallelism",
@@ -1299,7 +1780,7 @@ def restore_scoped_apply_case(snapshot: Path, config: EndToEndConfig) -> Command
 def sync_saml_apply_case() -> CommandCase:
     return CommandCase(
         name="sync-saml-orgs-apply",
-        arguments=("--sync-saml-orgs", "--apply"),
+        arguments=("sync-saml-orgs", "--apply"),
         expected_log_command="sync_saml_orgs",
         must_contain=("VALIDATION OK: all target org memberships match",),
     )
@@ -1308,7 +1789,7 @@ def sync_saml_apply_case() -> CommandCase:
 def final_get_user_case(config: EndToEndConfig) -> CommandCase:
     return CommandCase(
         name="final-get-user-baseline-check",
-        arguments=("--get", "--user", config.user),
+        arguments=("get", "--users", config.user),
         expected_log_command="get",
         must_contain=("Wrote before-snapshot",),
     )
@@ -1318,43 +1799,44 @@ def run_full_apply_cases(config: EndToEndConfig, runner: CommandPermutationRunne
     dry_run_result = runner.run(
         CommandCase(
             name="set-full-dry-run",
-            arguments=("--set",),
+            arguments=("set",),
             expected_log_command="set_full",
             must_contain=("Dry run complete",),
         )
     )
     baseline_snapshot = snapshot_path(dry_run_result)
 
-    try:
-        runner.run(
-            CommandCase(
-                name="set-full-apply",
-                arguments=(
-                    "--set",
-                    "--apply",
-                    "--parallelism",
-                    str(config.parallelism),
-                ),
-                expected_log_command="set_full",
-                must_contain=("VALIDATION OK",),
+    if config.include_redundant_scale_cases:
+        try:
+            runner.run(
+                CommandCase(
+                    name="set-full-apply",
+                    arguments=(
+                        "set",
+                        "--apply",
+                        "--parallelism",
+                        str(config.parallelism),
+                    ),
+                    expected_log_command="set_full",
+                    must_contain=("VALIDATION OK",),
+                )
             )
-        )
-    finally:
-        runner.run(
-            restore_full_apply_case(
-                "restore-full-apply-cleanup",
-                baseline_snapshot,
-                config,
-                no_backup=False,
+        finally:
+            runner.run(
+                restore_full_apply_case(
+                    "restore-full-apply-cleanup",
+                    baseline_snapshot,
+                    config,
+                    no_backup=False,
+                )
             )
-        )
 
     try:
         runner.run(
             CommandCase(
                 name="set-full-no-backup-apply",
                 arguments=(
-                    "--set",
+                    "set",
                     "--apply",
                     "--no-backup",
                     "--parallelism",
@@ -1374,14 +1856,19 @@ def run_full_apply_cases(config: EndToEndConfig, runner: CommandPermutationRunne
             )
         )
 
-    # Covers the combined set+SAML dispatch and SAML dry-run path without
-    # repeating the full set apply and full restore cleanup paths, which are
-    # already covered above.
+    # Covers combined set+SAML dispatch and SAML dry-run with a user-scoped
+    # set path, so the default suite keeps only one expensive full-snapshot
+    # case. Pass --include-redundant-scale-cases to restore older overlap.
     runner.run(
         CommandCase(
-            name="set-full-sync-saml-orgs-dry-run",
-            arguments=("--set", "--sync-saml-orgs"),
-            expected_log_command="set_full_sync_saml_orgs",
+            name="set-user-sync-saml-orgs-dry-run",
+            arguments=(
+                "set",
+                "--users",
+                config.user,
+                "--sync-saml-orgs",
+            ),
+            expected_log_command="set_users_sync_saml_orgs",
             must_contain=("Dry run complete",),
         )
     )
@@ -1395,7 +1882,8 @@ def restore_full_apply_case(
     no_backup: bool,
 ) -> CommandCase:
     restore_arguments = [
-        "--restore",
+        "restore",
+        "--restore-path",
         str(snapshot),
         "--apply",
         "--parallelism",
@@ -1602,18 +2090,176 @@ def parse_log_timestamp(value: object) -> datetime.datetime | None:
 
 
 def workload_from_records(records: list[dict[str, Any]]) -> dict[str, int | float | str]:
-    """Collect stable workload-size fields so memory can be normalized."""
+    """Collect named workload dimensions from structured log records.
+
+    Earlier e2e summaries used raw field names from unrelated events, which made
+    values like `total_users` and `repo_count` ambiguous. Keep this summary
+    event-aware so each key says what it counts.
+    """
     workload: dict[str, int | float | str] = {}
     for record in records:
-        for field_name in WORKLOAD_FIELDS:
-            value = record.get(field_name)
-            if isinstance(value, int | float):
-                old_value = workload.get(field_name)
-                if not isinstance(old_value, int | float) or value > old_value:
-                    workload[field_name] = value
-            elif isinstance(value, str) and field_name not in workload:
-                workload[field_name] = value
+        event_name = optional_string(record.get("event"))
+        phase = optional_string(record.get("phase"))
+        if event_name == "capture_explicit_grants":
+            record_workload_max(workload, "sourcegraph_user_count", record.get("total_users"))
+            if phase == "end":
+                record_workload_max(workload, "captured_user_count", record.get("user_count"))
+        elif event_name in {"build_snapshot", "build_user_scoped_snapshot"} and phase == "end":
+            record_workload_max(workload, "snapshot_user_count_max", record.get("user_count"))
+            record_workload_max(
+                workload,
+                "snapshot_repos_with_explicit_grants_max",
+                record.get("repos_with_explicit_grants"),
+            )
+            record_workload_max(workload, "snapshot_total_grants_max", record.get("total_grants"))
+            record_workload_max(workload, "captured_user_count", record.get("user_count"))
+        elif event_name == "user_explicit_repos_batch_fetch" and phase == "end":
+            record_workload_max(workload, "batch_user_count_max", record.get("user_count"))
+            record_workload_max(
+                workload,
+                "batch_fetched_grant_count_max",
+                record.get("fetched_grant_count")
+                if "fetched_grant_count" in record
+                else record.get("repo_count"),
+            )
+        elif event_name == "load_repos_by_external_service" and phase == "end":
+            record_workload_max(workload, "loaded_repo_count", record.get("repo_count"))
+            record_workload_max(
+                workload,
+                "expected_repo_count",
+                record.get("expected_repo_count"),
+            )
+        elif event_name == "apply_username_overwrites":
+            record_workload_max(workload, "apply_payload_count", record.get("payload_count"))
+            record_workload_max(
+                workload,
+                "apply_payload_grant_count",
+                record.get("payload_grant_count")
+                if "payload_grant_count" in record
+                else record.get("total_users"),
+            )
+            record_workload_max(workload, "parallelism", record.get("parallelism"))
+            if phase == "end":
+                record_workload_max(
+                    workload,
+                    "apply_mutations_succeeded",
+                    record.get("succeeded"),
+                )
+                record_workload_max(workload, "apply_mutations_failed", record.get("failed"))
+                record_workload_max(workload, "apply_mutations_canceled", record.get("canceled"))
+        elif (
+            event_name
+            in {
+                "cmd_get",
+                "cmd_restore",
+                "cmd_restore_user_scoped",
+                "cmd_set",
+                "cmd_set_additive_user",
+                "cmd_set_additive_users_without_explicit_perms",
+            }
+            and phase == "end"
+        ):
+            record_command_workload(workload, record)
+        elif event_name in {"sync_saml_orgs", "cmd_sync_saml_orgs"} and phase == "end":
+            record_workload_max(
+                workload,
+                "target_organizations",
+                record.get("target_organizations"),
+            )
+            record_workload_max(workload, "desired_memberships", record.get("desired_memberships"))
+
+    record_workload_model_dimensions(workload)
     return workload
+
+
+def record_command_workload(workload: dict[str, int | float | str], record: dict[str, Any]) -> None:
+    """Copy command-level counts using names that preserve their meaning."""
+    event_name = optional_string(record.get("event"))
+    repo_count = record.get("repo_count")
+    total_grants = record.get("total_grants")
+    if event_name == "cmd_set":
+        record_workload_max(workload, "planned_repo_count", repo_count)
+        record_workload_max(workload, "planned_total_grants", total_grants)
+    elif event_name == "cmd_get":
+        record_workload_max(workload, "selected_user_count", record.get("user_count"))
+        record_workload_max(workload, "selected_total_grants", total_grants)
+    elif event_name == "cmd_restore":
+        record_workload_max(workload, "restore_snapshot_repo_count", record.get("snapshot_repos"))
+        record_workload_max(
+            workload,
+            "restore_snapshot_total_grants",
+            record.get("snapshot_grants"),
+        )
+    elif event_name == "cmd_set_additive_user":
+        record_workload_max(workload, "selected_user_count", record.get("user_count"))
+        record_workload_max(workload, "planned_repo_count", repo_count)
+        record_workload_max(workload, "planned_total_grants", total_grants)
+
+    record_workload_max(workload, "mapping_count", record.get("mapping_count"))
+    record_workload_max(workload, "mutations_succeeded", record.get("mutations_succeeded"))
+    record_workload_max(workload, "mutations_failed", record.get("mutations_failed"))
+    record_workload_max(workload, "mutations_canceled", record.get("mutations_canceled"))
+
+
+def record_workload_model_dimensions(workload: dict[str, int | float | str]) -> None:
+    """Add the canonical dimensions used by memory modeling."""
+    user_count = max_workload_number(
+        workload,
+        (
+            "selected_user_count",
+            "captured_user_count",
+            "snapshot_user_count_max",
+            "sourcegraph_user_count",
+        ),
+    )
+    repo_count = max_workload_number(
+        workload,
+        (
+            "planned_repo_count",
+            "restore_snapshot_repo_count",
+            "snapshot_repos_with_explicit_grants_max",
+            "loaded_repo_count",
+        ),
+    )
+    grant_count = max_workload_number(
+        workload,
+        (
+            "planned_total_grants",
+            "restore_snapshot_total_grants",
+            "selected_total_grants",
+            "snapshot_total_grants_max",
+            "apply_payload_grant_count",
+        ),
+    )
+    if user_count is not None:
+        workload["memory_model_user_count"] = user_count
+    if repo_count is not None:
+        workload["memory_model_repo_count"] = repo_count
+    if grant_count is not None:
+        workload["memory_model_grant_count"] = grant_count
+
+
+def max_workload_number(
+    workload: dict[str, int | float | str], field_names: Sequence[str]
+) -> int | float | None:
+    """Return the largest numeric value found for the supplied workload fields."""
+    values = [
+        value
+        for field_name in field_names
+        if isinstance((value := workload.get(field_name)), int | float)
+    ]
+    return max(values) if values else None
+
+
+def record_workload_max(
+    workload: dict[str, int | float | str], field_name: str, value: object
+) -> None:
+    """Record the maximum numeric value for a named workload dimension."""
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return
+    old_value = workload.get(field_name)
+    if not isinstance(old_value, int | float) or value > old_value:
+        workload[field_name] = value
 
 
 def artifact_sizes_for_run(log_path: Path) -> dict[str, int]:
@@ -1634,6 +2280,54 @@ def wait_for_jaeger_trace_collectors(collectors: list[JaegerTraceCollector]) -> 
     print(f"\nWaiting for {len(collectors)} background Jaeger trace collector(s) ...")
     for collector in collectors:
         collector.wait()
+
+
+def graphql_query_metadata_from_record(record: dict[str, Any]) -> dict[str, Any] | None:
+    """Return correlation metadata from a structured `graphql_query` log record."""
+    if record.get("event") != "graphql_query":
+        return None
+    metadata: dict[str, Any] = {
+        "span_id": record.get("span"),
+        "parent_span_id": record.get("parent_span"),
+        "trace_id": record.get("trace"),
+    }
+    phase = record.get("phase")
+    if phase == "start":
+        metadata["started_at"] = record.get("ts")
+    elif phase == "end":
+        metadata["ended_at"] = record.get("ts")
+    for field_name in (
+        "cursor_present",
+        "duration_ms",
+        "error_type",
+        "graphql_client",
+        "page_number",
+        "page_size",
+        "query_bytes",
+        "query_name",
+        "response_fields",
+        "status",
+        "url",
+        "variable_names",
+        # Current src-py-lib logs variable names only. Keep these optional fields
+        # so raw trace artifacts automatically include values if the GraphQL log
+        # event grows an opt-in sanitized-variable field later.
+        "input_variables",
+        "variable_values",
+        "variables",
+    ):
+        if field_name in record:
+            metadata[field_name] = record[field_name]
+    return {key: value for key, value in metadata.items() if value is not None}
+
+
+def graphql_query_span_key(record: dict[str, Any]) -> tuple[str, str] | None:
+    """Return the `(trace_id, span_id)` key for a GraphQL query log span."""
+    trace_id = optional_string(record.get("trace"))
+    span_id = optional_string(record.get("span"))
+    if trace_id is None or span_id is None:
+        return None
+    return trace_id, span_id
 
 
 def graphql_trace_request_from_record(record: dict[str, Any]) -> dict[str, Any] | None:
@@ -1997,9 +2691,10 @@ def write_results_files(
     results: list[CommandResult],
     comparisons: list[CaseComparison],
     config: EndToEndConfig,
+    sourcegraph_load_monitor: SourcegraphLoadMonitor | None,
 ) -> None:
     if config.results_json is not None:
-        write_results_json(config.results_json, results, comparisons)
+        write_results_json(config.results_json, results, comparisons, sourcegraph_load_monitor)
     if config.results_csv is not None:
         write_results_csv(config.results_csv, results)
         phase_csv = phase_results_csv_path(config.results_csv)
@@ -2010,12 +2705,20 @@ def write_results_json(
     path: Path,
     results: list[CommandResult],
     comparisons: list[CaseComparison],
+    sourcegraph_load_monitor: SourcegraphLoadMonitor | None,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    sourcegraph_monitor: dict[str, Any] | None = None
+    if sourcegraph_load_monitor is not None:
+        sourcegraph_monitor = {
+            "output_dir": str(sourcegraph_load_monitor.output_dir),
+            "log_path": str(sourcegraph_load_monitor.log_path),
+        }
     with path.open("w", encoding="utf-8") as output_file:
         json.dump(
             {
                 "generated_at": datetime.datetime.now(datetime.UTC).isoformat(),
+                "sourcegraph_load_monitor": sourcegraph_monitor,
                 "results": [result_to_json(result) for result in results],
                 "comparisons": [comparison_to_json(comparison) for comparison in comparisons],
             },
@@ -2240,7 +2943,11 @@ def normalized_memory(result: CommandResult) -> dict[str, float]:
     if peak_rss_mb is None:
         return {}
     normalized: dict[str, float] = {}
-    for field_name in ("user_count", "total_users", "repo_count", "total_grants"):
+    for field_name in (
+        "memory_model_user_count",
+        "memory_model_repo_count",
+        "memory_model_grant_count",
+    ):
         value = result.workload.get(field_name)
         if isinstance(value, int | float) and value > 0:
             normalized[f"peak_rss_mb_per_{field_name}"] = peak_rss_mb / float(value)
