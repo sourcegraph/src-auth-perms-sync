@@ -43,7 +43,7 @@ def load_discovery(
     providers = shared_sourcegraph.list_auth_providers(client)
     log.info("Received %d auth providers.", len(providers))
 
-    log.info("Loading code hosts from %s ...", client.endpoint)
+    log.info("Querying code hosts from %s ...", client.endpoint)
     services = permissions_sourcegraph.list_external_services(client)
     log.info("Received %d code hosts.", len(services))
 
