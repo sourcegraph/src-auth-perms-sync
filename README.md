@@ -18,8 +18,8 @@ Feel free to open issues or PRs, but responses are best effort.
 
 - Release versions are `major.minor.patch`
 - Because this project is still major version 0:
-  - Minor version updates are breaking changes
-  - Patch version updates are not breaking changes
+  - Minor version updates are probably breaking changes
+  - Patch version updates are probably not breaking changes
 
 ## Principles
 
@@ -89,13 +89,19 @@ Feel free to open issues or PRs, but responses are best effort.
 
 ## Install
 
-- Requires Python 3.11
+- Requires Python >= 3.11
 - Recommended: Use a Python virtual environment
 
 ### Install from PyPI
 
 ```bash
-pip install src-auth-perms-sync
+# Set up virtual environment
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+
+# Install package from PyPI
+python -m pip install src-auth-perms-sync
 
 # Run the CLI
 src-auth-perms-sync --help
@@ -138,17 +144,16 @@ succeeded = src.Set(config)
 
 ## Inputs
 
-- Environment variables
+- Environment variables (CLI), or src.Config args (Python import)
   - `SRC_ENDPOINT`
   - `SRC_ACCESS_TOKEN` from a user with site-admin perms
-  - Supplied via the environment or a `.env` file
   - See [.env.example](./.env.example)
 
 - YAML maps file `src-auth-perms-sync-runs/<endpoint>/maps.yaml`
   - A list of mapping rules
   - Each mapping rule takes
-    - A list of filters for users
-    - A list of filters for repos
+    - A map of filters for users
+    - A map of filters for repos
   - See [maps-example.yaml](./maps-example.yaml)
   - An empty maps.yaml file is created for you on the first `get` run
 
@@ -157,7 +162,7 @@ succeeded = src.Set(config)
 1. **Get auth providers and code hosts**
 
     ```bash
-    uv run src-auth-perms-sync get
+    src-auth-perms-sync get
     ```
 
     - Queries the Sourcegraph instance for auth providers and code host connections
@@ -174,19 +179,19 @@ succeeded = src.Set(config)
 3. **Set: Dry run**
 
     ```bash
-    uv run src-auth-perms-sync set --maps-path maps.yaml --full
+    src-auth-perms-sync set --maps-path maps.yaml --full
     ```
 
 4. **Set: Apply**
 
     ```bash
-    uv run src-auth-perms-sync set --maps-path maps.yaml --full --apply
+    src-auth-perms-sync set --maps-path maps.yaml --full --apply
     ```
 
 5. **Restore: Dry run**
 
     ```bash
-    uv run src-auth-perms-sync restore \
+    src-auth-perms-sync restore \
       --restore-path backups/maps.yaml/2026-04-27-08-24-25-set-apply/before.json
     ```
 
@@ -196,7 +201,7 @@ succeeded = src.Set(config)
 6. **Restore: Apply**
 
     ```bash
-    uv run src-auth-perms-sync restore \
+    src-auth-perms-sync restore \
       --restore-path backups/maps.yaml/2026-04-27-08-24-25-set-apply/before.json \
       --apply
     ```
@@ -206,7 +211,7 @@ succeeded = src.Set(config)
 1. **Get user and org metadata**
 
     ```bash
-    uv run src-auth-perms-sync sync-saml-orgs
+    src-auth-perms-sync sync-saml-orgs
     ```
 
     - Queries the Sourcegraph instance for auth providers, users, users' SAML groups, and orgs
@@ -215,7 +220,7 @@ succeeded = src.Set(config)
 2. **Apply org sync**
 
     ```bash
-    uv run src-auth-perms-sync sync-saml-orgs --apply
+    src-auth-perms-sync sync-saml-orgs --apply
     ```
 
     - Creates the orgs if they don't exist, and sync the members from the SAML groups to the orgs
@@ -223,7 +228,7 @@ succeeded = src.Set(config)
 
 ## Options
 
-Run `uv run src-auth-perms-sync --help` for options
+Run `src-auth-perms-sync --help` for options
 
 ## File tree
 
@@ -234,8 +239,8 @@ src-auth-perms-sync-runs/endpoint/
 ├── maps.yaml
 └── runs
     └── timestamp-command
-        ├── after.json
         ├── before.json
+        ├── after.json
         ├── diff.json
         ├── log.json
         └── maps.yaml
@@ -249,9 +254,9 @@ src-auth-perms-sync-runs/endpoint/
 - Only one `maps.yaml` file can be used at a time per Sourcegraph instance, as each `set --apply`
   command resets the state on the Sourcegraph instance to the `maps.yaml` file which was used
 - Each run of the script creates a new `timestamp-command` dir under the `runs` dir, with:
+  - A `before.json` file, capturing the before state, which can be used in a restore run
   - A log file
   - A backup copy of the `maps.yaml` file which was used in that run
-  - A `before.json` file, capturing the before state, which can be restored from
 - Runs using `--apply` also create
   - An `after.json` file, capturing the new state
   - A `diff.json` file, a shorter, reviewable file containing the diffs between before and after

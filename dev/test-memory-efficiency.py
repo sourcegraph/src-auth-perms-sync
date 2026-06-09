@@ -6,8 +6,9 @@ Different workload shapes stress different parts of mapping resolution and
 full-set planning, while preserving known selected user/repo/grant counts.
 
 By default this script only generates the maps. Pass `--run` to execute the
-CLI in dry-run mode. Pass `--mode apply-no-backup --allow-apply` only on a
-scratch instance; that mode mutates explicit permissions.
+CLI in dry-run mode. Pass `--mode apply-with-backup --allow-apply` or
+`--mode apply-no-backup --allow-apply` only on a scratch instance; those
+modes mutate explicit permissions.
 """
 
 from __future__ import annotations
@@ -82,7 +83,7 @@ DEFAULT_USER_POINTS = (1, 10, 100, 1000, 10000)
 DEFAULT_REPO_POINTS = (1, 10, 100, 1000)
 DEFAULT_COMMAND = "uv run src-auth-perms-sync"
 LOG_PATH_PATTERN = re.compile(r"Writing log events to (.+?/log\.json)\.")
-RunMode = Literal["dry-run", "apply-no-backup"]
+RunMode = Literal["dry-run", "apply-with-backup", "apply-no-backup"]
 SweepSuite = Literal["gentle", "breaking"]
 StressShape: TypeAlias = Literal[
     "rectangle",
@@ -166,6 +167,7 @@ class CommandRunResult:
     """One CLI execution result written in analyze-memory.py-compatible shape."""
 
     generated_map: GeneratedMap
+    mode: RunMode
     return_code: int
     elapsed_seconds: float
     output_path: Path
@@ -178,8 +180,8 @@ def main() -> int:
     arguments = parser.parse_args()
     mode = cast(RunMode, arguments.mode)
     suite = cast(SweepSuite, arguments.suite)
-    if mode == "apply-no-backup" and not arguments.allow_apply:
-        parser.error("--mode apply-no-backup requires --allow-apply")
+    if mode != "dry-run" and not arguments.allow_apply:
+        parser.error(f"--mode {mode} requires --allow-apply")
     if arguments.rule_count < 1:
         parser.error("--rule-count must be >= 1")
 
@@ -327,19 +329,22 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--mode",
-        choices=("dry-run", "apply-no-backup"),
+        choices=("dry-run", "apply-with-backup", "apply-no-backup"),
         default="dry-run",
         help="Run mode when --run is set. Default is dry-run.",
     )
     parser.add_argument(
         "--allow-apply",
         action="store_true",
-        help="Required safety acknowledgement for --mode apply-no-backup.",
+        help="Required safety acknowledgement for mutating --mode values.",
     )
     parser.add_argument(
         "--command",
         default=DEFAULT_COMMAND,
-        help=f"Command used to invoke the CLI (default: {DEFAULT_COMMAND!r}).",
+        help=(
+            "Base command used to invoke the CLI; the script appends "
+            f"'set --maps-path ...' (default: {DEFAULT_COMMAND!r})."
+        ),
     )
     parser.add_argument(
         "--parallelism",
@@ -871,6 +876,7 @@ def run_sweep(
         run_record = read_run_record(log_path)
         result = CommandRunResult(
             generated_map=generated_map,
+            mode=mode,
             return_code=process.returncode,
             elapsed_seconds=elapsed_seconds,
             output_path=process_output_path,
@@ -909,7 +915,8 @@ def command_arguments(
 ) -> list[str]:
     arguments = [
         *shlex.split(command),
-        "--set",
+        "set",
+        "--maps-path",
         str(map_path.resolve()),
         "--full",
         "--parallelism",
@@ -921,10 +928,22 @@ def command_arguments(
         "--sample-interval",
         f"{sample_interval:g}",
     ]
+    if mode != "dry-run":
+        arguments.append("--apply")
     if mode == "apply-no-backup":
-        arguments.extend(("--apply", "--no-backup"))
+        arguments.append("--no-backup")
     if trace:
         arguments.append("--trace")
+    return arguments
+
+
+def result_arguments(map_path: Path, mode: RunMode) -> list[str]:
+    """Return the CLI argument shape captured in results.json."""
+    arguments = ["set", "--maps-path", str(map_path), "--full"]
+    if mode != "dry-run":
+        arguments.append("--apply")
+    if mode == "apply-no-backup":
+        arguments.append("--no-backup")
     return arguments
 
 
@@ -992,7 +1011,8 @@ def result_to_json(
         "iteration": 1,
         "case": case.name,
         "shape": case.shape,
-        "arguments": ["--set", str(result.generated_map.path), "--full"],
+        "run_mode": result.mode,
+        "arguments": result_arguments(result.generated_map.path, result.mode),
         "return_code": result.return_code,
         "elapsed_seconds": round(result.elapsed_seconds, 3),
         "log_path": str(result.log_path) if result.log_path else None,
@@ -1044,6 +1064,7 @@ def write_results_csv(
     fieldnames = [
         "case",
         "shape",
+        "run_mode",
         "map_rule_count",
         "raw_rule_grants",
         "users",
@@ -1067,6 +1088,7 @@ def write_results_csv(
                 {
                     "case": case.name,
                     "shape": case.shape,
+                    "run_mode": result.mode,
                     "map_rule_count": case.map_rule_count,
                     "raw_rule_grants": case.raw_rule_grants,
                     "users": case.users,

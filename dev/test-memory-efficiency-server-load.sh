@@ -15,7 +15,7 @@ stream_logs=true
 
 usage() {
   cat <<'EOF'
-Usage: dev/monitor-sourcegraph-load.sh [options]
+Usage: dev/test-memory-efficiency-server-load.sh [options]
 
 Collect timestamped Sourcegraph pod load evidence while the e2e script runs.
 Press Ctrl-C to stop, or pass --duration-seconds.
@@ -34,9 +34,9 @@ Options:
   -h, --help                        Show this help
 
 Examples:
-  dev/monitor-sourcegraph-load.sh
+  dev/test-memory-efficiency-server-load.sh
 
-  dev/monitor-sourcegraph-load.sh \
+  dev/test-memory-efficiency-server-load.sh \
     --duration-seconds 1800 \
     --output-dir /tmp/src-auth-perms-sync-load-$(date -u +%Y%m%d-%H%M%S)
 

@@ -1,9 +1,5 @@
 # TODO
 
-## High priority: Customer feedback
-
-- Take maps.yaml as a constructor object
-
 ## High priority: Instrument with OpenTelemetry — in progress
 
 - [ ] Add OTel-native traces, metrics, and wide log events in `src-py-lib`.
@@ -24,6 +20,11 @@
   - maps.yaml file
   - Expected after state
 - Script to run the script, and verify the after state matches the expected after state
+
+## High priority: Verify perms are updated when a user's SAML groups change
+
+- If a user gets added to a new SAML group, which hits a mapping, ensure they
+  get the new perms
 
 ## High priority: Reduce worst-case full-permission sync load
 
@@ -56,11 +57,6 @@
   Sourcegraph executor?
 - How do we avoid stampedes (e.g., bulk repo sync triggering thousands
   of re-runs)?
-
-## Medium priority: Verify perms are updated when a user's SAML groups change
-
-- If a user gets added to a new SAML group, which hits a mapping, ensure they
-  get the new perms
 
 ## Low priority: Repo-centric path, when users > repos, or for cross-checking
 
@@ -108,7 +104,7 @@ If memory remains too high after re-measuring, implement the Phase 2 grouped
 plan in [mapping-efficiency.md](./mapping-efficiency.md): combine map-entry
 overlays into final groups of repos that share the same desired username tuple.
 
-## Low priority:  Expand group-membership filters beyond SAML
+## Low priority: Expand group-membership filters beyond SAML
 
 `allowGroups`-style enforcement exists on more than just SAML, but only
 SAML actually persists the group list. Recovery options for each:

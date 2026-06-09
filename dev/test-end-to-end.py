@@ -36,10 +36,7 @@ from typing import Any, TextIO, cast
 from urllib.parse import urlsplit
 
 import src_py_lib as src
-from src_py_lib.clients.sourcegraph import (
-    sourcegraph_trace_from_headers,
-    summarize_jaeger_trace,
-)
+from src_py_lib.clients.sourcegraph import sourcegraph_trace_from_headers, summarize_jaeger_trace
 
 LOG_PATH_PATTERN = re.compile(r"Writing log events to (.+?/log\.json)\.")
 SAFE_PATH_PART_PATTERN = re.compile(r"[^A-Za-z0-9_.-]+")
@@ -317,7 +314,7 @@ class EndToEndConfig(src.SourcegraphClientConfig, src.LoggingConfig):
     monitor_sourcegraph_load: bool = src.config_field(
         default=False,
         env_var="SRC_AUTH_PERMS_SYNC_E2E_MONITOR_SOURCEGRAPH_LOAD",
-        cli_flag="--monitor-sourcegraph-load",
+        cli_flag="--test-memory-efficiency-server-load",
         cli_action="store_true",
         help=(
             "Start the Sourcegraph pod/Postgres load monitor for this e2e run and write "
@@ -1430,7 +1427,7 @@ def sourcegraph_monitor_output_dir(config: EndToEndConfig) -> Path:
 
 def sourcegraph_monitor_script_path() -> Path:
     """Return the lower-level monitor script used by the e2e orchestrator."""
-    return Path(__file__).resolve().with_name("monitor-sourcegraph-load.sh")
+    return Path(__file__).resolve().with_name("test-memory-efficiency-server-load.sh")
 
 
 def complete_jaeger_trace_path(trace_directory: Path, trace_request: dict[str, Any]) -> Path:
