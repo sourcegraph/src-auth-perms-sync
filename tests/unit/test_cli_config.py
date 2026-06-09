@@ -94,6 +94,25 @@ class CliConfigTests(unittest.TestCase):
         self.assertEqual(Path("custom-maps.yaml"), cli_input.config.maps_path)
         self.assertEqual(("alice", "bob@example.com"), cli_input.config.users)
 
+    def test_maps_path_is_none_until_defaulted_for_an_endpoint(self) -> None:
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            mock.patch.dict(
+                os.environ,
+                {
+                    "SRC_ENDPOINT": "https://sourcegraph.example.com",
+                    "SRC_ACCESS_TOKEN": "secret",
+                },
+                clear=True,
+            ),
+        ):
+            env_file = Path(directory) / ".env"
+            env_file.write_text("")
+            cli_input = cli.load_cli(["set", "--env-file", str(env_file)])
+
+        self.assertEqual("set", cli_input.command_name)
+        self.assertIsNone(cli_input.config.maps_path)
+
     def test_load_cli_rejects_singular_user_option(self) -> None:
         captured_stderr = io.StringIO()
 
@@ -355,27 +374,35 @@ class CliConfigTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             existing_path = Path(directory) / "maps.yaml"
             existing_path.write_text("maps: []\n")
-            cli.require_set_input_file(make_config(maps_path=existing_path))
+            cli.require_set_input_file(existing_path)
 
             with self.assertRaises(SystemExit) as exit_context:
-                cli.require_set_input_file(make_config(maps_path=Path(directory) / "missing.yaml"))
+                cli.require_set_input_file(Path(directory) / "missing.yaml")
             self.assertIn("set input file does not exist", str(exit_context.exception))
 
-    def test_endpoint_scoped_config_rewrites_relative_artifact_paths(self) -> None:
-        scoped_set_config = cli.endpoint_scoped_config(
+    def test_config_with_default_paths_only_defaults_omitted_maps_path(self) -> None:
+        endpoint_directory = Path.cwd() / backups.ARTIFACTS_DIR_NAME / "sourcegraph.example.com"
+
+        defaulted_set_config = cli.config_with_default_paths(
+            "set",
+            make_config(),
+            "https://sourcegraph.example.com",
+        )
+        self.assertEqual(endpoint_directory / "maps.yaml", defaulted_set_config.maps_path)
+
+        explicit_set_config = cli.config_with_default_paths(
             "set",
             make_config(maps_path=Path("maps.yaml")),
             "https://sourcegraph.example.com",
         )
-        endpoint_directory = Path.cwd() / backups.ARTIFACTS_DIR_NAME / "sourcegraph.example.com"
-        self.assertEqual(endpoint_directory / "maps.yaml", scoped_set_config.maps_path)
+        self.assertEqual(Path("maps.yaml"), explicit_set_config.maps_path)
 
-        scoped_restore_config = cli.endpoint_scoped_config(
+        restore_config = cli.config_with_default_paths(
             "restore",
             make_config(restore_path=Path("snapshot.json")),
             "https://sourcegraph.example.com",
         )
-        self.assertEqual(endpoint_directory / "snapshot.json", scoped_restore_config.restore_path)
+        self.assertEqual(Path("snapshot.json"), restore_config.restore_path)
 
     def test_run_fields_include_concrete_command(self) -> None:
         configuration = make_config(

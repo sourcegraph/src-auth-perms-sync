@@ -31,7 +31,7 @@ Feel free to open issues or PRs, but responses are best effort.
   map casts a smaller net of users / repos. This can result in more maps,
   but they will be easier to understand and trust.
 
-- Backup files are saved in `src-auth-perms-sync-runs/<endpoint>/backups/`,
+- Backup files are saved in `src-auth-perms-sync-runs/<src_endpoint>/runs/<run>/`,
   unless the `--no-backup` arg is provided,
   so customers can review the changes made over time,
   and restore to a specific backup file, if needed
@@ -45,7 +45,10 @@ Feel free to open issues or PRs, but responses are best effort.
 
 - One installation of this script can apply separate `maps.yaml` files on
   separate Sourcegraph instances
-  - Be sure to specify the path to the correct `maps.yaml` file for each run
+  - By default, each Sourcegraph instance gets its own generated `maps.yaml`
+    under `src-auth-perms-sync-runs/<src_endpoint>/`
+  - If you pass `--maps-path`, relative paths are resolved from your current
+    working directory
   - Set the `SRC_ENDPOINT` and `SRC_ACCESS_TOKEN` environment variables correctly for each run
 
 ## Prerequisites
@@ -149,7 +152,9 @@ succeeded = src.Set(config)
   - `SRC_ACCESS_TOKEN` from a user with site-admin perms
   - See [.env.example](./.env.example)
 
-- YAML maps file `src-auth-perms-sync-runs/<endpoint>/maps.yaml`
+- YAML maps file
+  - By default: `src-auth-perms-sync-runs/<src_endpoint>/maps.yaml`
+  - Or pass `--maps-path ./path/to/maps.yaml`
   - A list of mapping rules
   - Each mapping rule takes
     - A map of filters for users
@@ -167,42 +172,46 @@ succeeded = src.Set(config)
 
     - Queries the Sourcegraph instance for auth providers and code host connections
     - Writes generated reference files `auth-providers.yaml` and `code-hosts.yaml` under
-      `src-auth-perms-sync-runs/<endpoint>/`
+      `src-auth-perms-sync-runs/<src_endpoint>/`
     - Creates an empty `maps.yaml` if it doesn't exist
 
 2. **Configure mapping rules**
 
-    - Edit `maps.yaml`
+    - Edit `src-auth-perms-sync-runs/<src_endpoint>/maps.yaml`
     - Add mapping rules under the `maps:` top level key
     - See [maps-example.yaml](./maps-example.yaml)
 
 3. **Set: Dry run**
 
     ```bash
-    src-auth-perms-sync set --maps-path maps.yaml --full
+    src-auth-perms-sync set --full
     ```
 
 4. **Set: Apply**
 
     ```bash
-    src-auth-perms-sync set --maps-path maps.yaml --full --apply
+    src-auth-perms-sync set --full --apply
     ```
+
+    - To use a maps file outside the generated endpoint directory, pass an
+      explicit path, for example `--maps-path ./maps.yaml`
 
 5. **Restore: Dry run**
 
     ```bash
     src-auth-perms-sync restore \
-      --restore-path backups/maps.yaml/2026-04-27-08-24-25-set-apply/before.json
+      --restore-path src-auth-perms-sync-runs/<src_endpoint>/runs/<run>/before.json
     ```
 
     - Roll back the explicit-permissions state on the
       instance to match a previously captured snapshot
+    - Relative `--restore-path` values are resolved from your current working directory
 
 6. **Restore: Apply**
 
     ```bash
     src-auth-perms-sync restore \
-      --restore-path backups/maps.yaml/2026-04-27-08-24-25-set-apply/before.json \
+      --restore-path src-auth-perms-sync-runs/<src_endpoint>/runs/<run>/before.json \
       --apply
     ```
 
@@ -233,7 +242,7 @@ Run `src-auth-perms-sync --help` for options
 ## File tree
 
 ```text
-src-auth-perms-sync-runs/endpoint/
+src-auth-perms-sync-runs/<src_endpoint>/
 ├── auth-providers.yaml
 ├── code-hosts.yaml
 ├── maps.yaml
@@ -247,7 +256,7 @@ src-auth-perms-sync-runs/endpoint/
 ```
 
 - The `src-auth-perms-sync-runs` dir is created under your current working directory
-- The `endpoint` dir is created with the hostname from `SRC_ENDPOINT`
+- The `<src_endpoint>` dir is created with the hostname from `SRC_ENDPOINT`
 - If `maps.yaml` doesn't exist already, it'll be created for you
 - `auth-providers.yaml` and `code-hosts.yaml` are created / replaced by the `get` command,
   for you to copy values from, to use in your `maps.yaml`

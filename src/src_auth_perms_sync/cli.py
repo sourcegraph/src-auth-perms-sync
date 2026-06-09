@@ -32,6 +32,7 @@ log = logging.getLogger(__name__)
 
 
 CommandName: TypeAlias = Literal["get", "set", "restore", "sync_saml_orgs"]
+DEFAULT_MAPS_FILE_NAME = "maps.yaml"
 COMMON_CONFIG_FIELDS = src.config_field_names(
     src.SourcegraphClientConfig,
     src.LoggingConfig,
@@ -148,15 +149,15 @@ class CliCommand:
 class Config(src.SourcegraphClientConfig, src.LoggingConfig):
     """Config values loaded from defaults, .env, environment, and CLI flags."""
 
-    maps_path: Path = src.config_field(
-        default=Path("maps.yaml"),
+    maps_path: Path | None = src.config_field(
+        default=None,
         env_var="SRC_AUTH_PERMS_SYNC_MAPS_PATH",
         cli_flag="--maps-path",
         metavar="FILE",
         help=(
             "Maps YAML file for the set command.\n"
-            "Defaults to maps.yaml under src-auth-perms-sync-runs/<endpoint>/.\n"
-            "Relative short paths or short names are resolved from that directory."
+            "If omitted, set uses maps.yaml under src-auth-perms-sync-runs/<endpoint>/.\n"
+            "Relative paths are resolved from the current working directory."
         ),
         help_group="Permission sync",
     )
@@ -167,7 +168,7 @@ class Config(src.SourcegraphClientConfig, src.LoggingConfig):
         metavar="FILE",
         help=(
             "Snapshot JSON file for the restore command.\n"
-            "Relative paths are resolved under 'src-auth-perms-sync-runs/<endpoint>/.'"
+            "Relative paths are resolved from the current working directory."
         ),
         help_group="Restore",
     )
@@ -477,27 +478,27 @@ def load_cli(argv: Sequence[str] | None = None) -> CliInput:
     return CliInput(command_name=command_name, config=config)
 
 
-def endpoint_scoped_config(command_name: CommandName, config: Config, endpoint: str) -> Config:
-    """Return config with relative operator artifact paths scoped to this endpoint."""
-    updates: dict[str, object] = {}
-    if command_name == "set":
-        updates["maps_path"] = backups.endpoint_artifact_path(endpoint, config.maps_path)
-    if config.restore_path is not None:
-        updates["restore_path"] = backups.endpoint_artifact_path(endpoint, config.restore_path)
-    if not updates:
+def default_maps_path(endpoint: str) -> Path:
+    """Return the generated maps path for a Sourcegraph endpoint."""
+    return backups.endpoint_artifacts_directory(endpoint) / DEFAULT_MAPS_FILE_NAME
+
+
+def config_with_default_paths(command_name: CommandName, config: Config, endpoint: str) -> Config:
+    """Return config with omitted file paths filled from generated defaults."""
+    if command_name != "set" or config.maps_path is not None:
         return config
-    return config.model_copy(update=updates)
+    return config.model_copy(update={"maps_path": default_maps_path(endpoint)})
 
 
-def require_set_input_file(config: Config) -> None:
+def require_set_input_file(maps_path: Path) -> None:
     """Exit with a clear error if the selected maps file is missing."""
-    if config.maps_path.is_file():
+    if maps_path.is_file():
         return
-    if config.maps_path.exists():
-        raise SystemExit(f"set input path is not a file: {config.maps_path}")
+    if maps_path.exists():
+        raise SystemExit(f"set input path is not a file: {maps_path}")
     raise SystemExit(
         "set input file does not exist: "
-        f"{config.maps_path}\n"
+        f"{maps_path}\n"
         "Run `uv run src-auth-perms-sync get` to create the default maps.yaml, "
         "or pass a path to an existing maps file."
     )
@@ -595,10 +596,13 @@ def run_set(
 ) -> run_context.CommandData:
     """Run the selected repo-permission sync command."""
     assert command.set_options is not None
-    require_set_input_file(config)
+    maps_path = config.maps_path
+    if maps_path is None:
+        raise SystemExit("set requires a maps file path")
+    require_set_input_file(maps_path)
     return permissions_command.cmd_set(
         client,
-        config.maps_path,
+        maps_path,
         command.set_options,
         dry_run=not config.apply,
         parallelism=config.parallelism,
@@ -662,7 +666,7 @@ def run_get(
 ) -> run_context.CommandData:
     """Run the default read-only discovery command."""
     artifacts_directory = backups.endpoint_artifacts_directory(client.endpoint)
-    maps_path = artifacts_directory / "maps.yaml"
+    maps_path = default_maps_path(client.endpoint)
     maps_created = permissions_maps.create_maps_yaml_if_missing(maps_path)
     if maps_created:
         log.info("maps.yaml missing, created %s with an empty maps list.", maps_path)
@@ -737,7 +741,7 @@ def _run_or_raise(command_name: CommandName, config: Config) -> None:
         endpoint = src.normalize_sourcegraph_endpoint(config.src_endpoint)
     except ValueError as error:
         config_error(str(error))
-    config = endpoint_scoped_config(command_name, config, endpoint)
+    config = config_with_default_paths(command_name, config, endpoint)
     run_timestamp = backups.backup_timestamp()
     run_directory = backups.artifact_run_directory(
         run_timestamp,

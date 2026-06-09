@@ -1550,7 +1550,7 @@ def invalid_configuration_cases(config: EndToEndConfig) -> list[CommandCase]:
             ),
             CommandCase(
                 name="invalid-set-full-and-user",
-                arguments=("set", "--maps-path", "maps.yaml", "--full", "--users", config.user),
+                arguments=("set", "--full", "--users", config.user),
                 expected_exit_code=2,
                 must_contain=("choose at most one",),
             ),
@@ -1558,8 +1558,6 @@ def invalid_configuration_cases(config: EndToEndConfig) -> list[CommandCase]:
                 name="invalid-set-full-and-users-without-explicit-perms",
                 arguments=(
                     "set",
-                    "--maps-path",
-                    "maps.yaml",
                     "--full",
                     "--users-without-explicit-perms",
                 ),
@@ -1676,8 +1674,6 @@ def run_safe_set_cases(config: EndToEndConfig, runner: CommandPermutationRunner)
             name="set-explicit-full-no-op-apply",
             arguments=(
                 "set",
-                "--maps-path",
-                "maps.yaml",
                 "--full",
                 "--created-after",
                 config.future_date,
@@ -1695,7 +1691,7 @@ def run_safe_set_cases(config: EndToEndConfig, runner: CommandPermutationRunner)
 def set_user_dry_run_case(config: EndToEndConfig) -> CommandCase:
     return CommandCase(
         name="set-user-dry-run",
-        arguments=("set", "--maps-path", "maps.yaml", "--users", config.user),
+        arguments=("set", "--users", config.user),
         expected_log_command="set_users",
         must_contain=("Dry run complete",),
     )
@@ -1706,8 +1702,6 @@ def set_user_apply_case(config: EndToEndConfig) -> CommandCase:
         name="set-user-apply",
         arguments=(
             "set",
-            "--maps-path",
-            "maps.yaml",
             "--users",
             config.user,
             "--apply",
@@ -1727,8 +1721,6 @@ def users_without_explicit_permissions_no_op_case(config: EndToEndConfig) -> Com
         name="set-users-without-explicit-perms-no-op-apply",
         arguments=(
             "set",
-            "--maps-path",
-            "maps.yaml",
             "--users-without-explicit-perms",
             "--created-after",
             config.future_date,
@@ -1863,8 +1855,6 @@ def run_full_apply_cases(config: EndToEndConfig, runner: CommandPermutationRunne
             name="set-user-sync-saml-orgs-dry-run",
             arguments=(
                 "set",
-                "--maps-path",
-                "maps.yaml",
                 "--users",
                 config.user,
                 "--sync-saml-orgs",

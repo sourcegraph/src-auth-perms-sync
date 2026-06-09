@@ -97,13 +97,6 @@ def endpoint_directory_name(endpoint: str) -> str:
     return safe_filename_part(directory_name)
 
 
-def endpoint_artifact_path(endpoint: str, path: Path) -> Path:
-    """Resolve a user-facing artifact path within the endpoint directory by default."""
-    if path.is_absolute():
-        return path
-    return endpoint_artifacts_directory(endpoint) / path
-
-
 def _fallback_endpoint_port(hostname_and_port: str) -> int | None:
     """Parse a port from an endpoint netloc that urlsplit could not fully parse."""
     if ":" not in hostname_and_port:
