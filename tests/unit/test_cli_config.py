@@ -304,13 +304,19 @@ class CliConfigTests(unittest.TestCase):
         with self.assertRaisesRegex(shared_config.ConfigError, "greater than 0"):
             load_config_from_env(SRC_AUTH_PERMS_SYNC_HTTP_TIMEOUT_SECONDS="0")
 
-    def test_trace_config_is_loaded_from_env(self) -> None:
-        config = load_config_from_env(SRC_AUTH_PERMS_SYNC_TRACE="true")
+    def test_fetch_sg_traces_config_is_loaded_from_env(self) -> None:
+        config = load_config_from_env(SRC_AUTH_PERMS_SYNC_FETCH_SG_TRACES="true")
 
-        self.assertTrue(config.trace)
+        self.assertTrue(config.fetch_sg_traces)
+
+    def test_open_telemetry_config_is_loaded_from_env(self) -> None:
+        config = load_config_from_env(OTEL_ENABLED="true", OTEL_SERVICE_NAME="src-auth-test")
+
+        self.assertTrue(config.open_telemetry)
+        self.assertEqual("src-auth-test", config.open_telemetry_service_name)
 
     def test_run_with_client_enables_sourcegraph_trace_collection(self) -> None:
-        configuration = make_config(trace=True)
+        configuration = make_config(fetch_sg_traces=True)
         command = cli.resolve_command("get", configuration)
         captured_clients: list[src.SourcegraphClient] = []
 
@@ -334,7 +340,7 @@ class CliConfigTests(unittest.TestCase):
             )
 
         self.assertEqual(1, len(captured_clients))
-        self.assertTrue(captured_clients[0].trace)
+        self.assertTrue(captured_clients[0].fetch_sg_traces)
 
     def test_run_with_client_uses_configured_http_timeout(self) -> None:
         configuration = make_config(http_timeout_seconds=75.0)
@@ -419,7 +425,8 @@ class CliConfigTests(unittest.TestCase):
         self.assertEqual("users", fields["set_mode"])
         self.assertEqual(True, fields["apply_flag"])
         self.assertEqual(25, fields["explicit_permissions_batch_size"])
-        self.assertEqual(False, fields["trace"])
+        self.assertEqual(False, fields["fetch_sg_traces"])
+        self.assertEqual(False, fields["open_telemetry"])
         self.assertEqual(60.0, fields["http_timeout_seconds"])
 
     def test_run_command_passes_set_data_to_combined_sync(self) -> None:

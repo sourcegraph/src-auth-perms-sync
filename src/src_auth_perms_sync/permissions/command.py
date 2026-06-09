@@ -115,7 +115,7 @@ def cmd_get(
     `auth-providers.yaml` alongside the GraphQL-discovered fields.
     Providers without an explicit `configID` get only the GraphQL-derived view.
     """
-    with src.event(
+    with src.span(
         "cmd_get",
         code_hosts_path=str(code_hosts_path),
         auth_providers_path=str(auth_providers_path),
@@ -377,7 +377,7 @@ def cmd_set_additive_users(
     worker_pool: ThreadPoolExecutor | None = None,
 ) -> run_context.CommandData:
     """Add missing mapped permissions for resolved users."""
-    with src.event(
+    with src.span(
         "cmd_set_additive_users",
         input_path=str(input_path),
         user_identifiers=user_identifiers,
@@ -455,7 +455,7 @@ def cmd_set_additive_users_without_explicit_perms(
         created_after_filter = sourcegraph_datetime_filter(
             parse_cli_date(user_created_after, "--created-after")
         )
-    with src.event(
+    with src.span(
         "cmd_set_additive_users_without_explicit_perms",
         input_path=str(input_path),
         user_created_after=user_created_after,

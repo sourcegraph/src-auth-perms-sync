@@ -335,7 +335,7 @@ def cmd_sync_saml_organizations(
     characters are converted to `-`; any resulting name collision fails
     before mutation so we never merge unrelated SAML groups accidentally.
     """
-    with src.event(
+    with src.span(
         "cmd_sync_saml_organizations",
         dry_run=dry_run,
         parallelism=parallelism,
@@ -544,7 +544,7 @@ def _load_current_organization_states(
     states: dict[str, organization_types.OrganizationState] = {}
     current_user: organization_types.OrgMember | None = None
     name_batches = list(_chunks(organization_names, ORGANIZATION_LOOKUP_BATCH_SIZE))
-    with src.event(
+    with src.span(
         "load_current_organization_states",
         organization_count=len(organization_names),
         lookup_batch_count=len(name_batches),
@@ -606,7 +606,7 @@ def _fetch_organization_batch(
     }
     for index, organization_name in enumerate(organization_names):
         variables[f"name{index}"] = organization_name
-    with src.event(
+    with src.span(
         "organization_batch_lookup",
         level="DEBUG",
         organization_count=len(organization_names),
@@ -687,7 +687,7 @@ def _fetch_all_members(
 ) -> list[organization_types.OrgMember]:
     if state.id is None:
         return []
-    with src.event("organization_members", level="DEBUG", organization_name=state.name):
+    with src.span("organization_members", level="DEBUG", organization_name=state.name):
         return [
             cast(organization_types.OrgMember, node)
             for node in client.stream_connection_nodes(
@@ -765,7 +765,7 @@ def _apply_create_organizations(
 ) -> shared_types.MutationCounts:
     if not organization_names:
         return shared_types.MutationCounts()
-    with src.event(
+    with src.span(
         "apply_create_organizations",
         organization_count=len(organization_names),
         parallelism=parallelism,
@@ -820,7 +820,7 @@ def _create_organization(
     organization_name: str,
     current_user: organization_types.OrgMember,
 ) -> organization_types.OrganizationState:
-    with src.event("create_organization", organization_name=organization_name):
+    with src.span("create_organization", organization_name=organization_name):
         try:
             data = client.graphql(
                 queries.MUTATION_CREATE_ORGANIZATION,
@@ -868,7 +868,7 @@ def _apply_user_changes(
 ) -> shared_types.MutationCounts:
     if not changes:
         return shared_types.MutationCounts()
-    with src.event(
+    with src.span(
         "apply_organization_user_changes",
         change_kind=change_kind,
         change_count=len(changes),
@@ -941,7 +941,7 @@ def _apply_user_change(
     if state.id is None:
         raise RuntimeError(f"organization {change.organization_name!r} has no ID")
     if change_kind == "add":
-        with src.event(
+        with src.span(
             "add_user_to_organization",
             organization_name=change.organization_name,
             username=change.username,
@@ -961,7 +961,7 @@ def _apply_user_change(
                     return
                 raise
         return
-    with src.event(
+    with src.span(
         "remove_user_from_organization",
         organization_name=change.organization_name,
         username=change.username,
@@ -1122,7 +1122,7 @@ def _validate_organization_sync(
 def _write_organization_snapshot(
     path: Path, snapshot: organization_types.OrganizationSnapshot
 ) -> None:
-    with src.event(
+    with src.span(
         "disk_io",
         level="DEBUG",
         op="write",
@@ -1140,7 +1140,7 @@ def _write_organization_snapshot_diff(
     before: organization_types.OrganizationSnapshot,
     after: organization_types.OrganizationSnapshot,
 ) -> None:
-    with src.event(
+    with src.span(
         "disk_io",
         level="DEBUG",
         op="write",

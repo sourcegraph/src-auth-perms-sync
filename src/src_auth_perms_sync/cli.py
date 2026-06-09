@@ -36,11 +36,12 @@ DEFAULT_MAPS_FILE_NAME = "maps.yaml"
 COMMON_CONFIG_FIELDS = src.config_field_names(
     src.SourcegraphClientConfig,
     src.LoggingConfig,
+    src.OpenTelemetryConfig,
     "parallelism",
     "http_timeout_seconds",
     "max_attempts",
     "sample_interval",
-    "trace",
+    "fetch_sg_traces",
 )
 GET_CONFIG_FIELDS = src.config_field_names(
     "users",
@@ -146,7 +147,7 @@ class CliCommand:
     config_fields: tuple[str, ...]
 
 
-class Config(src.SourcegraphClientConfig, src.LoggingConfig):
+class Config(src.SourcegraphClientConfig, src.LoggingConfig, src.OpenTelemetryConfig):
     """Config values loaded from defaults, .env, environment, and CLI flags."""
 
     maps_path: Path | None = src.config_field(
@@ -276,12 +277,12 @@ class Config(src.SourcegraphClientConfig, src.LoggingConfig):
         help="Seconds between logging compute resource samples; set 0 to disable (default: 10)",
         help_group="Runtime",
     )
-    trace: bool = src.config_field(
+    fetch_sg_traces: bool = src.config_field(
         default=False,
-        env_var="SRC_AUTH_PERMS_SYNC_TRACE",
-        cli_flag="--trace",
+        env_var="SRC_AUTH_PERMS_SYNC_FETCH_SG_TRACES",
+        cli_flag="--fetch-sg-traces",
         cli_action="store_true",
-        help=("Ask Sourcegraph to retain traces for GraphQL requests and return trace metadata"),
+        help="Ask Sourcegraph to retain GraphQL traces and return debug trace metadata",
         help_group="Runtime",
     )
 
@@ -515,7 +516,8 @@ def run_fields(config: Config, command: ResolvedCommand, endpoint: str) -> dict[
         "endpoint": endpoint,
         "parallelism": config.parallelism,
         "explicit_permissions_batch_size": config.explicit_permissions_batch_size,
-        "trace": config.trace,
+        "fetch_sg_traces": config.fetch_sg_traces,
+        "open_telemetry": config.open_telemetry,
         "max_attempts": config.max_attempts,
         "http_timeout_seconds": config.http_timeout_seconds,
         "no_backup": config.no_backup,
@@ -544,7 +546,7 @@ def run_with_client(
         endpoint=endpoint,
         token=config.src_access_token,
         http=http,
-        trace=config.trace,
+        fetch_sg_traces=config.fetch_sg_traces,
     )
     try:
         run_command(config, command, client, worker_pool)
@@ -754,6 +756,11 @@ def _run_or_raise(command_name: CommandName, config: Config) -> None:
         log_file=backups.run_log_path(run_directory),
         logs_dir=None,
         resource_sample_interval_seconds=config.sample_interval,
+        open_telemetry=src.open_telemetry_settings_from_config(
+            config,
+            force_traces=config.fetch_sg_traces,
+            service_name="src-auth-perms-sync",
+        ),
     )
 
     with (

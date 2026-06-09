@@ -191,12 +191,12 @@ class EndToEndConfig(src.SourcegraphClientConfig, src.LoggingConfig):
         cli_action="store_true",
         help="Continue after assertion failures where it is safe to do so",
     )
-    trace: bool = src.config_field(
+    fetch_sg_traces: bool = src.config_field(
         default=False,
-        env_var="SRC_AUTH_PERMS_SYNC_E2E_TRACE",
-        cli_flag="--trace",
+        env_var="SRC_AUTH_PERMS_SYNC_E2E_FETCH_SG_TRACES",
+        cli_flag="--fetch-sg-traces",
         cli_action="store_true",
-        help="Pass --trace to each child src-auth-perms-sync command",
+        help="Pass --fetch-sg-traces to each child src-auth-perms-sync command",
     )
     jaeger_trace_limit: int | None = src.config_field(
         default=DEFAULT_JAEGER_TRACE_LIMIT,
@@ -205,7 +205,8 @@ class EndToEndConfig(src.SourcegraphClientConfig, src.LoggingConfig):
         metavar="N",
         ge=0,
         help=(
-            "When --trace is set, fetch and summarize the N slowest GraphQL Jaeger traces "
+            "When --fetch-sg-traces is set, fetch and summarize the N slowest GraphQL "
+            "Jaeger traces "
             "while each child command runs; omit for all traces, set 0 to disable"
         ),
     )
@@ -216,7 +217,7 @@ class EndToEndConfig(src.SourcegraphClientConfig, src.LoggingConfig):
         metavar="N",
         ge=1,
         help=(
-            "Concurrent Jaeger trace fetch requests when --trace is set "
+            "Concurrent Jaeger trace fetch requests when --fetch-sg-traces is set "
             f"(default: {DEFAULT_JAEGER_TRACE_PARALLELISM})"
         ),
     )
@@ -238,7 +239,7 @@ class EndToEndConfig(src.SourcegraphClientConfig, src.LoggingConfig):
         metavar="PATH",
         help=(
             "Write Jaeger trace summaries incrementally as JSON Lines. Defaults to a sibling "
-            "of --results-json or --results-csv when --trace is set."
+            "of --results-json or --results-csv when --fetch-sg-traces is set."
         ),
     )
     jaeger_trace_directory: Path | None = src.config_field(
@@ -248,7 +249,8 @@ class EndToEndConfig(src.SourcegraphClientConfig, src.LoggingConfig):
         metavar="PATH",
         help=(
             "Directory where complete raw Jaeger trace JSON files are written. Defaults "
-            "to a sibling directory of --results-json or --results-csv when --trace is set."
+            "to a sibling directory of --results-json or --results-csv when --fetch-sg-traces "
+            "is set."
         ),
     )
     jaeger_retry_delays: tuple[float, ...] = src.config_field(
@@ -1068,7 +1070,7 @@ class CommandPermutationRunner:
         *,
         iteration: int,
         keep_going: bool,
-        trace: bool,
+        fetch_sg_traces: bool,
         jaeger_trace_limit: int | None,
         jaeger_trace_fetch_pool: JaegerTraceFetchPool | None,
         sample_interval: float,
@@ -1078,7 +1080,7 @@ class CommandPermutationRunner:
         self.environment = environment
         self.iteration = iteration
         self.keep_going = keep_going
-        self.trace = trace
+        self.fetch_sg_traces = fetch_sg_traces
         self.jaeger_trace_limit = jaeger_trace_limit
         self.jaeger_trace_fetch_pool = jaeger_trace_fetch_pool
         self.sample_interval = sample_interval
@@ -1106,7 +1108,7 @@ class CommandPermutationRunner:
         full_command = [
             *self.variant.executable,
             *case.arguments,
-            *(("--trace",) if self.trace else ()),
+            *(("--fetch-sg-traces",) if self.fetch_sg_traces else ()),
             "--sample-interval",
             str(self.sample_interval),
         ]
@@ -1306,11 +1308,11 @@ def run_end_to_end(config: EndToEndConfig) -> None:
     try:
         if sourcegraph_load_monitor is not None:
             sourcegraph_load_monitor.start()
-        with src.event(
+        with src.span(
             "end_to_end_matrix",
             repeat=config.repeat,
             variant_count=len(variants),
-            trace=config.trace,
+            fetch_sg_traces=config.fetch_sg_traces,
             sourcegraph_load_monitor=sourcegraph_load_monitor is not None,
         ) as matrix_summary:
             if sourcegraph_load_monitor is not None:
@@ -1325,7 +1327,7 @@ def run_end_to_end(config: EndToEndConfig) -> None:
                             environment,
                             iteration=iteration,
                             keep_going=config.keep_going,
-                            trace=config.trace,
+                            fetch_sg_traces=config.fetch_sg_traces,
                             jaeger_trace_limit=config.jaeger_trace_limit,
                             jaeger_trace_fetch_pool=jaeger_trace_fetch_pool,
                             sample_interval=config.sample_interval,
@@ -1382,7 +1384,7 @@ def create_jaeger_trace_fetch_pool(
     config: EndToEndConfig,
 ) -> JaegerTraceFetchPool | None:
     """Return the shared trace fetch pool for this run, if trace collection is enabled."""
-    if not config.trace or config.jaeger_trace_limit == 0:
+    if not config.fetch_sg_traces or config.jaeger_trace_limit == 0:
         return None
     return JaegerTraceFetchPool(
         config,

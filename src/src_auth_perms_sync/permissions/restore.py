@@ -83,7 +83,7 @@ def cmd_restore_user_scoped(
     worker_pool: ThreadPoolExecutor | None = None,
 ) -> None:
     """Restore explicit permissions for the users present in a scoped snapshot."""
-    with src.event(
+    with src.span(
         "cmd_restore_user_scoped",
         snapshot_path=str(snapshot_path),
         dry_run=dry_run,
@@ -856,7 +856,7 @@ def cmd_restore(
         return
     target_full_snapshot = cast(permission_snapshot.Snapshot, target_snapshot)
 
-    with src.event(
+    with src.span(
         "cmd_restore",
         snapshot_path=str(snapshot_path),
         dry_run=dry_run,

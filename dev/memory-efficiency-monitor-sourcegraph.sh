@@ -41,7 +41,7 @@ Examples:
     --output-dir /tmp/src-auth-perms-sync-load-$(date -u +%Y%m%d-%H%M%S)
 
 In another terminal, run:
-  uv run python dev/test-end-to-end.py --trace --sample-interval 0 --external-sample-interval 0
+  uv run python dev/test-end-to-end.py --fetch-sg-traces --sample-interval 0 --external-sample-interval 0
 EOF
 }
 

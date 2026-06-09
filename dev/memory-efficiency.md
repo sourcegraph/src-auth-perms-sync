@@ -7,13 +7,14 @@ bulk explicit-permissions APIs.
 
 ## Capture a focused trace
 
-Run a small command with `--trace`. This sends `X-Sourcegraph-Should-Trace` and
-a sampled W3C `traceparent` header on each GraphQL request. Sourcegraph may
-also return `x-trace`, `x-trace-span`, and `x-trace-url` response headers.
+Run a small command with `--fetch-sg-traces`. This sends
+`X-Sourcegraph-Request-Trace` and a W3C `traceparent` header on each GraphQL
+request. Sourcegraph may also return `x-trace`, `x-trace-span`, and
+`x-trace-url` response headers.
 
 ```bash
 uv run src-auth-perms-sync get \
-  --trace \
+  --fetch-sg-traces \
   --sample-interval 0 \
   --parallelism 2 \
   --explicit-permissions-batch-size 25
@@ -87,13 +88,14 @@ artifacts. Keep them in `/tmp` unless a human asks to preserve them.
 
 ## Trace the end-to-end matrix
 
-Prefer the end-to-end runner as the single orchestrator. With `--trace`, it
-passes tracing to every child CLI command, tails child JSON logs, and fetches
-Jaeger traces in the background while each child command is still running.
+Prefer the end-to-end runner as the single orchestrator. With
+`--fetch-sg-traces`, it passes Sourcegraph debug trace collection to every child
+CLI command, tails child JSON logs, and fetches Jaeger traces in the background
+while each child command is still running.
 
 ```bash
 uv run python dev/test-end-to-end.py \
-  --trace \
+  --fetch-sg-traces \
   --sample-interval 0 \
   --external-sample-interval 0 \
   --results-json /tmp/src-auth-perms-sync-end-to-end-trace.json \
@@ -136,7 +138,7 @@ artifact paths into the result JSON:
 
 ```bash
 uv run python dev/test-end-to-end.py \
-  --trace \
+  --fetch-sg-traces \
   --monitor-sourcegraph-load \
   --sample-interval 0 \
   --external-sample-interval 0 \

@@ -1,17 +1,33 @@
 # TODO
 
-## High priority: Instrument with OpenTelemetry — in progress
+## High priority: Sync modes
 
-- [ ] Add OTel-native traces, metrics, and wide log events in `src-py-lib`.
-- [ ] Add shared OTel bootstrap config/helpers with `--otel` and standard
-  `OTEL_*` env-var-backed CLI args.
-- [ ] Replace custom trace-context propagation with OTel W3C propagation.
-- [ ] Instrument shared HTTP and GraphQL clients manually, preserving safe
-  sanitized attributes and Sourcegraph-specific metadata.
-- [ ] Rename Sourcegraph debug tracing from `--trace` to `--fetch-sg-traces`.
-- [ ] Wire `src-auth-perms-sync` to the shared OTel bootstrap without doing
-  import-time logger/provider setup.
-- [ ] Verify pyright, tests, and CLI help in both repos.
+### Fast
+
+- Additive modes, to add new users’ perms quickly,
+  without the extraneous load on the database of a full sync
+- Take a list of usernames and/or email addresses as input,
+  query users on the instance for these,
+  then trigger a perms sync for found users
+- Query the instance for all new users, which do not yet have explicit perms
+- Query the instance for all new repos, which do not yet have explicit perms
+
+### Full: Overwrite all perms
+
+- Separate full sync mode with an arg
+
+## High priority: Remote trigger on demand
+
+- Sourcegraph webhook for new user coming in v7.4.0
+- Requested a webhook for new repos
+- Receive the webhook event
+- Parse the new user / repo name
+- Run a lightweight sync for the changed user / repo
+
+- Where does this run? Sidecar in the customer's environment? CI job?
+  Sourcegraph executor?
+- How do we avoid stampedes (e.g., bulk repo sync triggering thousands
+  of re-runs)?
 
 ## High priority: End to End test cases
 
@@ -37,26 +53,6 @@
 - Revisit full snapshot capture once Sourcegraph exposes a bulk read path;
   replace aliased `User.permissionsInfo.repositories(source: API)` calls before
   raising concurrency further.
-
-## Medium priority: Lightweight incremental updates
-
-- When a new user's account is created, or a new repo is synced from a code host,
-  they sit outside the mapping until this script runs again
-- Find ways to create lightweight run modes to check for new users / repos,
-  and create the needed perms for them
-
-## Medium priority: Remote trigger on demand
-
-- Sourcegraph webhook for new user coming in v7.4.0
-- Requested a webhook for new repos
-- Receive the webhook event
-- Parse the new user / repo name
-- Run a lightweight sync for the changed user / repo
-
-- Where does this run? Sidecar in the customer's environment? CI job?
-  Sourcegraph executor?
-- How do we avoid stampedes (e.g., bulk repo sync triggering thousands
-  of re-runs)?
 
 ## Low priority: Repo-centric path, when users > repos, or for cross-checking
 
