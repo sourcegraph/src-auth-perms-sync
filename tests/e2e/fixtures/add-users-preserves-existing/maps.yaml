@@ -1,0 +1,10 @@
+maps:
+  - name: Grant app and lib to selected users
+    users:
+      usernames:
+        - alice
+        - bob
+    repos:
+      names:
+        - github.com/acme/app
+        - github.com/acme/lib
