@@ -298,6 +298,39 @@ Important requirements:
 Expected benefit: replace hundreds or thousands of per-repo resolver SQL spans
 per request with one indexed `user_repo_permissions` join per user batch.
 
+The `get --users-without-explicit-perms` path also needs a cheaper presence
+check. Today it has to ask
+`User.permissionsInfo.repositories(source: API, first: 1)` for every candidate
+user, in aliased batches. Recent test runs show the client can parallelize
+those batches, but the Sourcegraph frontend / load balancer can still return
+502/503s under that resolver load. Add one or both direct APIs:
+
+```graphql
+type ExplicitRepositoryPermissionPresence {
+  userID: ID!
+  hasExplicitRepositoryPermissions: Boolean!
+}
+
+extend type Query {
+  explicitRepositoryPermissionPresenceForUsers(
+    userIDs: [ID!]!
+    source: PermissionSource = API
+  ): [ExplicitRepositoryPermissionPresence!]!
+
+  usersWithoutExplicitRepositoryPermissions(
+    createdAt: DateTimeFilter
+    source: PermissionSource = API
+    first: Int
+    after: String
+  ): UserConnection!
+}
+```
+
+Expected benefit: `src-auth-perms-sync get --users-without-explicit-perms`
+can either check explicit-permission presence for candidate users in one indexed
+batch query, or ask Sourcegraph for the filtered user set directly instead of
+probing every user through the expensive permissions connection resolver.
+
 The stress profile also needs attention on the write path. A purpose-built
 bulk overwrite API that accepts many repo/user edges at once, streams or stages
 the input server-side, and avoids repeated per-repo permission reconciliation
@@ -324,7 +357,10 @@ Request: add a bulk explicit-permissions read API that accepts many user IDs and
 returns compact permission edges (`userID`, `repositoryID`, `repositoryName`,
 `updatedAt`) for `source: API`, without resolving full `Repository` GraphQL
 objects. A single indexed query over `user_repo_permissions` joined to `repo`
-should be enough for each user batch.
+should be enough for each user batch. Also add a cheaper presence/filter path
+for `get --users-without-explicit-perms`: either `userID -> has explicit API
+repo permissions` for many users, or a direct query for users without explicit
+API repo permissions, optionally filtered by `createdAt`.
 
 Acceptance criteria:
 
@@ -336,6 +372,9 @@ Acceptance criteria:
   latency visible.
 - `src-auth-perms-sync` can replace its aliased
   `User.permissionsInfo.repositories(source: API)` calls with this API.
+- `src-auth-perms-sync get --users-without-explicit-perms` can stop probing
+  every candidate user through `User.permissionsInfo.repositories(source: API,
+  first: 1)`.
 - Follow-up: evaluate a bulk overwrite API for large full-set applies. The
   stress run planned roughly 10 million grants and observed
   `permsStore.upsertUserRepoPermissions-range1` averaging about 2.5s per call.
