@@ -112,6 +112,25 @@ def get_user_by_id(
     return cast(shared_types.User | None, data.get("node"))
 
 
+def get_users_by_ids(
+    client: src.SourcegraphClient,
+    user_ids: Sequence[str],
+    *,
+    include_emails: bool = False,
+) -> list[shared_types.User | None]:
+    """Hydrate User nodes by GraphQL ID, preserving caller order."""
+    if not user_ids:
+        return []
+    data = client.graphql(
+        _users_by_id_batch_query(len(user_ids), include_emails=include_emails),
+        _users_by_id_batch_variables(user_ids),
+        follow_pages=False,
+    )
+    return [
+        cast(shared_types.User | None, data.get(f"user{index}")) for index in range(len(user_ids))
+    ]
+
+
 def list_site_user_candidates(
     client: src.SourcegraphClient,
     created_after: str | None,
@@ -634,6 +653,28 @@ def list_repositories_by_ids(
 def _batches(values: Sequence[str], batch_size: int) -> Iterator[Sequence[str]]:
     for start_index in range(0, len(values), batch_size):
         yield values[start_index : start_index + batch_size]
+
+
+def _users_by_id_batch_query(batch_size: int, *, include_emails: bool = False) -> str:
+    variables = [f"$user{index}: ID!" for index in range(batch_size)]
+    user_fields = queries.user_fields(include_emails=include_emails)
+    fields = [
+        f"""
+  user{index}: node(id: $user{index}) {{
+    ... on User {{
+      {user_fields}
+    }}
+  }}"""
+        for index in range(batch_size)
+    ]
+    return "query UsersByIDBatch(" + ", ".join(variables) + ") {" + "".join(fields) + "\n}"
+
+
+def _users_by_id_batch_variables(user_ids: Sequence[str]) -> src.JSONDict:
+    variables: src.JSONDict = {}
+    for index, user_id in enumerate(user_ids):
+        variables[f"user{index}"] = user_id
+    return variables
 
 
 def _user_explicit_repos_batch_query(batch_size: int) -> str:

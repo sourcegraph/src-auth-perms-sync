@@ -90,6 +90,45 @@ class _ExplicitReposClient:
         return cast(src.JSONDict, response)
 
 
+class _UsersByIDClient:
+    def __init__(self, missing_user_ids: set[str] | None = None) -> None:
+        self.missing_user_ids = missing_user_ids or set()
+        self.calls: list[src.JSONDict] = []
+        self.queries: list[str] = []
+
+    def graphql(
+        self,
+        query: str,
+        variables: src.JSONDict | None = None,
+        *,
+        follow_pages: bool = True,
+    ) -> src.JSONDict:
+        if variables is None:
+            raise AssertionError("expected user variables")
+        if follow_pages:
+            raise AssertionError("user batch should not ask the client to follow pages")
+        self.calls.append(dict(variables))
+        self.queries.append(query)
+        response: dict[str, object] = {}
+        for variable_name, variable_value in variables.items():
+            if not variable_name.startswith("user"):
+                continue
+            if not isinstance(variable_value, str):
+                raise AssertionError("expected user ID variable")
+            user_index = int(variable_name.removeprefix("user"))
+            response[f"user{user_index}"] = (
+                None
+                if variable_value in self.missing_user_ids
+                else {
+                    "id": variable_value,
+                    "username": variable_value.replace("user-", "username-"),
+                    "builtinAuth": False,
+                    "externalAccounts": {"nodes": []},
+                }
+            )
+        return cast(src.JSONDict, response)
+
+
 class _PipelinedCandidateClient:
     def __init__(self) -> None:
         self.total_count = 1001
@@ -205,6 +244,27 @@ class PermissionsSourcegraphTests(unittest.TestCase):
         for call in client.calls:
             self.assertNotIn("first", call)
             self.assertFalse(any(variable_name.startswith("after") for variable_name in call))
+
+    def test_get_users_by_ids_batches_user_hydration(self) -> None:
+        client = _UsersByIDClient(missing_user_ids={"user-2"})
+
+        users = permissions_sourcegraph.get_users_by_ids(
+            cast(src.SourcegraphClient, client),
+            ["user-1", "user-2", "user-3"],
+        )
+
+        self.assertEqual(
+            [user["id"] if user else None for user in users],
+            ["user-1", None, "user-3"],
+        )
+        self.assertEqual(
+            client.calls,
+            [{"user0": "user-1", "user1": "user-2", "user2": "user-3"}],
+        )
+        self.assertEqual(len(client.queries), 1)
+        self.assertIn("query UsersByIDBatch", client.queries[0])
+        self.assertIn("externalAccounts(first: 50)", client.queries[0])
+        self.assertNotIn("emails {", client.queries[0])
 
     def test_candidates_without_explicit_repos_pipelines_checks_after_first_page(self) -> None:
         client = _PipelinedCandidateClient()
