@@ -179,20 +179,6 @@ query UserExplicitRepos($id: ID!, $first: Int!, $after: String) {
 }
 """
 
-QUERY_USER_EXPLICIT_REPO_EXISTS = """
-query UserExplicitRepoExists($id: ID!) {
-  node(id: $id) {
-    ... on User {
-      permissionsInfo {
-        repositories(source: API, first: 1) {
-          nodes { id }
-        }
-      }
-    }
-  }
-}
-"""
-
 # Used as part of post-apply validation: any of OUR bindIDs appearing in
 # this list means the bindID didn't resolve to a real user (typically a
 # username typo or a recent rename — would fail for our case since we

@@ -139,6 +139,9 @@ def cmd_get(
             user_identifiers=user_identifiers,
             users_without_explicit_perms=users_without_explicit_perms,
             user_created_after=user_created_after,
+            parallelism=parallelism,
+            explicit_permissions_batch_size=explicit_permissions_batch_size,
+            worker_pool=worker_pool,
         )
         counts = permissions_maps.count_users_per_provider(users)
         # SAML-only: tally distinct users per (serviceID, clientID, group)
@@ -232,6 +235,9 @@ def _load_get_users(
     user_identifiers: tuple[str, ...],
     users_without_explicit_perms: bool,
     user_created_after: str | None,
+    parallelism: int,
+    explicit_permissions_batch_size: int,
+    worker_pool: ThreadPoolExecutor | None,
 ) -> list[shared_types.User]:
     """Load the Sourcegraph users selected by get/set-compatible user filters."""
     if user_identifiers:
@@ -257,23 +263,43 @@ def _load_get_users(
             created_after_filter = sourcegraph_datetime_filter(
                 parse_cli_date(user_created_after, "--created-after")
             )
-        candidates = permissions_sourcegraph.list_site_user_candidates(client, created_after_filter)
-        log.info("Received %d user(s)", len(candidates))
+        candidates = permissions_sourcegraph.list_site_user_candidates(
+            client,
+            created_after_filter,
+            parallelism=parallelism,
+            worker_pool=worker_pool,
+        )
+        log.info("Loaded %d active user candidate(s).", len(candidates))
+        if users_without_explicit_perms:
+            log.info(
+                "Checking %d active user candidate(s) for existing explicit repo permissions "
+                "in batches of %d ...",
+                len(candidates),
+                explicit_permissions_batch_size,
+            )
+            explicit_user_ids = permissions_sourcegraph.user_ids_with_explicit_repos(
+                client,
+                [candidate["id"] for candidate in candidates],
+                batch_size=explicit_permissions_batch_size,
+                parallelism=parallelism,
+                worker_pool=worker_pool,
+            )
+            candidates = [
+                candidate for candidate in candidates if candidate["id"] not in explicit_user_ids
+            ]
+            log.info(
+                "Selected %d active user candidate(s) without explicit repo permissions; "
+                "skipped %d with existing explicit permissions.",
+                len(candidates),
+                len(explicit_user_ids),
+            )
 
-        users: list[shared_types.User] = []
-        for candidate in candidates:
-            if users_without_explicit_perms and permissions_sourcegraph.user_has_explicit_repos(
-                client, candidate["id"]
-            ):
-                continue
-            user = permissions_sourcegraph.get_user_by_id(client, candidate["id"])
-            if user is None:
-                log.warning(
-                    "Skipping user candidate %s: user no longer exists.",
-                    candidate["username"],
-                )
-                continue
-            users.append(user)
+        users = _hydrate_site_user_candidates(
+            client,
+            candidates,
+            parallelism=parallelism,
+            worker_pool=worker_pool,
+        )
         log.info("Selected %d user(s) for get output.", len(users))
         return users
 
@@ -313,6 +339,73 @@ def _load_all_get_users(client: src.SourcegraphClient) -> list[shared_types.User
                 eta_seconds,
             )
     return users
+
+
+def _hydrate_site_user_candidates(
+    client: src.SourcegraphClient,
+    candidates: list[shared_types.SiteUserCandidate],
+    *,
+    include_emails: bool = False,
+    parallelism: int,
+    worker_pool: ThreadPoolExecutor | None,
+) -> list[shared_types.User]:
+    """Hydrate filtered site-user candidates into full user metadata."""
+    if not candidates:
+        return []
+
+    log.info(
+        "Hydrating Sourcegraph metadata for %d selected user candidate(s) with parallelism=%d ...",
+        len(candidates),
+        parallelism,
+    )
+
+    def hydrate_user(candidate: shared_types.SiteUserCandidate) -> shared_types.User | None:
+        return permissions_sourcegraph.get_user_by_id(
+            client,
+            candidate["id"],
+            include_emails=include_emails,
+        )
+
+    hydrated_users = run_context.parallel_map(
+        hydrate_user,
+        candidates,
+        parallelism=parallelism,
+        worker_pool=worker_pool,
+        progress_label="Hydrated selected Sourcegraph user metadata",
+    )
+    users = [user for user in hydrated_users if user is not None]
+    missing_user_count = len(hydrated_users) - len(users)
+    if missing_user_count:
+        log.warning(
+            "Skipped %d selected user candidate(s) that no longer exist.",
+            missing_user_count,
+        )
+    log.info("Hydrated metadata for %d selected user(s).", len(users))
+    return users
+
+
+def _log_user_planning_progress(
+    completed: int,
+    total_count: int,
+    started: float,
+    *,
+    grant_count: int,
+) -> None:
+    elapsed = time.perf_counter() - started
+    rate = completed / elapsed if elapsed > 0 else 0.0
+    remaining = max(total_count - completed, 0)
+    eta_seconds = remaining / rate if rate > 0 else 0.0
+    log.info(
+        "Planned additive grants for %d / %d selected user(s) (%.0f%%) "
+        "in %.0fs (%.0f users/sec, ETA %.0fs): grant_count=%d.",
+        completed,
+        total_count,
+        100.0 * completed / total_count,
+        elapsed,
+        rate,
+        eta_seconds,
+        grant_count,
+    )
 
 
 def cmd_set(
@@ -364,6 +457,7 @@ def cmd_set(
             options.user_created_after,
             dry_run,
             parallelism,
+            explicit_permissions_batch_size,
             bind_id_mode,
             saml_groups_attribute_name_by_config_id,
             do_backup,
@@ -452,6 +546,7 @@ def cmd_set_additive_users_without_explicit_perms(
     user_created_after: str | None,
     dry_run: bool,
     parallelism: int,
+    explicit_permissions_batch_size: int,
     bind_id_mode: str,
     saml_groups_attribute_name_by_config_id: dict[str, str],
     do_backup: bool,
@@ -478,25 +573,49 @@ def cmd_set_additive_users_without_explicit_perms(
             context.mapping_rules
         )
         resolved_mappings = resolve_additive_mappings(context)
-        candidates = permissions_sourcegraph.list_site_user_candidates(client, created_after_filter)
-        log.info("Received %d user(s)", len(candidates))
+        candidates = permissions_sourcegraph.list_site_user_candidates(
+            client,
+            created_after_filter,
+            parallelism=parallelism,
+            worker_pool=worker_pool,
+        )
+        log.info("Loaded %d active user candidate(s).", len(candidates))
+        log.info(
+            "Checking %d active user candidate(s) for existing explicit repo permissions, "
+            "in batches of %d ...",
+            len(candidates),
+            explicit_permissions_batch_size,
+        )
+        explicit_user_ids = permissions_sourcegraph.user_ids_with_explicit_repos(
+            client,
+            [candidate["id"] for candidate in candidates],
+            batch_size=explicit_permissions_batch_size,
+            parallelism=parallelism,
+            worker_pool=worker_pool,
+        )
+        candidates = [
+            candidate for candidate in candidates if candidate["id"] not in explicit_user_ids
+        ]
+        log.info(
+            "Selected %d active user candidate(s) without explicit repo permissions; "
+            "skipped %d with existing explicit permissions.",
+            len(candidates),
+            len(explicit_user_ids),
+        )
 
-        users: list[shared_types.User] = []
+        users = _hydrate_site_user_candidates(
+            client,
+            candidates,
+            include_emails=include_user_emails,
+            parallelism=parallelism,
+            worker_pool=worker_pool,
+        )
         additions: list[permissions_apply.PermissionAddition] = []
-        for candidate in candidates:
-            if permissions_sourcegraph.user_has_explicit_repos(client, candidate["id"]):
-                continue
-            user = permissions_sourcegraph.get_user_by_id(
-                client,
-                candidate["id"],
-                include_emails=include_user_emails,
-            )
-            if user is None:
-                log.warning(
-                    "Skipping user candidate %s: user no longer exists.",
-                    candidate["username"],
-                )
-                continue
+        started = time.perf_counter()
+        progress_step = max(1, len(users) // 10) if users else 1
+        next_progress_report = progress_step
+        log.info("Planning additive grants for %d selected user(s) ...", len(users))
+        for completed, user in enumerate(users, start=1):
             user_additions = _plan_additions_for_user(
                 client,
                 context,
@@ -504,8 +623,16 @@ def cmd_set_additive_users_without_explicit_perms(
                 user,
                 existing_repo_ids=set(),
             )
-            users.append(user)
             additions.extend(user_additions)
+            if completed >= next_progress_report or completed == len(users):
+                _log_user_planning_progress(
+                    completed,
+                    len(users),
+                    started,
+                    grant_count=len(additions),
+                )
+                while next_progress_report <= completed:
+                    next_progress_report += progress_step
 
         log.info(
             "Planned additive grants for %d user(s) with no explicit grants.",

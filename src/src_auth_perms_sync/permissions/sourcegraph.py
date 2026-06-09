@@ -3,17 +3,21 @@
 from __future__ import annotations
 
 import logging
+import time
 from collections.abc import Iterable, Iterator, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, cast
 
 import src_py_lib as src
 
+from ..shared import run_context
 from ..shared import sourcegraph as shared_sourcegraph
 from ..shared import types as shared_types
 from . import queries
 from . import types as permission_types
 
 log = logging.getLogger(__name__)
+SITE_USER_CANDIDATE_PAGE_SIZE = 1000
 
 
 def list_external_services(client: src.SourcegraphClient) -> list[permission_types.ExternalService]:
@@ -95,52 +99,171 @@ def get_user_by_id(
 def list_site_user_candidates(
     client: src.SourcegraphClient,
     created_after: str | None,
+    *,
+    parallelism: int = 1,
+    worker_pool: ThreadPoolExecutor | None = None,
 ) -> list[shared_types.SiteUserCandidate]:
     """Return non-deleted site users, optionally filtered by creation time."""
-    candidates: list[shared_types.SiteUserCandidate] = []
-    offset = 0
     created_filter = {"gte": created_after} if created_after is not None else None
-    while True:
-        data = cast(
-            dict[str, Any],
-            client.graphql(
-                queries.QUERY_SITE_USERS,
-                cast(
-                    src.JSONDict,
-                    {
-                        "limit": shared_sourcegraph.DEFAULT_PAGE_SIZE,
-                        "offset": offset,
-                        "createdAt": created_filter,
-                    },
-                ),
-            ),
+    created_filter_label = f" created on or after {created_after}" if created_after else ""
+    log.info("Querying active Sourcegraph user candidates%s ...", created_filter_label)
+    started = time.perf_counter()
+    first_page, total_count = _site_user_candidate_page(
+        client,
+        created_filter,
+        offset=0,
+        page_size=SITE_USER_CANDIDATE_PAGE_SIZE,
+    )
+    if not first_page or len(first_page) >= total_count:
+        return first_page
+
+    # If the server caps `nodes(limit:)` below our requested page size, use
+    # the observed first-page width so parallel offset requests do not skip
+    # rows.
+    page_size = len(first_page)
+    page_count = (total_count + page_size - 1) // page_size
+    log.info(
+        "Loading %d active Sourcegraph user candidate(s)%s across %d page(s) "
+        "of %d users/page with parallelism=%d ...",
+        total_count,
+        created_filter_label,
+        page_count,
+        page_size,
+        parallelism,
+    )
+    pages: list[tuple[int, list[shared_types.SiteUserCandidate]]] = [(0, first_page)]
+
+    def fetch_page(offset: int) -> tuple[int, list[shared_types.SiteUserCandidate]]:
+        nodes, _ = _site_user_candidate_page(
+            client,
+            created_filter,
+            offset=offset,
+            page_size=SITE_USER_CANDIDATE_PAGE_SIZE,
         )
-        site_users = cast(dict[str, Any], data["site"]["users"])
-        total_count = int(cast(float, site_users["totalCount"]))
-        nodes = cast(list[shared_types.SiteUserCandidate], site_users["nodes"])
-        candidates.extend(nodes)
-        if not nodes or len(candidates) >= total_count:
-            return candidates
-        offset += len(nodes)
+        return offset, nodes
+
+    pages.extend(
+        run_context.parallel_map(
+            fetch_page,
+            range(page_size, total_count, page_size),
+            parallelism=parallelism,
+            worker_pool=worker_pool,
+            progress_label="Loaded active Sourcegraph user candidate pages",
+        )
+    )
+    candidates = _dedupe_site_user_candidate_pages(pages)
+    _log_user_candidate_load_progress(len(candidates), total_count, started)
+    return candidates
 
 
-def user_has_explicit_repos(client: src.SourcegraphClient, user_id: str) -> bool:
-    """Return whether the user has any explicit API repository grant."""
+def _site_user_candidate_page(
+    client: src.SourcegraphClient,
+    created_filter: dict[str, str] | None,
+    *,
+    offset: int,
+    page_size: int,
+) -> tuple[list[shared_types.SiteUserCandidate], int]:
     data = cast(
         dict[str, Any],
         client.graphql(
-            queries.QUERY_USER_EXPLICIT_REPO_EXISTS,
-            cast(src.JSONDict, {"id": user_id}),
+            queries.QUERY_SITE_USERS,
+            cast(
+                src.JSONDict,
+                {
+                    "limit": page_size,
+                    "offset": offset,
+                    "createdAt": created_filter,
+                },
+            ),
         ),
     )
-    node = cast(dict[str, Any] | None, data.get("node"))
-    if node is None:
-        return False
-    permissions_info = cast(dict[str, Any] | None, node.get("permissionsInfo"))
-    if permissions_info is None:
-        return False
-    repositories = cast(dict[str, Any], permissions_info["repositories"])
-    return bool(src.json_list(repositories.get("nodes")))
+    site_users = cast(dict[str, Any], data["site"]["users"])
+    total_count = int(cast(float, site_users["totalCount"]))
+    nodes = cast(list[shared_types.SiteUserCandidate], site_users["nodes"])
+    return nodes, total_count
+
+
+def _dedupe_site_user_candidate_pages(
+    pages: Iterable[tuple[int, Sequence[shared_types.SiteUserCandidate]]],
+) -> list[shared_types.SiteUserCandidate]:
+    candidates: list[shared_types.SiteUserCandidate] = []
+    seen_user_ids: set[str] = set()
+    for _, page_candidates in sorted(pages, key=lambda page: page[0]):
+        for candidate in page_candidates:
+            user_id = candidate["id"]
+            if user_id in seen_user_ids:
+                continue
+            seen_user_ids.add(user_id)
+            candidates.append(candidate)
+    return candidates
+
+
+def _log_user_candidate_load_progress(completed: int, total_count: int, started: float) -> None:
+    elapsed = time.perf_counter() - started
+    rate = completed / elapsed if elapsed > 0 else 0.0
+    remaining = max(total_count - completed, 0)
+    eta_seconds = remaining / rate if rate > 0 else 0.0
+    log.info(
+        "Loaded %d / %d active Sourcegraph user candidate(s) (%.0f%%) "
+        "in %.0fs (%.0f users/sec, ETA %.0fs).",
+        completed,
+        total_count,
+        100.0 * completed / total_count,
+        elapsed,
+        rate,
+        eta_seconds,
+    )
+
+
+def user_ids_with_explicit_repos(
+    client: src.SourcegraphClient,
+    user_ids: Sequence[str],
+    *,
+    batch_size: int,
+    parallelism: int,
+    worker_pool: ThreadPoolExecutor | None = None,
+) -> set[str]:
+    """Return user IDs that have at least one explicit API repository grant."""
+    batches = list(_batches(tuple(dict.fromkeys(user_ids)), batch_size))
+
+    def fetch_batch(batch: Sequence[str]) -> set[str]:
+        return _user_ids_with_explicit_repos_batch(client, batch)
+
+    explicit_user_ids: set[str] = set()
+    for batch_result in run_context.parallel_map(
+        fetch_batch,
+        batches,
+        parallelism=parallelism,
+        worker_pool=worker_pool,
+        progress_label="Checked explicit repo permissions for user batches",
+    ):
+        explicit_user_ids.update(batch_result)
+    return explicit_user_ids
+
+
+def _user_ids_with_explicit_repos_batch(
+    client: src.SourcegraphClient,
+    user_ids: Sequence[str],
+) -> set[str]:
+    data = client.graphql(
+        _user_explicit_repos_batch_query(len(user_ids)),
+        _user_explicit_repo_exists_batch_variables(user_ids),
+        follow_pages=False,
+    )
+    explicit_user_ids: set[str] = set()
+    for index, user_id in enumerate(user_ids):
+        connection = _user_explicit_repos_connection(data, index)
+        if connection is not None and src.json_list(connection.get("nodes")):
+            explicit_user_ids.add(user_id)
+    return explicit_user_ids
+
+
+def _user_explicit_repo_exists_batch_variables(user_ids: Sequence[str]) -> src.JSONDict:
+    variables: src.JSONDict = {"first": 1}
+    for index, user_id in enumerate(user_ids):
+        variables[f"user{index}"] = user_id
+        variables[f"after{index}"] = None
+    return variables
 
 
 def list_user_explicit_repos(
