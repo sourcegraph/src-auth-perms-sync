@@ -29,24 +29,18 @@ def _print_result(result: FixtureRunResult) -> None:
         result.actual_counts.permission_pairs,
     )
     print(f"{status} {result.name} — {result.description}")
-    print(
-        "  users: "
-        f"before={result.before_counts.users} "
-        f"expected={result.expected_counts.users} "
-        f"actual={result.actual_counts.users}"
-    )
-    print(
-        "  repos: "
-        f"before={result.before_counts.repos} "
-        f"expected={result.expected_counts.repos} "
-        f"actual={result.actual_counts.repos}"
-    )
+    print(f"  scope: users={result.before_counts.users} repos={result.before_counts.repos}")
     print(
         "  permission pairs: "
         f"before={result.before_counts.permission_pairs} "
         f"expected={result.expected_counts.permission_pairs} "
         f"actual={result.actual_counts.permission_pairs} "
         f"delta={permission_pair_delta}"
+    )
+    print(
+        "  changed repos: "
+        f"expected={result.expected_changed_repos} "
+        f"actual={result.actual_changed_repos}"
     )
     print(
         "  mutations: "

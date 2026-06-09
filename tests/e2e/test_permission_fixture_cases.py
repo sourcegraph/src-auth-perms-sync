@@ -95,6 +95,8 @@ class FixtureRunResult:
     before_counts: FixtureStateCounts
     expected_counts: FixtureStateCounts
     actual_counts: FixtureStateCounts
+    expected_changed_repos: int
+    actual_changed_repos: int
     expected_mutations: int | None
     actual_mutations: int
     expected_state: FixtureState
@@ -477,6 +479,8 @@ def run_fixture_case(case_dir: Path) -> FixtureRunResult:
         before_counts=state_counts(before_state),
         expected_counts=state_counts(expected_state),
         actual_counts=state_counts(actual_state),
+        expected_changed_repos=changed_repo_count(before_state, expected_state),
+        actual_changed_repos=changed_repo_count(before_state, actual_state),
         expected_mutations=case.get("expectedMutations"),
         actual_mutations=client.mutation_count,
         expected_state=expected_state,
@@ -493,6 +497,23 @@ def state_counts(state: FixtureState) -> FixtureStateCounts:
             len(repository["explicitPermissionsUsers"]) for repository in state["repos"]
         ),
     )
+
+
+def changed_repo_count(before_state: FixtureState, after_state: FixtureState) -> int:
+    before_permissions = repo_permission_users_by_id(before_state)
+    after_permissions = repo_permission_users_by_id(after_state)
+    return sum(
+        1
+        for repository_id in set(before_permissions) | set(after_permissions)
+        if before_permissions.get(repository_id, ()) != after_permissions.get(repository_id, ())
+    )
+
+
+def repo_permission_users_by_id(state: FixtureState) -> dict[int, tuple[str, ...]]:
+    return {
+        repository["id"]: tuple(sorted(repository["explicitPermissionsUsers"]))
+        for repository in state["repos"]
+    }
 
 
 def config_for_case(case: FixtureCase, maps_path: Path, endpoint: str) -> cli.Config:
