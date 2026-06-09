@@ -258,7 +258,7 @@ def _load_get_users(
                 parse_cli_date(user_created_after, "--created-after")
             )
         candidates = permissions_sourcegraph.list_site_user_candidates(client, created_after_filter)
-        log.info("Received %d non-deleted user candidate(s).", len(candidates))
+        log.info("Received %d user(s)", len(candidates))
 
         users: list[shared_types.User] = []
         for candidate in candidates:
@@ -479,7 +479,7 @@ def cmd_set_additive_users_without_explicit_perms(
         )
         resolved_mappings = resolve_additive_mappings(context)
         candidates = permissions_sourcegraph.list_site_user_candidates(client, created_after_filter)
-        log.info("Received %d non-deleted user candidate(s).", len(candidates))
+        log.info("Received %d user(s)", len(candidates))
 
         users: list[shared_types.User] = []
         additions: list[permissions_apply.PermissionAddition] = []
