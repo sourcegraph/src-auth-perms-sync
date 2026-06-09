@@ -2,8 +2,7 @@
 
 ## High priority: Customer feedback
 
-- Allow use as either CLI or importable module
-- Take maps.yaml as a constructor object?
+- Take maps.yaml as a constructor object
 
 ## High priority: Instrument with OpenTelemetry — in progress
 
@@ -17,6 +16,14 @@
 - [ ] Wire `src-auth-perms-sync` to the shared OTel bootstrap without doing
   import-time logger/provider setup.
 - [ ] Verify pyright, tests, and CLI help in both repos.
+
+## High priority: End to End test cases
+
+- Create test cases. Each test case should contain:
+  - Before state
+  - maps.yaml file
+  - Expected after state
+- Script to run the script, and verify the after state matches the expected after state
 
 ## High priority: Reduce worst-case full-permission sync load
 

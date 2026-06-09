@@ -1,5 +1,5 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling", "hatch-vcs"]
 build-backend = "hatchling.build"
 
 [dependency-groups]
@@ -11,7 +11,7 @@ dev = [
 
 [project]
 name = "src-auth-perms-sync"
-version = "0.2.2"
+dynamic = ["version"]
 description = "Set Sourcegraph permissions from authentication provider data"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -32,7 +32,7 @@ classifiers = [
 dependencies = [
     "json5>=0.14.0",
     "pyyaml>=6.0.3",
-    "src-py-lib==0.1.6",
+    "src-py-lib==0.1.9",
 ]
 keywords = [
     "Sourcegraph"
@@ -47,6 +47,9 @@ Issues = "https://github.com/sourcegraph/src-auth-perms-sync/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/src_auth_perms_sync"]
+
+[tool.hatch.version]
+source = "vcs"
 
 [tool.pyright]
 include = ["src", "tests", "dev"]

@@ -43,13 +43,13 @@ class BackupPathTests(unittest.TestCase):
             / backups.ARTIFACTS_DIR_NAME
             / "sourcegraph.example.com"
             / backups.RUNS_DIR_NAME
-            / "2026-05-23-set_user"
+            / "2026-05-23-set_users"
             / "before.json",
             backups.backup_path(
                 "repo/1",
                 "2026-05-23",
                 "https://sourcegraph.example.com",
-                "set:user",
+                "set:users",
                 "before",
             ),
         )

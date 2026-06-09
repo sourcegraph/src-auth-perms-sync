@@ -6,17 +6,17 @@ on:
       - "v*"
   workflow_dispatch:
     inputs:
-      tag:
-        description: "Existing release tag to publish, for example v0.1.0"
+      version:
+        description: "Package version to publish, for example 0.1.0 or v0.1.0"
         required: true
         type: string
 
 permissions:
-  contents: write
+  contents: read
   pull-requests: read
 
 concurrency:
-  group: release-${{ github.event.inputs.tag || github.ref_name }}
+  group: release-${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref_name }}
   cancel-in-progress: false
 
 defaults:
@@ -24,15 +24,41 @@ defaults:
     shell: bash
 
 jobs:
+  release_ref:
+    name: Resolve release tag
+    runs-on: ubuntu-24.04
+    outputs:
+      tag: ${{ steps.release.outputs.tag }}
+      version: ${{ steps.release.outputs.version }}
+
+    steps:
+      - name: Resolve release tag
+        id: release
+        env:
+          RELEASE_INPUT: ${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref_name }}
+        run: |
+          release_input="${RELEASE_INPUT}"
+          if [[ ! "${release_input}" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error title=Invalid release version::Use MAJOR.MINOR.PATCH or vMAJOR.MINOR.PATCH, got '${release_input}'."
+            exit 1
+          fi
+
+          release_version="${release_input#v}"
+          release_tag="v${release_version}"
+          echo "tag=${release_tag}" >> "${GITHUB_OUTPUT}"
+          echo "version=${release_version}" >> "${GITHUB_OUTPUT}"
+
   validate:
     name: Validate
+    needs: release_ref
     uses: ./.github/workflows/validate.yml
     with:
-      ref: ${{ github.event.inputs.tag || github.ref }}
+      ref: ${{ needs.release_ref.outputs.tag }}
       build-package: false
 
   wheelhouse:
     name: ${{ matrix.platform }}-py311 wheelhouse
+    needs: release_ref
     runs-on: ${{ matrix.runs_on }}
     strategy:
       fail-fast: false
@@ -61,7 +87,7 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-          ref: ${{ github.event.inputs.tag || github.ref }}
+          ref: ${{ needs.release_ref.outputs.tag }}
 
       - name: Set up Python
         uses: actions/setup-python@v6
@@ -81,8 +107,10 @@ jobs:
 
       - name: Validate release inputs
         id: release
+        env:
+          RELEASE_TAG: ${{ needs.release_ref.outputs.tag }}
         run: |
-          release_tag="${{ github.event.inputs.tag || github.ref_name }}"
+          release_tag="${RELEASE_TAG}"
           if [[ ! "${release_tag}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo "::error title=Invalid release tag::Use a vMAJOR.MINOR.PATCH tag, got '${release_tag}'."
             exit 1
@@ -100,19 +128,8 @@ jobs:
             exit 1
           fi
 
-          project_version=$(uv run --frozen python - <<'PY'
-          import tomllib
-
-          with open("pyproject.toml", "rb") as pyproject_file:
-              print(tomllib.load(pyproject_file)["project"]["version"])
-          PY
-          )
-          if [[ "v${project_version}" != "${release_tag}" ]]; then
-            echo "::error title=Version mismatch::pyproject.toml version '${project_version}' does not match tag '${release_tag}'."
-            exit 1
-          fi
-
           echo "tag=${release_tag}" >> "${GITHUB_OUTPUT}"
+          echo "version=${release_tag#v}" >> "${GITHUB_OUTPUT}"
 
       - name: Validate runner architecture
         run: |
@@ -131,6 +148,7 @@ jobs:
         id: build
         run: |
           release_tag="${{ steps.release.outputs.tag }}"
+          release_version="${{ steps.release.outputs.version }}"
           release_dir="build/release/${ASSET_BASENAME}"
           wheelhouse_dir="${release_dir}/wheelhouse"
           dist_dir="build/release/dist"
@@ -158,6 +176,22 @@ jobs:
           project_wheel_name="$(basename "${project_wheel_path}")"
           project_source_distribution_path="${project_source_distributions[0]}"
           project_source_distribution_name="$(basename "${project_source_distribution_path}")"
+          case "${project_wheel_name}" in
+            src_auth_perms_sync-"${release_version}"-*.whl)
+              ;;
+            *)
+              echo "::error title=Wheel version mismatch::Expected wheel version ${release_version}, got '${project_wheel_name}'."
+              exit 1
+              ;;
+          esac
+          case "${project_source_distribution_name}" in
+            src_auth_perms_sync-"${release_version}".tar.gz)
+              ;;
+            *)
+              echo "::error title=Source distribution version mismatch::Expected source distribution version ${release_version}, got '${project_source_distribution_name}'."
+              exit 1
+              ;;
+          esac
           project_wheel_checksum_path="${project_wheel_path}.sha256"
           project_source_distribution_checksum_path="${project_source_distribution_path}.sha256"
           if [[ ! -f "${project_wheel_path}" ]]; then
@@ -165,18 +199,27 @@ jobs:
             exit 1
           fi
 
-          uv export \
-            --no-dev \
-            --no-emit-project \
-            --no-hashes \
-            --no-header \
-            --no-annotate \
-            --frozen \
-            --output-file "${requirements_file}"
+          dependency_metadata_dir="$(mktemp -d)"
+          git clone --no-hardlinks . "${dependency_metadata_dir}" >/dev/null
+          (
+            cd "${dependency_metadata_dir}"
+            git checkout --detach "${release_tag}" >/dev/null
+            mkdir -p "$(dirname "${requirements_file}")"
+            uv export \
+              --no-sources \
+              --no-dev \
+              --no-emit-project \
+              --no-hashes \
+              --no-header \
+              --no-annotate \
+              --output-file "${requirements_file}"
+          )
 
+          cp "${dependency_metadata_dir}/${requirements_file}" "${requirements_file}"
           cp "${requirements_file}" "${runtime_requirements_file}"
-          if grep -q '^\./' "${runtime_requirements_file}"; then
+          if grep -Eq '(^-e[[:space:]]|^(\.\.?/)|(^|[[:space:]])file:| @ (\.\.?/|file:))' "${runtime_requirements_file}"; then
             echo "::error title=Unexpected local dependency::Runtime requirements must resolve from PyPI."
+            cat "${runtime_requirements_file}"
             exit 1
           fi
 
@@ -356,8 +399,10 @@ jobs:
 
   github-release:
     name: Publish GitHub release assets
-    needs: [validate, wheelhouse]
+    needs: [release_ref, validate, wheelhouse]
     runs-on: ubuntu-24.04
+    permissions:
+      contents: write
 
     steps:
       - name: Download wheelhouse artifacts
@@ -377,8 +422,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ needs.release_ref.outputs.tag }}
         run: |
-          release_tag="${{ github.event.inputs.tag || github.ref_name }}"
+          release_tag="${RELEASE_TAG}"
           notes_path="$(find release-notes -name release-notes.md -print -quit)"
           mapfile -t release_assets < <(find release-assets -type f | sort)
 

@@ -9,7 +9,7 @@ from ..shared import types as shared_types
 
 SetCommandMode: TypeAlias = Literal[
     "full",
-    "user",
+    "users",
     "users_without_explicit_perms",
 ]
 
@@ -19,7 +19,7 @@ class SetCommandOptions:
     """Operator-selected mode for the set command."""
 
     mode: SetCommandMode
-    user_identifier: str | None = None
+    user_identifiers: tuple[str, ...] = ()
     user_created_after: str | None = None
 
 

@@ -37,7 +37,6 @@ from urllib.parse import urlsplit
 
 import src_py_lib as src
 from src_py_lib.clients.sourcegraph import (
-    DEFAULT_SOURCEGRAPH_ENDPOINT,
     sourcegraph_trace_from_headers,
     summarize_jaeger_trace,
 )
@@ -87,12 +86,13 @@ class EndToEndConfig(src.SourcegraphClientConfig, src.LoggingConfig):
     """Config values for the end-to-end runner."""
 
     src_endpoint: str = src.config_field(
-        default=DEFAULT_SOURCEGRAPH_ENDPOINT,
+        default="",
         env_var="SRC_ENDPOINT",
         cli_flag="--src-endpoint",
         cli_aliases=("--endpoint",),
         metavar="URL",
-        help=f"Sourcegraph test instance URL (default: {DEFAULT_SOURCEGRAPH_ENDPOINT})",
+        help="Sourcegraph test instance URL",
+        required=True,
     )
     src_access_token: str = src.config_field(
         default="",
@@ -1490,7 +1490,7 @@ def run_matrix(
     baseline_result: CommandResult | None = None
     for case in read_only_cases(config):
         result = runner.run(case)
-        if case.name == "implicit-get-user":
+        if case.name == "get-users-baseline":
             baseline_result = result
     assert baseline_result is not None
     baseline_repositories = repositories_for_user(snapshot_path(baseline_result), config.user)
@@ -1522,93 +1522,105 @@ def invalid_configuration_cases(config: EndToEndConfig) -> list[CommandCase]:
     restore_placeholder = "definitely-missing-before.json"
     missing_maps = "definitely-missing-command-permutation-maps.yaml"
     command_pairs: list[tuple[str, tuple[str, ...]]] = [
-        ("get-set", ("--get", "--set", "maps.yaml")),
-        ("get-restore", ("--get", "--restore", restore_placeholder)),
-        ("set-restore", ("--set", "maps.yaml", "--restore", restore_placeholder)),
+        ("get-set", ("get", "set")),
+        ("get-restore", ("get", "restore", "--restore-path", restore_placeholder)),
+        ("set-restore", ("set", "--maps-path", "maps.yaml", "restore")),
     ]
     cases = [
         CommandCase(
             name=f"invalid-multiple-commands-{name}",
             arguments=command_arguments,
             expected_exit_code=2,
-            must_contain=("choose only one",),
+            must_contain=("unrecognized arguments",),
         )
         for name, command_arguments in command_pairs
     ]
     cases.append(
         CommandCase(
             name="invalid-restore-sync-saml-orgs",
-            arguments=("--restore", restore_placeholder, "--sync-saml-orgs"),
+            arguments=("restore", "--restore-path", restore_placeholder, "--sync-saml-orgs"),
             expected_exit_code=2,
-            must_contain=("with --get or --set",),
+            must_contain=("unrecognized arguments",),
         )
     )
     cases.extend(
         [
             CommandCase(
                 name="invalid-full-without-set",
-                arguments=("--full",),
+                arguments=("get", "--full"),
                 expected_exit_code=2,
-                must_contain=("--full requires --set",),
+                must_contain=("unrecognized arguments",),
             ),
             CommandCase(
                 name="invalid-set-full-and-user",
-                arguments=("--set", "maps.yaml", "--full", "--user", config.user),
+                arguments=("set", "--maps-path", "maps.yaml", "--full", "--users", config.user),
                 expected_exit_code=2,
                 must_contain=("choose at most one",),
             ),
             CommandCase(
                 name="invalid-set-full-and-users-without-explicit-perms",
-                arguments=("--set", "maps.yaml", "--full", "--users-without-explicit-perms"),
+                arguments=(
+                    "set",
+                    "--maps-path",
+                    "maps.yaml",
+                    "--full",
+                    "--users-without-explicit-perms",
+                ),
                 expected_exit_code=2,
                 must_contain=("choose at most one",),
             ),
             CommandCase(
                 name="invalid-user-filter-conflict",
-                arguments=("--get", "--user", config.user, "--users-without-explicit-perms"),
+                arguments=("get", "--users", config.user, "--users-without-explicit-perms"),
                 expected_exit_code=2,
-                must_contain=("choose only one of --user or --users-without-explicit-perms",),
+                must_contain=("choose only one of --users or --users-without-explicit-perms",),
             ),
             CommandCase(
                 name="invalid-restore-user-filter",
-                arguments=("--restore", restore_placeholder, "--user", config.user),
+                arguments=(
+                    "restore",
+                    "--restore-path",
+                    restore_placeholder,
+                    "--users",
+                    config.user,
+                ),
                 expected_exit_code=2,
-                must_contain=("require --get or --set",),
+                must_contain=("unrecognized arguments",),
             ),
             CommandCase(
                 name="invalid-sync-created-after-filter",
-                arguments=("--sync-saml-orgs", "--created-after", config.future_date),
+                arguments=("sync-saml-orgs", "--created-after", config.future_date),
                 expected_exit_code=2,
-                must_contain=("require --get or --set",),
+                must_contain=("unrecognized arguments",),
             ),
             CommandCase(
                 name="invalid-date-shape",
-                arguments=("--get", "--created-after", "2026-1-01"),
+                arguments=("get", "--created-after", "2026-1-01"),
                 expected_exit_code=2,
             ),
             CommandCase(
                 name="invalid-date-value",
-                arguments=("--get", "--created-after", "2026-02-31"),
+                arguments=("get", "--created-after", "2026-02-31"),
                 expected_exit_code=1,
                 must_contain=("--created-after must use YYYY-MM-DD",),
             ),
             CommandCase(
                 name="invalid-missing-set-file",
-                arguments=("--set", missing_maps),
+                arguments=("set", "--maps-path", missing_maps),
                 expected_exit_code=1,
                 expected_log_command="set_full",
                 expected_log_status="error",
-                must_contain=("--set input file does not exist",),
+                must_contain=("set input file does not exist",),
             ),
             CommandCase(
                 name="invalid-removed-repositories-created-after-flag",
-                arguments=("--repositories-created-after", config.future_date),
+                arguments=("get", "--repositories-created-after", config.future_date),
                 expected_exit_code=2,
                 must_contain=("unrecognized arguments",),
             ),
             CommandCase(
                 name="invalid-removed-get-schema-flag",
-                arguments=("--get-schema", "definitely-missing-schema.gql"),
+                arguments=("get", "--get-schema", "definitely-missing-schema.gql"),
                 expected_exit_code=2,
                 must_contain=("unrecognized arguments",),
             ),
@@ -1622,30 +1634,24 @@ def read_only_cases(config: EndToEndConfig) -> list[CommandCase]:
         CommandCase(
             name="help",
             arguments=("--help",),
-            must_contain=("usage: src-auth-perms-sync", "--set [FILE]"),
+            must_contain=("usage: src-auth-perms-sync", "commands:"),
             must_not_contain=("--repositories-created-after", "--get-schema"),
         ),
         CommandCase(
-            name="implicit-get-user",
-            arguments=("--user", config.user),
-            expected_log_command="get",
-            must_contain=("Wrote before-snapshot",),
-        ),
-        CommandCase(
-            name="explicit-get-user",
-            arguments=("--get", "--user", config.user),
+            name="get-users-baseline",
+            arguments=("get", "--users", config.user),
             expected_log_command="get",
             must_contain=("Wrote before-snapshot",),
         ),
         CommandCase(
             name="get-created-after-future",
-            arguments=("--get", "--created-after", config.future_date),
+            arguments=("get", "--created-after", config.future_date),
             expected_log_command="get",
             must_contain=("Selected 0 user(s) for get output",),
         ),
         CommandCase(
             name="get-user-created-after-future",
-            arguments=("--get", "--user", config.user, "--created-after", config.future_date),
+            arguments=("get", "--users", config.user, "--created-after", config.future_date),
             expected_log_command="get",
             must_contain_one_of=(
                 "Selected 0 user(s) for get output",
@@ -1655,19 +1661,13 @@ def read_only_cases(config: EndToEndConfig) -> list[CommandCase]:
         CommandCase(
             name="get-users-without-explicit-perms-created-after-future",
             arguments=(
-                "--get",
+                "get",
                 "--users-without-explicit-perms",
                 "--created-after",
                 config.future_date,
             ),
             expected_log_command="get",
             must_contain=("Selected 0 user(s) for get output",),
-        ),
-        CommandCase(
-            name="get-sync-saml-orgs-dry-run",
-            arguments=("--get", "--user", config.user, "--sync-saml-orgs"),
-            expected_log_command="get_sync_saml_orgs",
-            must_contain=("Wrote before-snapshot", "Dry run complete"),
         ),
     ]
     return cases
@@ -1678,7 +1678,8 @@ def run_safe_set_cases(config: EndToEndConfig, runner: CommandPermutationRunner)
         CommandCase(
             name="set-explicit-full-no-op-apply",
             arguments=(
-                "--set",
+                "set",
+                "--maps-path",
                 "maps.yaml",
                 "--full",
                 "--created-after",
@@ -1697,8 +1698,8 @@ def run_safe_set_cases(config: EndToEndConfig, runner: CommandPermutationRunner)
 def set_user_dry_run_case(config: EndToEndConfig) -> CommandCase:
     return CommandCase(
         name="set-user-dry-run",
-        arguments=("--set", "maps.yaml", "--user", config.user),
-        expected_log_command="set_user",
+        arguments=("set", "--maps-path", "maps.yaml", "--users", config.user),
+        expected_log_command="set_users",
         must_contain=("Dry run complete",),
     )
 
@@ -1707,15 +1708,16 @@ def set_user_apply_case(config: EndToEndConfig) -> CommandCase:
     return CommandCase(
         name="set-user-apply",
         arguments=(
-            "--set",
+            "set",
+            "--maps-path",
             "maps.yaml",
-            "--user",
+            "--users",
             config.user,
             "--apply",
             "--parallelism",
             str(config.parallelism),
         ),
-        expected_log_command="set_user",
+        expected_log_command="set_users",
         must_contain_one_of=(
             "VALIDATION OK: all",
             "All selected users already have the mapped explicit grants",
@@ -1727,7 +1729,8 @@ def users_without_explicit_permissions_no_op_case(config: EndToEndConfig) -> Com
     return CommandCase(
         name="set-users-without-explicit-perms-no-op-apply",
         arguments=(
-            "--set",
+            "set",
+            "--maps-path",
             "maps.yaml",
             "--users-without-explicit-perms",
             "--created-after",
@@ -1746,7 +1749,8 @@ def restore_scoped_dry_run_case(snapshot: Path, config: EndToEndConfig) -> Comma
     return CommandCase(
         name="restore-scoped-dry-run",
         arguments=(
-            "--restore",
+            "restore",
+            "--restore-path",
             str(snapshot),
             "--parallelism",
             str(config.parallelism),
@@ -1760,7 +1764,8 @@ def restore_scoped_apply_case(snapshot: Path, config: EndToEndConfig) -> Command
     return CommandCase(
         name="restore-scoped-apply-cleanup",
         arguments=(
-            "--restore",
+            "restore",
+            "--restore-path",
             str(snapshot),
             "--apply",
             "--parallelism",
@@ -1777,7 +1782,7 @@ def restore_scoped_apply_case(snapshot: Path, config: EndToEndConfig) -> Command
 def sync_saml_apply_case() -> CommandCase:
     return CommandCase(
         name="sync-saml-orgs-apply",
-        arguments=("--sync-saml-orgs", "--apply"),
+        arguments=("sync-saml-orgs", "--apply"),
         expected_log_command="sync_saml_orgs",
         must_contain=("VALIDATION OK: all target org memberships match",),
     )
@@ -1786,7 +1791,7 @@ def sync_saml_apply_case() -> CommandCase:
 def final_get_user_case(config: EndToEndConfig) -> CommandCase:
     return CommandCase(
         name="final-get-user-baseline-check",
-        arguments=("--get", "--user", config.user),
+        arguments=("get", "--users", config.user),
         expected_log_command="get",
         must_contain=("Wrote before-snapshot",),
     )
@@ -1796,7 +1801,7 @@ def run_full_apply_cases(config: EndToEndConfig, runner: CommandPermutationRunne
     dry_run_result = runner.run(
         CommandCase(
             name="set-full-dry-run",
-            arguments=("--set",),
+            arguments=("set",),
             expected_log_command="set_full",
             must_contain=("Dry run complete",),
         )
@@ -1809,7 +1814,7 @@ def run_full_apply_cases(config: EndToEndConfig, runner: CommandPermutationRunne
                 CommandCase(
                     name="set-full-apply",
                     arguments=(
-                        "--set",
+                        "set",
                         "--apply",
                         "--parallelism",
                         str(config.parallelism),
@@ -1833,7 +1838,7 @@ def run_full_apply_cases(config: EndToEndConfig, runner: CommandPermutationRunne
             CommandCase(
                 name="set-full-no-backup-apply",
                 arguments=(
-                    "--set",
+                    "set",
                     "--apply",
                     "--no-backup",
                     "--parallelism",
@@ -1859,8 +1864,15 @@ def run_full_apply_cases(config: EndToEndConfig, runner: CommandPermutationRunne
     runner.run(
         CommandCase(
             name="set-user-sync-saml-orgs-dry-run",
-            arguments=("--set", "maps.yaml", "--user", config.user, "--sync-saml-orgs"),
-            expected_log_command="set_user_sync_saml_orgs",
+            arguments=(
+                "set",
+                "--maps-path",
+                "maps.yaml",
+                "--users",
+                config.user,
+                "--sync-saml-orgs",
+            ),
+            expected_log_command="set_users_sync_saml_orgs",
             must_contain=("Dry run complete",),
         )
     )
@@ -1874,7 +1886,8 @@ def restore_full_apply_case(
     no_backup: bool,
 ) -> CommandCase:
     restore_arguments = [
-        "--restore",
+        "restore",
+        "--restore-path",
         str(snapshot),
         "--apply",
         "--parallelism",

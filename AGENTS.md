@@ -44,50 +44,27 @@ uv run src-auth-perms-sync --restore backups/<source>/<run>/before.json
 
 ## Release process
 
-- The tagged source commit must already contain the package version it
-  releases. Do not make the customer release workflow edit `pyproject.toml`.
-- Prepare the version bump on a branch. Set `VERSION`, then copy / paste:
-- As part of every release bump, find old release-version literals in
-  `AGENTS.md`, `README.md`, and release snippets, and replace them with the
-  new version where they are meant to stay current.
+- Package versions are derived from Git tags through `hatch-vcs`.
+- `pyproject.toml` must use `dynamic = ["version"]`; do not add a hard-coded
+  `project.version` for releases.
+- The release tag must be `vMAJOR.MINOR.PATCH` and point at a commit reachable
+  from `origin/main`.
+- The release workflow builds from the tag and checks that wheel and source
+  distribution filenames match the tag version before publishing.
+- Do not make the release workflow edit `pyproject.toml` or `uv.lock`.
+- Validate the remote head of `main` before tagging it:
 
 ```bash
 set -euo pipefail
 
-VERSION=0.2.1
-BRANCH="release-v${VERSION}"
+VERSION_INPUT=<next-version>
+VERSION="${VERSION_INPUT#v}"
 
+[[ "${VERSION_INPUT}" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+$ ]]
 git fetch origin --tags --prune
 git switch main
 git pull --ff-only
-git switch -c "${BRANCH}"
-
-uv run python - "${VERSION}" <<'PY'
-from pathlib import Path
-import re
-import sys
-
-version = sys.argv[1]
-path = Path("pyproject.toml")
-text = path.read_text()
-new_text = re.sub(
-    r'(?m)^version = "[^"]+"$',
-    f'version = "{version}"',
-    text,
-    count=1,
-)
-if new_text == text:
-    raise SystemExit("pyproject.toml version was not updated")
-path.write_text(new_text)
-PY
-
-uv lock
-```
-
-- Validate the release candidate before opening / merging the PR:
-
-```bash
-set -euo pipefail
+test "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)"
 
 uv lock --check
 actionlint
@@ -97,57 +74,24 @@ uv run pyright
 uv run python -m unittest discover -s tests
 uv run src-auth-perms-sync --help
 npx --yes markdownlint-cli2@0.22.1
-uv build --wheel --out-dir /tmp/src-auth-perms-sync-release-check --no-create-gitignore
+uv build --wheel --sdist --out-dir /tmp/src-auth-perms-sync-release-check --no-create-gitignore
 rm -rf /tmp/src-auth-perms-sync-release-check
 ```
 
-- Commit, push, open the PR, wait for checks, then merge it. If review is
-  required, stop after `gh pr checks` and ask for review before merging.
+- Tag the remote head of `main` directly:
 
 ```bash
 set -euo pipefail
 
-VERSION=0.2.1
-BRANCH="release-v${VERSION}"
+VERSION_INPUT=<next-version>
+VERSION="${VERSION_INPUT#v}"
 GH_REPO="sourcegraph/src-auth-perms-sync"
 
-git add pyproject.toml uv.lock
-git commit -m "Release v${VERSION}"
-git push -u origin "${BRANCH}"
-
-gh pr create \
-  --repo "${GH_REPO}" \
-  --base main \
-  --head "${BRANCH}" \
-  --title "Release v${VERSION}" \
-  --body "Bump src-auth-perms-sync package metadata to ${VERSION}."
-
-gh pr checks "${BRANCH}" --repo "${GH_REPO}" --watch --fail-fast
-gh pr merge "${BRANCH}" --repo "${GH_REPO}" --squash --delete-branch
-```
-
-- Tag the merged `main` commit. Do not tag a feature branch commit.
-
-```bash
-set -euo pipefail
-
-VERSION=0.2.1
-
+[[ "${VERSION_INPUT}" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+$ ]]
 git fetch origin --tags --prune
-git switch main
-git pull --ff-only
-git tag "v${VERSION}"
+MAIN_COMMIT="$(git rev-parse origin/main)"
+git tag -a "v${VERSION}" "${MAIN_COMMIT}" -m "Release v${VERSION}"
 git push origin "v${VERSION}"
-```
-
-- Watch the customer release workflow and confirm the GitHub release assets
-  are uploaded:
-
-```bash
-set -euo pipefail
-
-VERSION=0.2.1
-GH_REPO="sourcegraph/src-auth-perms-sync"
 
 RUN_ID="$(
   gh run list \
@@ -169,13 +113,13 @@ gh release view "v${VERSION}" --repo "${GH_REPO}"
 ```bash
 set -euo pipefail
 
-VERSION=0.2.1
+VERSION_INPUT=<version-to-fix>
+VERSION="${VERSION_INPUT#v}"
 GH_REPO="sourcegraph/src-auth-perms-sync"
 
+[[ "${VERSION_INPUT}" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+$ ]]
 git fetch origin --tags --prune
-git switch main
-git pull --ff-only
-git tag -f "v${VERSION}" origin/main
+git tag -f -a "v${VERSION}" origin/main -m "Release v${VERSION}"
 git push origin "refs/tags/v${VERSION}" --force
 
 RUN_ID="$(
