@@ -337,7 +337,7 @@ dev = [
 requires-dist = [
     { name = "json5", specifier = ">=0.14.0" },
     { name = "pyyaml", specifier = ">=6.0.3" },
-    { name = "src-py-lib", specifier = "==0.1.5" },
+    { name = "src-py-lib", specifier = "==0.1.9" },
 ]
 
 [package.metadata.requires-dev]
@@ -349,16 +349,16 @@ dev = [
 
 [[package]]
 name = "src-py-lib"
-version = "0.1.5"
+version = "0.1.9"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "httpx" },
     { name = "pydantic" },
     { name = "python-dotenv" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/68/39/dc534f18686d255141982cae8d7935c3cb807a6b98356d8936ed9c2d3b3d/src_py_lib-0.1.5.tar.gz", hash = "sha256:695f0fc0a2c539bd7ffc6c537822dca604fe8718de343c34f973765b31201d69", size = 71613, upload-time = "2026-05-29T08:58:25.545Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/7e/f9/f8f1105962fbec8ed5ff5e19335fc6e91ef6617bcf5d95dc3fb9ebf4cde5/src_py_lib-0.1.9.tar.gz", hash = "sha256:3f8a15ab776190d7bb717ffd9ebd0440c66c7a9655e06550d2117c721021b9cc", size = 72801, upload-time = "2026-06-09T01:41:20.991Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/ff/ee/550cbda36b6853584f60f4acbbae781f2e0a38e12811fdcd8731532ed077/src_py_lib-0.1.5-py3-none-any.whl", hash = "sha256:1bafff027ccb68478d5712a5522e7e21dd4ef5fe51b14723fff95dbd6496db30", size = 44873, upload-time = "2026-05-29T08:58:24.475Z" },
+    { url = "https://files.pythonhosted.org/packages/bd/95/8a5f402c9c8a000896c651e96893e8cd8a9cbfa67b2d2a3793ed777947c6/src_py_lib-0.1.9-py3-none-any.whl", hash = "sha256:32c88e79b99f34160cc5583b25ce1ab829350223ca2b488e1ca1545bb4ab3582", size = 45631, upload-time = "2026-06-09T01:41:19.738Z" },
 ]
 
 [[package]]

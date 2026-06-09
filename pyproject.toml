@@ -32,7 +32,7 @@ classifiers = [
 dependencies = [
     "json5>=0.14.0",
     "pyyaml>=6.0.3",
-    "src-py-lib==0.1.5",
+    "src-py-lib==0.1.9",
 ]
 keywords = [
     "Sourcegraph"

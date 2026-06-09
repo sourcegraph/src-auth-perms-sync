@@ -34,7 +34,6 @@ from urllib.parse import urlsplit
 
 import src_py_lib as src
 from src_py_lib.clients.sourcegraph import (
-    DEFAULT_SOURCEGRAPH_ENDPOINT,
     JAEGER_TRACE_RETRY_DELAYS_SECONDS,
     sourcegraph_trace_from_headers,
 )
@@ -77,12 +76,13 @@ class EndToEndConfig(src.SourcegraphClientConfig, src.LoggingConfig):
     """Config values for the end-to-end runner."""
 
     src_endpoint: str = src.config_field(
-        default=DEFAULT_SOURCEGRAPH_ENDPOINT,
+        default="",
         env_var="SRC_ENDPOINT",
         cli_flag="--src-endpoint",
         cli_aliases=("--endpoint",),
         metavar="URL",
-        help=f"Sourcegraph test instance URL (default: {DEFAULT_SOURCEGRAPH_ENDPOINT})",
+        help="Sourcegraph test instance URL",
+        required=True,
     )
     src_access_token: str = src.config_field(
         default="",
