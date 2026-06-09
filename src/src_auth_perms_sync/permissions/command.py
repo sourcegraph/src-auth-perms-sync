@@ -93,6 +93,7 @@ def cmd_get(
     bind_id_mode: str,
     saml_groups_attribute_name_by_config_id: dict[str, str],
     auth_providers_by_config_id: dict[str, dict[str, Any]],
+    do_backup: bool,
     retain_saml_group_users: bool = False,
     worker_pool: ThreadPoolExecutor | None = None,
 ) -> run_context.CommandData:
@@ -115,16 +116,17 @@ def cmd_get(
     `auth-providers.yaml` alongside the GraphQL-discovered fields.
     Providers without an explicit `configID` get only the GraphQL-derived view.
     """
-    with src.span(
-        "cmd_get",
-        code_hosts_path=str(code_hosts_path),
-        auth_providers_path=str(auth_providers_path),
-        maps_path=str(maps_path),
-        user_identifiers=user_identifiers,
-        users_without_explicit_perms=users_without_explicit_perms,
-        user_created_after=user_created_after,
-        parallelism=parallelism,
-    ) as cmd_event:
+    cmd_fields: dict[str, Any] = {}
+    if user_identifiers:
+        cmd_fields["user_identifiers"] = user_identifiers
+    if users_without_explicit_perms:
+        cmd_fields["users_without_explicit_perms"] = True
+    if user_created_after is not None:
+        cmd_fields["created_after"] = user_created_after
+    if not do_backup:
+        cmd_fields["backup"] = False
+
+    with src.span("cmd_get", **cmd_fields) as cmd_event:
         raw_providers, raw_services, attribute_names_by_provider = load_discovery(
             client, saml_groups_attribute_name_by_config_id
         )
@@ -147,7 +149,7 @@ def cmd_get(
         saml_group_counts = saml_groups.count_users_per_saml_group(
             users, attribute_names_by_provider
         )
-        cmd_event["user_count"] = len(users)
+        cmd_event["selected_user_count"] = len(users)
         cmd_event["saml_providers_with_groups"] = len(saml_group_counts)
 
         providers = [
@@ -175,31 +177,37 @@ def cmd_get(
 
         permissions_maps.dump_code_hosts_yaml(code_hosts_path, services)
         permissions_maps.dump_auth_providers_yaml(auth_providers_path, providers)
+        cmd_event["code_hosts_path"] = str(code_hosts_path)
+        cmd_event["auth_providers_path"] = str(auth_providers_path)
+        cmd_event["maps_path"] = str(maps_path)
         log.info("Wrote %s and %s", code_hosts_path, auth_providers_path)
 
-        timestamp = backups.backup_timestamp()
-        before_snapshot = permission_snapshot.build_snapshot(
-            client,
-            users,
-            parallelism,
-            bind_id_mode,
-            maps_path,
-            total_users=len(users),
-            explicit_permissions_batch_size=explicit_permissions_batch_size,
-            worker_pool=worker_pool,
-        )
-        before_path = snapshot_path(maps_path, timestamp, client.endpoint, "get", "before")
-        permission_snapshot.write_snapshot(before_path, before_snapshot)
-        cmd_event["beforesnapshot_path"] = str(before_path)
-        maps_backup_path = write_maps_backup(maps_path, timestamp, client.endpoint, "get")
-        if maps_backup_path is not None:
-            cmd_event["maps_backup_path"] = str(maps_backup_path)
-        log.info(
-            "Wrote before-snapshot: %s (%d repo(s) with explicit grants, %d total grant(s)).",
-            before_path,
-            before_snapshot["stats"]["repos_with_explicit_grants"],
-            before_snapshot["stats"]["total_grants"],
-        )
+        if do_backup:
+            timestamp = backups.backup_timestamp()
+            before_snapshot = permission_snapshot.build_snapshot(
+                client,
+                users,
+                parallelism,
+                bind_id_mode,
+                maps_path,
+                expected_user_count=len(users),
+                explicit_permissions_batch_size=explicit_permissions_batch_size,
+                worker_pool=worker_pool,
+            )
+            before_path = snapshot_path(maps_path, timestamp, client.endpoint, "get", "before")
+            permission_snapshot.write_snapshot(before_path, before_snapshot)
+            cmd_event["before_snapshot_path"] = str(before_path)
+            maps_backup_path = write_maps_backup(maps_path, timestamp, client.endpoint, "get")
+            if maps_backup_path is not None:
+                cmd_event["maps_backup_path"] = str(maps_backup_path)
+            log.info(
+                "Wrote before-snapshot: %s (%d repo(s) with explicit grants, %d total grant(s)).",
+                before_path,
+                before_snapshot["stats"]["repos_with_explicit_grants"],
+                before_snapshot["stats"]["total_grants"],
+            )
+        else:
+            log.info("Skipping get before-snapshot and maps backup because --no-backup is set.")
         saml_group_users = (
             saml_groups.compact_saml_group_users(
                 users,

@@ -70,24 +70,20 @@ class RestoreTests(unittest.TestCase):
     def make_repo_snapshot(
         self,
         name: str,
-        explicit_permissions_users: list[str],
+        users: list[str],
     ) -> permission_snapshot.RepoSnapshot:
         return {
             "name": name,
-            "explicit_permissions_users": explicit_permissions_users,
+            "users": users,
         }
 
     def make_snapshot(
         self,
         repos: dict[str, permission_snapshot.RepoSnapshot],
     ) -> permission_snapshot.Snapshot:
-        total_grants = sum(
-            len(repo_snapshot["explicit_permissions_users"]) for repo_snapshot in repos.values()
-        )
+        total_grants = sum(len(repo_snapshot["users"]) for repo_snapshot in repos.values())
         users_with_explicit_grants = {
-            username
-            for repo_snapshot in repos.values()
-            for username in repo_snapshot["explicit_permissions_users"]
+            username for repo_snapshot in repos.values() for username in repo_snapshot["users"]
         }
         return {
             "schema_version": permission_snapshot.SNAPSHOT_SCHEMA_VERSION,

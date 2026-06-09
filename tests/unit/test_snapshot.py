@@ -66,25 +66,25 @@ class SnapshotTests(unittest.TestCase):
                 side_effect=list_repositories_by_ids,
             ),
         ):
-            repos, user_count = permission_snapshot.capture_explicit_grants(
+            repos, scanned_user_count = permission_snapshot.capture_explicit_grants(
                 cast(src.SourcegraphClient, object()),
                 users,
                 parallelism=1,
                 explicit_permissions_batch_size=25,
-                total_users=len(users),
+                expected_user_count=len(users),
             )
 
-        self.assertEqual(3, user_count)
+        self.assertEqual(3, scanned_user_count)
         self.assertEqual([repo_one_id, repo_two_id], hydrated_repository_ids)
         self.assertEqual(
             {
                 repo_one_id: {
                     "name": "github.com/sourcegraph/one",
-                    "explicit_permissions_users": ["alice", "carol"],
+                    "users": ["alice", "carol"],
                 },
                 repo_two_id: {
                     "name": "github.com/sourcegraph/two",
-                    "explicit_permissions_users": ["carol"],
+                    "users": ["carol"],
                 },
             },
             repos,
@@ -123,15 +123,15 @@ class SnapshotTests(unittest.TestCase):
             ),
             patch.object(permission_snapshot, "wait", side_effect=recording_wait),
         ):
-            _, user_count = permission_snapshot.capture_explicit_grants(
+            _, scanned_user_count = permission_snapshot.capture_explicit_grants(
                 cast(src.SourcegraphClient, object()),
                 users,
                 parallelism=2,
                 explicit_permissions_batch_size=1,
-                total_users=len(users),
+                expected_user_count=len(users),
             )
 
-        self.assertEqual(9, user_count)
+        self.assertEqual(9, scanned_user_count)
         self.assertTrue(pending_counts)
         self.assertLessEqual(max(pending_counts), 4)
 
@@ -225,7 +225,7 @@ class SnapshotTests(unittest.TestCase):
         self.assertEqual(repo_two["id"], calls[2][1]["repo1"])
         self.assertEqual(repo_three["id"], calls[2][1]["repo2"])
 
-    def test_write_snapshot_uses_username_list_for_explicit_permissions(self) -> None:
+    def test_write_snapshot_uses_short_users_key_for_explicit_permissions(self) -> None:
         snapshot = self.make_snapshot()
 
         with tempfile.TemporaryDirectory() as directory_name:
@@ -233,18 +233,23 @@ class SnapshotTests(unittest.TestCase):
 
             permission_snapshot.write_snapshot(snapshot_path, snapshot)
             on_disk = json.loads(snapshot_path.read_text())
+            loaded_snapshot = permission_snapshot.read_snapshot(snapshot_path)
 
         self.assertEqual(
             ["alice", "bob"],
-            on_disk["repos"]["1"]["explicit_permissions_users"],
+            on_disk["repos"]["1"]["users"],
         )
-        self.assertNotIn("explicit_user_permissions", on_disk["repos"]["1"])
+        self.assertEqual(
+            ["alice", "bob"],
+            loaded_snapshot["repos"][src.encode_repository_id(1)]["users"],
+        )
+        self.assertEqual({"name", "users"}, set(on_disk["repos"]["1"]))
 
     def test_snapshot_diff_omits_unchanged_users(self) -> None:
         before = self.make_snapshot()
         after = self.make_snapshot()
         repo_id = src.encode_repository_id(1)
-        after["repos"][repo_id]["explicit_permissions_users"] = ["alice", "carol"]
+        after["repos"][repo_id]["users"] = ["alice", "carol"]
 
         diff = permission_snapshot.build_snapshot_diff(before, after)
 
@@ -292,11 +297,11 @@ class SnapshotTests(unittest.TestCase):
         self.assertEqual({}, after["repos"])
         self.assertEqual(
             ["alice", "carol"],
-            after_on_disk["repos"]["1"]["explicit_permissions_users"],
+            after_on_disk["repos"]["1"]["users"],
         )
         self.assertEqual(
             ["dana"],
-            after_on_disk["repos"]["2"]["explicit_permissions_users"],
+            after_on_disk["repos"]["2"]["users"],
         )
         self.assertEqual(2, diff_on_disk["summary"]["repos_changed"])
         self.assertEqual(2, diff_on_disk["summary"]["grants_added"])
@@ -330,7 +335,7 @@ class SnapshotTests(unittest.TestCase):
             with self.assertRaises(SystemExit) as exit_context:
                 permission_snapshot.read_snapshot(snapshot_path)
 
-        self.assertIn("expected 3", str(exit_context.exception))
+        self.assertIn("expected 4", str(exit_context.exception))
 
     def make_snapshot(self) -> permission_snapshot.Snapshot:
         return {
@@ -350,7 +355,7 @@ class SnapshotTests(unittest.TestCase):
             "repos": {
                 src.encode_repository_id(1): {
                     "name": "github.com/sourcegraph/example",
-                    "explicit_permissions_users": ["alice", "bob"],
+                    "users": ["alice", "bob"],
                 }
             },
         }

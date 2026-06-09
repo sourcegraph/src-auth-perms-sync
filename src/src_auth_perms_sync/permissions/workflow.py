@@ -282,7 +282,7 @@ def projected_snapshot_repo_for_id(
             return None
         return {
             "name": repo_names[repo_id],
-            "explicit_permissions_users": list(usernames),
+            "users": list(usernames),
         }
     return before_snapshot["repos"].get(repo_id)
 
@@ -316,7 +316,7 @@ def projected_snapshot_stats(
         if repo_id in expected_users:
             continue
         repo_count += 1
-        usernames = repo["explicit_permissions_users"]
+        usernames = repo["users"]
         users_with_explicit_grants.update(usernames)
         total_grants += len(usernames)
     for usernames in expected_users.values():
@@ -450,7 +450,7 @@ def validate_post_apply(
     for repo_id in mutated_repo_ids:
         expected = list(expected_users.get(repo_id, ()))
         actual_repo = after["repos"].get(repo_id)
-        actual = actual_repo["explicit_permissions_users"] if actual_repo else []
+        actual = actual_repo["users"] if actual_repo else []
         if expected == actual:
             continue
         expected_set = set(expected)

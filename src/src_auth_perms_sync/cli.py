@@ -47,6 +47,7 @@ GET_CONFIG_FIELDS = src.config_field_names(
     "users",
     "users_without_explicit_perms",
     "created_after",
+    "no_backup",
     "explicit_permissions_batch_size",
     *COMMON_CONFIG_FIELDS,
 )
@@ -336,8 +337,6 @@ def validate_command_options(command_name: CommandName, config: Config) -> None:
     """Validate options that only make sense with specific commands."""
     if command_name == "get" and config.apply:
         config_error("--apply cannot be used with the read-only get command")
-    if command_name == "get" and config.no_backup:
-        config_error("--no-backup cannot be used with the read-only get command")
     if config.sync_saml_organizations and command_name != "set":
         config_error("--sync-saml-orgs can only be combined with set")
     if command_name == "restore" and config.restore_path is None:
@@ -507,12 +506,7 @@ def require_set_input_file(maps_path: Path) -> None:
 
 def run_fields(config: Config, command: ResolvedCommand, endpoint: str) -> dict[str, object]:
     """Return run-level fields for structured logging."""
-    return {
-        "cli_cmd": command.log_name,
-        "base_cmd": command.name,
-        "set_mode": command.set_mode,
-        "sync_saml_orgs_flag": command.sync_saml_organizations,
-        "apply_flag": config.apply,
+    fields: dict[str, object] = {
         "endpoint": endpoint,
         "parallelism": config.parallelism,
         "explicit_permissions_batch_size": config.explicit_permissions_batch_size,
@@ -520,13 +514,22 @@ def run_fields(config: Config, command: ResolvedCommand, endpoint: str) -> dict[
         "open_telemetry": config.open_telemetry,
         "max_attempts": config.max_attempts,
         "http_timeout_seconds": config.http_timeout_seconds,
-        "no_backup": config.no_backup,
         "sample_interval": config.sample_interval,
-        "user_created_after": config.created_after,
         "artifacts_dir": str(backups.endpoint_artifacts_directory(endpoint)),
         "python_version": sys.version.split()[0],
         "pid": os.getpid(),
     }
+    if command.name != "get":
+        fields["apply"] = config.apply
+    if config.no_backup:
+        fields["no_backup"] = True
+    if command.set_mode is not None:
+        fields["set_mode"] = command.set_mode
+    if command.sync_saml_organizations:
+        fields["sync_saml_orgs"] = True
+    if config.created_after is not None:
+        fields["created_after"] = config.created_after
+    return fields
 
 
 def run_with_client(
@@ -690,6 +693,7 @@ def run_get(
             sourcegraph_site_config.saml_groups_attribute_name_by_config_id
         ),
         auth_providers_by_config_id=sourcegraph_site_config.auth_providers_by_config_id,
+        do_backup=not config.no_backup,
         retain_saml_group_users=False,
         worker_pool=worker_pool,
     )
@@ -767,7 +771,7 @@ def _run_or_raise(command_name: CommandName, config: Config) -> None:
         backups.run_artifacts_context(run_directory, run_timestamp),
         src.logging(
             config,
-            command=command.log_name,
+            command=command.name,
             git_cwd=__file__,
             logging_config=logging_settings,
             run_fields=run_fields(config, command, endpoint),

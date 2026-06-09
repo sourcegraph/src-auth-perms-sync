@@ -101,11 +101,11 @@ def _capture_full_set_snapshot_state(
     include_user_emails: bool = False,
 ) -> _FullSetUserState:
     """Load users while capturing the before-snapshot."""
-    total_users = shared_sourcegraph.count_users(client)
+    expected_user_count = shared_sourcegraph.count_users(client)
     users: list[shared_types.User] = []
     log.info(
         "Streaming %d users from %s while capturing before-snapshot in parallel ...",
-        total_users,
+        expected_user_count,
         client.endpoint,
     )
     before_timestamp = backups.backup_timestamp()
@@ -119,7 +119,7 @@ def _capture_full_set_snapshot_state(
         parallelism,
         bind_id_mode,
         input_path,
-        total_users=total_users,
+        expected_user_count=expected_user_count,
         explicit_permissions_batch_size=explicit_permissions_batch_size,
         worker_pool=worker_pool,
     )
@@ -426,7 +426,7 @@ def _filter_full_set_plans(
         pending_overwrites: list[permission_types.RepositoryUsernameOverwrite] = []
         for overwrite in overwrites:
             current_repo = before_repos_map.get(overwrite.repository_id)
-            current_usernames = current_repo["explicit_permissions_users"] if current_repo else []
+            current_usernames = current_repo["users"] if current_repo else []
             expected_list = list(overwrite.usernames)
             if current_usernames == expected_list or sorted(current_usernames) == expected_list:
                 skipped_repo_ids.add(overwrite.repository_id)
@@ -557,7 +557,7 @@ def _finish_full_set_apply_with_backup(
             parallelism,
             bind_id_mode,
             input_path,
-            total_users=len(snapshot_state.users),
+            expected_user_count=len(snapshot_state.users),
             explicit_permissions_batch_size=explicit_permissions_batch_size,
             worker_pool=worker_pool,
         )

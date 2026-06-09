@@ -6,10 +6,6 @@
 
 - Additive modes, to add new users’ perms quickly,
   without the extraneous load on the database of a full sync
-- Take a list of usernames and/or email addresses as input,
-  query users on the instance for these,
-  then trigger a perms sync for found users
-- Query the instance for all new users, which do not yet have explicit perms
 - Query the instance for all new repos, which do not yet have explicit perms
 
 ### Full: Overwrite all perms
