@@ -99,6 +99,7 @@ def _capture_full_set_snapshot_state(
     bind_id_mode: str,
     worker_pool: ThreadPoolExecutor | None = None,
     include_user_emails: bool = False,
+    include_user_account_data: bool = True,
 ) -> _FullSetUserState:
     """Load users while capturing the before-snapshot."""
     expected_user_count = shared_sourcegraph.count_users(client)
@@ -115,6 +116,7 @@ def _capture_full_set_snapshot_state(
             client,
             collect_into=users,
             include_emails=include_user_emails,
+            include_account_data=include_user_account_data,
         ),
         parallelism,
         bind_id_mode,
@@ -146,6 +148,7 @@ def _load_full_set_snapshot_state(
     capture_before: bool,
     worker_pool: ThreadPoolExecutor | None = None,
     include_user_emails: bool = False,
+    include_user_account_data: bool = True,
 ) -> _FullSetUserState:
     """Load all users, optionally with a before-snapshot."""
     if capture_before:
@@ -157,12 +160,14 @@ def _load_full_set_snapshot_state(
             bind_id_mode,
             worker_pool,
             include_user_emails=include_user_emails,
+            include_user_account_data=include_user_account_data,
         )
 
     log.info("Loading users from %s ...", client.endpoint)
     users = shared_sourcegraph.list_users_with_accounts(
         client,
         include_emails=include_user_emails,
+        include_account_data=include_user_account_data,
     )
     log.info("Received %d total users.", len(users))
     return _FullSetUserState(users=users)
@@ -656,6 +661,7 @@ def _finish_empty_full_set_mapping_rules(
         explicit_permissions_batch_size,
         bind_id_mode,
         worker_pool,
+        include_user_account_data=False,
     )
     _write_noop_full_set_artifacts(
         input_path,
@@ -683,6 +689,10 @@ def _load_full_set_plan(
     worker_pool: ThreadPoolExecutor | None = None,
 ) -> _FullSetLoadedPlan:
     include_user_emails = permissions_mapping.mapping_rules_need_user_emails(mapping_rules)
+    include_user_account_data = (
+        permissions_mapping.mapping_rules_need_saml_account_data(mapping_rules)
+        or retain_saml_group_users
+    )
     user_state = _load_full_set_snapshot_state(
         client,
         input_path,
@@ -692,6 +702,7 @@ def _load_full_set_plan(
         capture_before=capture_before,
         worker_pool=worker_pool,
         include_user_emails=include_user_emails,
+        include_user_account_data=include_user_account_data,
     )
     before_path: Path | None = None
     if capture_before:

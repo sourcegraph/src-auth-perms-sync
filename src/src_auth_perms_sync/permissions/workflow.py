@@ -153,6 +153,63 @@ def load_mapping_context_for_rules(
     )
 
 
+def load_mapping_context_discovery(
+    client: src.SourcegraphClient,
+    mapping_rules: list[permission_types.MappingRule],
+    saml_groups_attribute_name_by_config_id: dict[str, str],
+) -> permission_types.MappingContext:
+    """Load provider and code-host metadata without scanning repos."""
+    providers, services, saml_groups_attribute_names = load_discovery(
+        client, saml_groups_attribute_name_by_config_id
+    )
+    services_by_id: dict[int, permission_types.ExternalService] = {
+        src.decode_external_service_id(service["id"]): service for service in services
+    }
+    return permission_types.MappingContext(
+        mapping_rules=mapping_rules,
+        providers=providers,
+        saml_groups_attribute_names=saml_groups_attribute_names,
+        services_by_id=services_by_id,
+        repos_by_external_service_id={},
+        all_repos_by_id={},
+    )
+
+
+def load_repos_for_mapping_context(
+    client: src.SourcegraphClient,
+    context: permission_types.MappingContext,
+    service_ids: set[int] | None = None,
+) -> permission_types.MappingContext:
+    """Return context with repos loaded for all or selected code hosts."""
+    services_by_id = (
+        context.services_by_id
+        if service_ids is None
+        else {
+            service_id: context.services_by_id[service_id]
+            for service_id in sorted(service_ids)
+            if service_id in context.services_by_id
+        }
+    )
+    repos_by_external_service_id = {
+        **context.repos_by_external_service_id,
+        **load_repos_by_external_service(client, services_by_id),
+    }
+    all_repos_by_id = index_repos_by_id(repos_by_external_service_id)
+    log.info(
+        "Received %d unique repo(s) across %d loaded code host connection(s).",
+        len(all_repos_by_id),
+        len(repos_by_external_service_id),
+    )
+    return permission_types.MappingContext(
+        mapping_rules=context.mapping_rules,
+        providers=context.providers,
+        saml_groups_attribute_names=context.saml_groups_attribute_names,
+        services_by_id=context.services_by_id,
+        repos_by_external_service_id=repos_by_external_service_id,
+        all_repos_by_id=all_repos_by_id,
+    )
+
+
 def snapshot_path(
     input_path: Path,
     timestamp: str,

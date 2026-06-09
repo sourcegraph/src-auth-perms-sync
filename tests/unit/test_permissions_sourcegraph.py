@@ -90,6 +90,27 @@ class _ExplicitReposClient:
         return cast(src.JSONDict, response)
 
 
+class _RepoConnectionClient:
+    def __init__(self) -> None:
+        self.page_sizes: list[int] = []
+        self.variables: list[src.JSONDict | None] = []
+
+    def stream_connection_nodes(
+        self,
+        query: str,
+        variables: src.JSONDict | None = None,
+        *,
+        connection_path: tuple[str, ...],
+        page_size: int,
+    ) -> list[dict[str, str]]:
+        del connection_path
+        if "query ReposByExternalService" not in query:
+            raise AssertionError(f"unexpected query: {query[:80]}")
+        self.page_sizes.append(page_size)
+        self.variables.append(variables)
+        return [{"id": "repo-1", "name": "github.com/example/repo"}]
+
+
 class _PipelinedCandidateClient:
     def __init__(self) -> None:
         self.total_count = 1001
@@ -166,6 +187,18 @@ class _PipelinedCandidateClient:
 
 
 class PermissionsSourcegraphTests(unittest.TestCase):
+    def test_list_repos_for_external_service_uses_larger_pages(self) -> None:
+        client = _RepoConnectionClient()
+
+        repos = permissions_sourcegraph.list_repos_for_external_service(
+            cast(src.SourcegraphClient, client),
+            "external-service-1",
+        )
+
+        self.assertEqual(repos, [{"id": "repo-1", "name": "github.com/example/repo"}])
+        self.assertEqual(client.page_sizes, [1000])
+        self.assertEqual(client.variables, [{"esID": "external-service-1"}])
+
     def test_list_site_user_candidates_uses_larger_pages(self) -> None:
         client = _SiteUsersClient(total_count=2500)
 

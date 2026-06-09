@@ -20,6 +20,7 @@ from . import types as permission_types
 
 log = logging.getLogger(__name__)
 SITE_USER_CANDIDATE_PAGE_SIZE = 1000
+REPOSITORY_PAGE_SIZE = 1000
 
 
 @dataclass(frozen=True)
@@ -56,7 +57,7 @@ def list_repos_for_external_service(
             queries.QUERY_REPOS_BY_EXTERNAL_SERVICE,
             {"esID": external_service_id},
             connection_path=("repositories",),
-            page_size=shared_sourcegraph.DEFAULT_PAGE_SIZE,
+            page_size=REPOSITORY_PAGE_SIZE,
         )
     ]
 
@@ -66,12 +67,16 @@ def get_user_by_username(
     username: str,
     *,
     include_emails: bool = False,
+    include_account_data: bool = True,
 ) -> shared_types.User | None:
     """Return the exact Sourcegraph user for `username`, if it exists."""
     data = cast(
         dict[str, Any],
         client.graphql(
-            queries.query_user_by_username(include_emails=include_emails),
+            queries.query_user_by_username(
+                include_emails=include_emails,
+                include_account_data=include_account_data,
+            ),
             cast(src.JSONDict, {"username": username}),
         ),
     )
@@ -83,12 +88,16 @@ def get_user_by_email(
     email: str,
     *,
     include_emails: bool = False,
+    include_account_data: bool = True,
 ) -> shared_types.User | None:
     """Return the user owning the verified email address, if it exists."""
     data = cast(
         dict[str, Any],
         client.graphql(
-            queries.query_user_by_email(include_emails=include_emails),
+            queries.query_user_by_email(
+                include_emails=include_emails,
+                include_account_data=include_account_data,
+            ),
             cast(src.JSONDict, {"email": email}),
         ),
     )
@@ -100,12 +109,16 @@ def get_user_by_id(
     user_id: str,
     *,
     include_emails: bool = False,
+    include_account_data: bool = True,
 ) -> shared_types.User | None:
     """Hydrate a User node by GraphQL ID."""
     data = cast(
         dict[str, Any],
         client.graphql(
-            queries.query_user_by_id(include_emails=include_emails),
+            queries.query_user_by_id(
+                include_emails=include_emails,
+                include_account_data=include_account_data,
+            ),
             cast(src.JSONDict, {"id": user_id}),
         ),
     )

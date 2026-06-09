@@ -44,10 +44,24 @@ USER_EMAIL_FIELDS = """      emails {
       }
 """
 
+USER_ACCOUNT_DATA_FIELD = """          # accountData is the parsed gosaml2
+          # AssertionInfo JSON for SAML
+          # accounts (used by saml_groups extraction). The server gates
+          # it on Site Admin for SAML/OIDC; we already require Site
+          # Admin. Returns null for serviceType where the resolver does
+          # not expose data (e.g. plain GitHub OAuth without SSO).
+          accountData
+"""
 
-def query_users(*, include_emails: bool = False) -> str:
-    """Return the users page query, adding email fields only when requested."""
+
+def query_users(
+    *,
+    include_emails: bool = False,
+    include_account_data: bool = True,
+) -> str:
+    """Return the users page query, adding heavier fields only when requested."""
     email_fields = USER_EMAIL_FIELDS if include_emails else ""
+    account_data_field = USER_ACCOUNT_DATA_FIELD if include_account_data else ""
     return f"""
 query ListUsers($first: Int!, $after: String) {{
   users(first: $first, after: $after) {{
@@ -60,13 +74,7 @@ query ListUsers($first: Int!, $after: String) {{
           serviceType
           serviceID
           clientID
-          # accountData is the parsed gosaml2 AssertionInfo JSON for SAML
-          # accounts (used by saml_groups extraction). The server gates
-          # it on Site Admin for SAML/OIDC; we already require Site
-          # Admin. Returns null for serviceType where the resolver does
-          # not expose data (e.g. plain GitHub OAuth without SSO).
-          accountData
-        }}
+{account_data_field}        }}
       }}
     }}
     pageInfo {{ hasNextPage endCursor }}

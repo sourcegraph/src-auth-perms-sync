@@ -4,8 +4,6 @@
 
 ### Fast
 
-- Additive modes, to add new users’ perms quickly,
-  without the extraneous load on the database of a full sync
 - Query the instance for all new repos, which do not yet have explicit perms
 
 ### Full: Overwrite all perms

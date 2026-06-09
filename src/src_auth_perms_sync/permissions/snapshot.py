@@ -62,7 +62,7 @@ def compact_snapshot_users(users: Iterable[shared_types.User]) -> list[SnapshotU
 
 class UserScopedUserSnapshot(TypedDict):
     id: str
-    explicit_repositories: list[permission_types.Repository]
+    repos: list[permission_types.Repository]
 
 
 class UserScopedSnapshotStats(TypedDict):
@@ -152,7 +152,7 @@ class UserScopedSnapshotDiff(TypedDict):
     users: list[UserScopedSnapshotDiffEntry]
 
 
-SNAPSHOT_SCHEMA_VERSION: int = 4
+SNAPSHOT_SCHEMA_VERSION: int = 5
 USER_SCOPED_SNAPSHOT_KIND = "user_scope"
 SNAPSHOT_DIFF_SCHEMA_VERSION: int = 1
 
@@ -521,11 +521,11 @@ def capture_user_scoped_explicit_grants(
         ):
             scoped_users[fetched_user["username"]] = {
                 "id": fetched_user["id"],
-                "explicit_repositories": sorted(repos, key=lambda repo: repo["name"]),
+                "repos": sorted(repos, key=lambda repo: repo["name"]),
             }
         capture_event["scanned_user_count"] = len(scoped_users)
         capture_event["total_grants"] = sum(
-            len(user_snapshot["explicit_repositories"]) for user_snapshot in scoped_users.values()
+            len(user_snapshot["repos"]) for user_snapshot in scoped_users.values()
         )
     return dict(sorted(scoped_users.items()))
 
@@ -550,11 +550,9 @@ def build_user_scoped_snapshot(
         if config_path is not None and config_path.exists():
             config_sha = hashlib.sha256(config_path.read_bytes()).hexdigest()
 
-        total_grants = sum(
-            len(user_snapshot["explicit_repositories"]) for user_snapshot in scoped_users.values()
-        )
+        total_grants = sum(len(user_snapshot["repos"]) for user_snapshot in scoped_users.values())
         users_with_explicit_grants = sum(
-            1 for user_snapshot in scoped_users.values() if user_snapshot["explicit_repositories"]
+            1 for user_snapshot in scoped_users.values() if user_snapshot["repos"]
         )
         build_event["scanned_user_count"] = len(scoped_users)
         build_event["users_with_explicit_grants"] = users_with_explicit_grants
@@ -575,6 +573,49 @@ def build_user_scoped_snapshot(
             },
             "users": scoped_users,
         }
+
+
+def build_user_scoped_snapshot_from_repos(
+    client: src.SourcegraphClient,
+    users: Iterable[SnapshotUser],
+    repos_by_user_id: dict[str, list[permission_types.Repository]],
+    bind_id_mode: str,
+    config_path: Path | None = None,
+) -> UserScopedSnapshot:
+    """Build a user-scoped snapshot from explicit repos already fetched."""
+    scoped_users: dict[str, UserScopedUserSnapshot] = {
+        user["username"]: {
+            "id": user["id"],
+            "repos": sorted(
+                repos_by_user_id.get(user["id"], []),
+                key=lambda repo: repo["name"],
+            ),
+        }
+        for user in users
+    }
+    config_sha: str | None = None
+    if config_path is not None and config_path.exists():
+        config_sha = hashlib.sha256(config_path.read_bytes()).hexdigest()
+
+    total_grants = sum(len(user_snapshot["repos"]) for user_snapshot in scoped_users.values())
+    users_with_explicit_grants = sum(
+        1 for user_snapshot in scoped_users.values() if user_snapshot["repos"]
+    )
+    return {
+        "schema_version": SNAPSHOT_SCHEMA_VERSION,
+        "snapshot_kind": USER_SCOPED_SNAPSHOT_KIND,
+        "captured_at": datetime.datetime.now(datetime.UTC).isoformat(timespec="seconds"),
+        "endpoint": client.endpoint,
+        "bindID_mode": bind_id_mode,
+        "config_file": str(config_path.resolve()) if config_path else None,
+        "config_sha256": config_sha,
+        "stats": {
+            "total_users_scanned": len(scoped_users),
+            "users_with_explicit_grants": users_with_explicit_grants,
+            "total_grants": total_grants,
+        },
+        "users": dict(sorted(scoped_users.items())),
+    }
 
 
 def _write_pretty_json(path: Path, value: Any) -> int:
@@ -660,8 +701,8 @@ def _write_user_scoped_snapshot_value(
     output.write(f'{field_indent}"id": ')
     json.dump(user_snapshot["id"], output)
     output.write(",\n")
-    output.write(f'{field_indent}"explicit_repositories": ')
-    _write_repository_list(output, user_snapshot["explicit_repositories"], indent + 2)
+    output.write(f'{field_indent}"repos": ')
+    _write_repository_list(output, user_snapshot["repos"], indent + 2)
     output.write("\n" + " " * indent + "}")
 
 
@@ -846,12 +887,12 @@ def _encode_user_scoped_snapshot_raw(path: Path, raw: dict[str, Any]) -> UserSco
     raw["users"] = {
         username: {
             "id": user_snapshot["id"],
-            "explicit_repositories": [
+            "repos": [
                 {
                     "id": src.encode_repository_id(int(repo["id"])),
                     "name": cast(str, repo["name"]),
                 }
-                for repo in cast(list[dict[str, Any]], user_snapshot["explicit_repositories"])
+                for repo in cast(list[dict[str, Any]], user_snapshot["repos"])
             ],
         }
         for username, user_snapshot in on_disk_users.items()
@@ -1494,10 +1535,7 @@ def _repositories_by_id(
 ) -> dict[str, str]:
     if user_snapshot is None:
         return {}
-    return {
-        repository["id"]: repository["name"]
-        for repository in user_snapshot["explicit_repositories"]
-    }
+    return {repository["id"]: repository["name"] for repository in user_snapshot["repos"]}
 
 
 def _permission_count(repo_snapshot: RepoSnapshot | None) -> int:

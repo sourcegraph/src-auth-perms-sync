@@ -245,6 +245,48 @@ class SnapshotTests(unittest.TestCase):
         )
         self.assertEqual({"name", "users"}, set(on_disk["repos"]["1"]))
 
+    def test_write_user_scoped_snapshot_uses_short_repos_key(self) -> None:
+        repo_id = src.encode_repository_id(1)
+        snapshot: permission_snapshot.UserScopedSnapshot = {
+            "schema_version": permission_snapshot.SNAPSHOT_SCHEMA_VERSION,
+            "snapshot_kind": permission_snapshot.USER_SCOPED_SNAPSHOT_KIND,
+            "captured_at": "2026-05-26T00:00:00+00:00",
+            "endpoint": "https://sourcegraph.example.com",
+            "bindID_mode": "USERNAME",
+            "config_file": None,
+            "config_sha256": None,
+            "stats": {
+                "total_users_scanned": 1,
+                "users_with_explicit_grants": 1,
+                "total_grants": 1,
+            },
+            "users": {
+                "alice": {
+                    "id": "user-1",
+                    "repos": [
+                        {
+                            "id": repo_id,
+                            "name": "github.com/sourcegraph/example",
+                        }
+                    ],
+                }
+            },
+        }
+
+        with tempfile.TemporaryDirectory() as directory_name:
+            snapshot_path = Path(directory_name) / "before.json"
+
+            permission_snapshot.write_user_scoped_snapshot(snapshot_path, snapshot)
+            on_disk = json.loads(snapshot_path.read_text())
+            loaded_snapshot = permission_snapshot.read_user_scoped_snapshot(snapshot_path)
+
+        self.assertEqual(
+            [{"id": 1, "name": "github.com/sourcegraph/example"}],
+            on_disk["users"]["alice"]["repos"],
+        )
+        self.assertNotIn("explicit_repositories", on_disk["users"]["alice"])
+        self.assertEqual(repo_id, loaded_snapshot["users"]["alice"]["repos"][0]["id"])
+
     def test_snapshot_diff_omits_unchanged_users(self) -> None:
         before = self.make_snapshot()
         after = self.make_snapshot()
@@ -335,7 +377,7 @@ class SnapshotTests(unittest.TestCase):
             with self.assertRaises(SystemExit) as exit_context:
                 permission_snapshot.read_snapshot(snapshot_path)
 
-        self.assertIn("expected 4", str(exit_context.exception))
+        self.assertIn("expected 5", str(exit_context.exception))
 
     def make_snapshot(self) -> permission_snapshot.Snapshot:
         return {

@@ -135,6 +135,15 @@ def mapping_rules_need_user_emails(mapping_rules: list[permission_types.MappingR
     )
 
 
+def mapping_rules_need_saml_account_data(
+    mapping_rules: list[permission_types.MappingRule],
+) -> bool:
+    """Return whether any mapping rule filters users by SAML group claims."""
+    return any(
+        bool(mapping["users"].get("authProvider", {}).get("samlGroup")) for mapping in mapping_rules
+    )
+
+
 def _validate_mapping_name(value: object, prefix: str) -> list[str]:
     """Validate the required human-readable mapping name."""
     if value is None:
@@ -770,6 +779,26 @@ def _repos_matching_code_host_connection(
         for repo in repos_by_external_service_id.get(external_service_id, []):
             matched_repos[repo["id"]] = repo
     return list(matched_repos.values())
+
+
+def service_ids_required_by_repository_selectors(
+    services_by_id: dict[int, permission_types.ExternalService],
+    selectors: Sequence[permission_types.RepositorySelector],
+) -> set[int]:
+    """Return code-host service IDs whose repos may match the selectors.
+
+    A selector without `codeHostConnection` can match any code host, so the
+    caller must load every service. Selectors with `codeHostConnection` narrow
+    the repo scan to only services matching that matcher.
+    """
+    required_service_ids: set[int] = set()
+    for selector in selectors:
+        matcher = selector.get("codeHostConnection")
+        if matcher is None:
+            return set(services_by_id)
+        for service in _services_matching(services_by_id, matcher):
+            required_service_ids.add(src.decode_external_service_id(service["id"]))
+    return required_service_ids
 
 
 def _repo_name_matches(

@@ -25,7 +25,9 @@ from . import sourcegraph as permissions_sourcegraph
 from . import types as permission_types
 from .workflow import (
     load_discovery,
-    load_mapping_context,
+    load_mapping_context_discovery,
+    load_mapping_rules,
+    load_repos_for_mapping_context,
     parse_cli_date,
     snapshot_path,
     sourcegraph_datetime_filter,
@@ -77,6 +79,54 @@ def resolve_additive_mappings(context: permission_types.MappingContext) -> list[
             )
         )
     return resolved
+
+
+def _mapping_context_with_rules(
+    context: permission_types.MappingContext,
+    mapping_rules: list[permission_types.MappingRule],
+) -> permission_types.MappingContext:
+    return permission_types.MappingContext(
+        mapping_rules=mapping_rules,
+        providers=context.providers,
+        saml_groups_attribute_names=context.saml_groups_attribute_names,
+        services_by_id=context.services_by_id,
+        repos_by_external_service_id=context.repos_by_external_service_id,
+        all_repos_by_id=context.all_repos_by_id,
+    )
+
+
+def _mapping_rules_matching_selected_users(
+    context: permission_types.MappingContext,
+    users: list[shared_types.User],
+) -> list[permission_types.MappingRule]:
+    matching_rules: list[permission_types.MappingRule] = []
+    for mapping_rule in context.mapping_rules:
+        if any(
+            permissions_mapping.user_matches_user_selector(
+                mapping_rule["users"],
+                user,
+                context.providers,
+                context.saml_groups_attribute_names,
+            )
+            for user in users
+        ):
+            matching_rules.append(mapping_rule)
+    return matching_rules
+
+
+def _service_ids_required_by_mapping_rules(
+    context: permission_types.MappingContext,
+    mapping_rules: list[permission_types.MappingRule],
+) -> set[int]:
+    return permissions_mapping.service_ids_required_by_repository_selectors(
+        context.services_by_id,
+        [mapping_rule["repos"] for mapping_rule in mapping_rules],
+    )
+
+
+def _providers_need_saml_account_data(providers: list[shared_types.AuthProvider]) -> bool:
+    """Return whether output needs SAML accountData-derived group counts."""
+    return any(provider["serviceType"] == saml_groups.SAML_SERVICE_TYPE for provider in providers)
 
 
 def cmd_get(
@@ -133,6 +183,7 @@ def cmd_get(
         services = [permissions_maps.external_service_to_yaml(service) for service in raw_services]
         cmd_event["auth_provider_count"] = len(raw_providers)
         cmd_event["external_service_count"] = len(services)
+        include_user_account_data = _providers_need_saml_account_data(raw_providers)
 
         users = _load_get_users(
             client,
@@ -141,6 +192,7 @@ def cmd_get(
             user_created_after=user_created_after,
             parallelism=parallelism,
             explicit_permissions_batch_size=explicit_permissions_batch_size,
+            include_account_data=include_user_account_data,
             worker_pool=worker_pool,
         )
         counts = permissions_maps.count_users_per_provider(users)
@@ -237,11 +289,16 @@ def _load_get_users(
     user_created_after: str | None,
     parallelism: int,
     explicit_permissions_batch_size: int,
+    include_account_data: bool,
     worker_pool: ThreadPoolExecutor | None,
 ) -> list[shared_types.User]:
     """Load the Sourcegraph users selected by get/set-compatible user filters."""
     if user_identifiers:
-        users = _resolve_user_identifiers(client, user_identifiers)
+        users = _resolve_user_identifiers(
+            client,
+            user_identifiers,
+            include_account_data=include_account_data,
+        )
         if user_created_after is None:
             return users
         candidate_user_ids = user_ids_created_on_or_after(client, user_created_after)
@@ -292,16 +349,21 @@ def _load_get_users(
         users = _hydrate_site_user_candidates(
             client,
             candidates,
+            include_account_data=include_account_data,
             parallelism=parallelism,
             worker_pool=worker_pool,
         )
         log.info("Selected %d user(s) for get output.", len(users))
         return users
 
-    return _load_all_get_users(client)
+    return _load_all_get_users(client, include_account_data=include_account_data)
 
 
-def _load_all_get_users(client: src.SourcegraphClient) -> list[shared_types.User]:
+def _load_all_get_users(
+    client: src.SourcegraphClient,
+    *,
+    include_account_data: bool,
+) -> list[shared_types.User]:
     """Load all users for get output, with progress logs for large instances."""
     total_users = shared_sourcegraph.count_users(client)
     page_count = (
@@ -316,7 +378,13 @@ def _load_all_get_users(client: src.SourcegraphClient) -> list[shared_types.User
     users: list[shared_types.User] = []
     load_started = time.perf_counter()
     progress_step = max(1, total_users // 10)
-    for completed, user in enumerate(shared_sourcegraph.list_users_streaming(client), start=1):
+    for completed, user in enumerate(
+        shared_sourcegraph.list_users_streaming(
+            client,
+            include_account_data=include_account_data,
+        ),
+        start=1,
+    ):
         users.append(user)
         if completed % progress_step == 0 or completed == total_users:
             elapsed = time.perf_counter() - load_started
@@ -341,6 +409,7 @@ def _hydrate_site_user_candidates(
     candidates: list[shared_types.SiteUserCandidate],
     *,
     include_emails: bool = False,
+    include_account_data: bool = True,
     parallelism: int,
     worker_pool: ThreadPoolExecutor | None,
 ) -> list[shared_types.User]:
@@ -359,6 +428,7 @@ def _hydrate_site_user_candidates(
             client,
             candidate["id"],
             include_emails=include_emails,
+            include_account_data=include_account_data,
         )
 
     hydrated_users = run_context.parallel_map(
@@ -483,16 +553,24 @@ def cmd_set_additive_users(
         parallelism=parallelism,
         do_backup=do_backup,
     ):
-        context = load_mapping_context(client, input_path, saml_groups_attribute_name_by_config_id)
-        if context is None:
+        mapping_rules = load_mapping_rules(input_path)
+        if not mapping_rules:
+            log.warning("No maps defined in %s — nothing to do.", input_path)
             return run_context.CommandData()
-        include_user_emails = permissions_mapping.mapping_rules_need_user_emails(
-            context.mapping_rules
+        include_user_emails = permissions_mapping.mapping_rules_need_user_emails(mapping_rules)
+        include_user_account_data = permissions_mapping.mapping_rules_need_saml_account_data(
+            mapping_rules
         )
         users = _resolve_user_identifiers(
             client,
             user_identifiers,
             include_emails=include_user_emails,
+            include_account_data=include_user_account_data,
+        )
+        context = load_mapping_context_discovery(
+            client,
+            mapping_rules,
+            saml_groups_attribute_name_by_config_id,
         )
         if user_created_after is not None:
             candidate_user_ids = user_ids_created_on_or_after(client, user_created_after)
@@ -509,15 +587,57 @@ def cmd_set_additive_users(
             users = selected_users
             if not users:
                 return run_context.CommandData(auth_providers=context.providers)
+
+        matching_rules = _mapping_rules_matching_selected_users(context, users)
+        log.info(
+            "%d / %d mapping rule(s) match the selected user(s).",
+            len(matching_rules),
+            len(context.mapping_rules),
+        )
+        if not matching_rules:
+            _run_additive_apply(
+                client,
+                input_path,
+                users,
+                [],
+                dry_run=dry_run,
+                parallelism=parallelism,
+                bind_id_mode=bind_id_mode,
+                do_backup=do_backup,
+                command_name="set-add-users",
+                worker_pool=worker_pool,
+            )
+            return run_context.CommandData(auth_providers=context.providers)
+
+        service_ids = _service_ids_required_by_mapping_rules(context, matching_rules)
+        log.info(
+            "Selected mapping rule(s) require repo scans for %d / %d code host connection(s).",
+            len(service_ids),
+            len(context.services_by_id),
+        )
+        context = load_repos_for_mapping_context(
+            client,
+            _mapping_context_with_rules(context, matching_rules),
+            service_ids,
+        )
         resolved_mappings = resolve_additive_mappings(context)
         additions: list[permissions_apply.PermissionAddition] = []
+        existing_repos_by_user_id = (
+            _load_selected_user_explicit_repos(client, users) if do_backup else None
+        )
         for user in users:
+            existing_repo_ids = None
+            if existing_repos_by_user_id is not None:
+                existing_repo_ids = {
+                    repository["id"] for repository in existing_repos_by_user_id[user["id"]]
+                }
             additions.extend(
                 _plan_additions_for_user(
                     client,
                     context,
                     resolved_mappings,
                     user,
+                    existing_repo_ids=existing_repo_ids,
                 )
             )
         _run_additive_apply(
@@ -530,6 +650,7 @@ def cmd_set_additive_users(
             bind_id_mode=bind_id_mode,
             do_backup=do_backup,
             command_name="set-add-users",
+            existing_repos_by_user_id=existing_repos_by_user_id,
             worker_pool=worker_pool,
         )
         return run_context.CommandData(auth_providers=context.providers)
@@ -561,13 +682,19 @@ def cmd_set_additive_users_without_explicit_perms(
         parallelism=parallelism,
         do_backup=do_backup,
     ):
-        context = load_mapping_context(client, input_path, saml_groups_attribute_name_by_config_id)
-        if context is None:
+        mapping_rules = load_mapping_rules(input_path)
+        if not mapping_rules:
+            log.warning("No maps defined in %s — nothing to do.", input_path)
             return run_context.CommandData()
-        include_user_emails = permissions_mapping.mapping_rules_need_user_emails(
-            context.mapping_rules
+        context = load_mapping_context_discovery(
+            client,
+            mapping_rules,
+            saml_groups_attribute_name_by_config_id,
         )
-        resolved_mappings = resolve_additive_mappings(context)
+        include_user_emails = permissions_mapping.mapping_rules_need_user_emails(mapping_rules)
+        include_user_account_data = permissions_mapping.mapping_rules_need_saml_account_data(
+            mapping_rules
+        )
         candidate_selection = (
             permissions_sourcegraph.list_site_user_candidates_without_explicit_repos(
                 client,
@@ -589,9 +716,58 @@ def cmd_set_additive_users_without_explicit_perms(
             client,
             candidates,
             include_emails=include_user_emails,
+            include_account_data=include_user_account_data,
             parallelism=parallelism,
             worker_pool=worker_pool,
         )
+        if not users:
+            _run_additive_apply(
+                client,
+                input_path,
+                users,
+                [],
+                dry_run=dry_run,
+                parallelism=parallelism,
+                bind_id_mode=bind_id_mode,
+                do_backup=do_backup,
+                command_name="set-add-users-without-explicit-perms",
+                worker_pool=worker_pool,
+            )
+            return run_context.CommandData(auth_providers=context.providers)
+
+        matching_rules = _mapping_rules_matching_selected_users(context, users)
+        log.info(
+            "%d / %d mapping rule(s) match the selected user(s).",
+            len(matching_rules),
+            len(context.mapping_rules),
+        )
+        if not matching_rules:
+            _run_additive_apply(
+                client,
+                input_path,
+                users,
+                [],
+                dry_run=dry_run,
+                parallelism=parallelism,
+                bind_id_mode=bind_id_mode,
+                do_backup=do_backup,
+                command_name="set-add-users-without-explicit-perms",
+                worker_pool=worker_pool,
+            )
+            return run_context.CommandData(auth_providers=context.providers)
+
+        service_ids = _service_ids_required_by_mapping_rules(context, matching_rules)
+        log.info(
+            "Selected mapping rule(s) require repo scans for %d / %d code host connection(s).",
+            len(service_ids),
+            len(context.services_by_id),
+        )
+        context = load_repos_for_mapping_context(
+            client,
+            _mapping_context_with_rules(context, matching_rules),
+            service_ids,
+        )
+        resolved_mappings = resolve_additive_mappings(context)
         additions: list[permissions_apply.PermissionAddition] = []
         started = time.perf_counter()
         progress_step = max(1, len(users) // 10) if users else 1
@@ -640,6 +816,7 @@ def _resolve_user_identifiers(
     user_identifiers: tuple[str, ...],
     *,
     include_emails: bool = False,
+    include_account_data: bool = True,
 ) -> list[shared_types.User]:
     """Resolve username/email inputs to distinct Sourcegraph users in caller order."""
     users: list[shared_types.User] = []
@@ -649,6 +826,7 @@ def _resolve_user_identifiers(
             client,
             user_identifier,
             include_emails=include_emails,
+            include_account_data=include_account_data,
         )
         if user["id"] in seen_user_ids:
             continue
@@ -662,6 +840,7 @@ def _resolve_user_identifier(
     user_identifier: str,
     *,
     include_emails: bool = False,
+    include_account_data: bool = True,
 ) -> shared_types.User:
     """Resolve username/email input to one Sourcegraph user."""
     user: shared_types.User | None
@@ -670,26 +849,47 @@ def _resolve_user_identifier(
             client,
             user_identifier,
             include_emails=include_emails,
+            include_account_data=include_account_data,
         ) or permissions_sourcegraph.get_user_by_username(
             client,
             user_identifier,
             include_emails=include_emails,
+            include_account_data=include_account_data,
         )
     else:
         user = permissions_sourcegraph.get_user_by_username(
             client,
             user_identifier,
             include_emails=include_emails,
+            include_account_data=include_account_data,
         ) or permissions_sourcegraph.get_user_by_email(
             client,
             user_identifier,
             include_emails=include_emails,
+            include_account_data=include_account_data,
         )
     if user is None:
         raise SystemExit(f"No Sourcegraph user found for {user_identifier!r}.")
     if user["username"] != user_identifier:
         log.info("Resolved %s to Sourcegraph username %s.", user_identifier, user["username"])
     return user
+
+
+def _load_selected_user_explicit_repos(
+    client: src.SourcegraphClient,
+    users: list[shared_types.User],
+) -> dict[str, list[permission_types.Repository]]:
+    """Fetch selected users' explicit repos once for planning and snapshots."""
+    with src.span("load_selected_user_explicit_repos", user_count=len(users)) as load_event:
+        repos_by_user_id = {
+            user["id"]: permissions_sourcegraph.list_user_explicit_repos(
+                client,
+                user["id"],
+            )
+            for user in users
+        }
+        load_event["total_grants"] = sum(len(repos) for repos in repos_by_user_id.values())
+        return repos_by_user_id
 
 
 def _plan_additions_for_user(
@@ -711,6 +911,10 @@ def _plan_additions_for_user(
             continue
         for repository in resolved_mapping.repos:
             desired_repos[repository["id"]] = repository
+
+    if not desired_repos:
+        log.info("User %s: no desired repo grants.", user["username"])
+        return []
 
     if existing_repo_ids is None:
         existing_repo_ids = set(
@@ -752,17 +956,27 @@ def _write_additive_initial_artifacts(
     parallelism: int,
     bind_id_mode: str,
     command_name: str,
+    existing_repos_by_user_id: dict[str, list[permission_types.Repository]] | None = None,
     worker_pool: ThreadPoolExecutor | None = None,
 ) -> permission_snapshot.UserScopedSnapshot:
     """Capture before-snapshot and write dry-run/no-op additive artifacts."""
-    before_snapshot = permission_snapshot.build_user_scoped_snapshot(
-        client,
-        snapshot_users,
-        parallelism,
-        bind_id_mode,
-        input_path,
-        worker_pool=worker_pool,
-    )
+    if existing_repos_by_user_id is None:
+        before_snapshot = permission_snapshot.build_user_scoped_snapshot(
+            client,
+            snapshot_users,
+            parallelism,
+            bind_id_mode,
+            input_path,
+            worker_pool=worker_pool,
+        )
+    else:
+        before_snapshot = permission_snapshot.build_user_scoped_snapshot_from_repos(
+            client,
+            snapshot_users,
+            existing_repos_by_user_id,
+            bind_id_mode,
+            input_path,
+        )
     run_label = _additive_run_label(command_name, dry_run)
     before_path = snapshot_path(input_path, timestamp, client.endpoint, run_label, "before")
     after_path = snapshot_path(input_path, timestamp, client.endpoint, run_label, "after")
@@ -906,6 +1120,7 @@ def _run_additive_apply(
     bind_id_mode: str,
     do_backup: bool,
     command_name: str,
+    existing_repos_by_user_id: dict[str, list[permission_types.Repository]] | None = None,
     worker_pool: ThreadPoolExecutor | None = None,
 ) -> None:
     """Snapshot, dry-run, apply, and validate an additive permission plan."""
@@ -914,9 +1129,10 @@ def _run_additive_apply(
         return
 
     snapshot_users = _snapshot_users_from_users(users)
-    timestamp = backups.backup_timestamp()
     before_snapshot: permission_snapshot.UserScopedSnapshot | None = None
-    if dry_run or do_backup:
+    timestamp: str | None = None
+    if do_backup:
+        timestamp = backups.backup_timestamp()
         before_snapshot = _write_additive_initial_artifacts(
             client,
             input_path,
@@ -927,6 +1143,7 @@ def _run_additive_apply(
             parallelism=parallelism,
             bind_id_mode=bind_id_mode,
             command_name=command_name,
+            existing_repos_by_user_id=existing_repos_by_user_id,
             worker_pool=worker_pool,
         )
 
@@ -943,6 +1160,7 @@ def _run_additive_apply(
 
     if do_backup:
         assert before_snapshot is not None
+        assert timestamp is not None
         _finish_additive_apply_with_backup(
             client,
             input_path,
@@ -979,13 +1197,11 @@ def _user_scoped_snapshot_with_additions(
     for addition in additions:
         user_snapshot = users.setdefault(
             addition.username,
-            {"id": addition.user_id, "explicit_repositories": []},
+            {"id": addition.user_id, "repos": []},
         )
-        repositories = {
-            repository["id"]: repository for repository in user_snapshot["explicit_repositories"]
-        }
+        repositories = {repository["id"]: repository for repository in user_snapshot["repos"]}
         repositories[addition.repo_id] = {"id": addition.repo_id, "name": addition.repo_name}
-        user_snapshot["explicit_repositories"] = sorted(
+        user_snapshot["repos"] = sorted(
             repositories.values(),
             key=lambda repository: repository["name"],
         )
@@ -998,7 +1214,7 @@ def _copy_user_scoped_users(
     return {
         username: {
             "id": user_snapshot["id"],
-            "explicit_repositories": list(user_snapshot["explicit_repositories"]),
+            "repos": list(user_snapshot["repos"]),
         }
         for username, user_snapshot in snapshot["users"].items()
     }
@@ -1008,9 +1224,7 @@ def _copy_user_scoped_snapshot_with_users(
     snapshot: permission_snapshot.UserScopedSnapshot,
     users: dict[str, permission_snapshot.UserScopedUserSnapshot],
 ) -> permission_snapshot.UserScopedSnapshot:
-    total_grants = sum(
-        len(user_snapshot["explicit_repositories"]) for user_snapshot in users.values()
-    )
+    total_grants = sum(len(user_snapshot["repos"]) for user_snapshot in users.values())
     return {
         "schema_version": snapshot["schema_version"],
         "snapshot_kind": snapshot["snapshot_kind"],
@@ -1022,7 +1236,7 @@ def _copy_user_scoped_snapshot_with_users(
         "stats": {
             "total_users_scanned": len(users),
             "users_with_explicit_grants": sum(
-                1 for user_snapshot in users.values() if user_snapshot["explicit_repositories"]
+                1 for user_snapshot in users.values() if user_snapshot["repos"]
             ),
             "total_grants": total_grants,
         },
@@ -1037,7 +1251,7 @@ def _validate_additive_after(
     """Validate that every requested additive edge exists after apply."""
     missing: list[permissions_apply.PermissionAddition] = []
     repos_by_username = {
-        username: {repository["id"] for repository in user_snapshot["explicit_repositories"]}
+        username: {repository["id"] for repository in user_snapshot["repos"]}
         for username, user_snapshot in after_snapshot["users"].items()
     }
     for addition in additions:

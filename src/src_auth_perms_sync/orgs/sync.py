@@ -403,7 +403,10 @@ def _collect_target_organizations(
     progress_step = 1000
     if saml_group_users is None:
         log.info("Streaming users once and extracting SAML group memberships ...")
-        for completed, user in enumerate(shared_sourcegraph.list_users_streaming(client), start=1):
+        for completed, user in enumerate(
+            shared_sourcegraph.list_users_streaming(client, include_account_data=True),
+            start=1,
+        ):
             compact_user = saml_groups.compact_saml_group_user(
                 user,
                 providers_by_account_key,

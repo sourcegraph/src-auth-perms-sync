@@ -176,12 +176,9 @@ def _plan_user_scoped_restore(
         current_user = current_snapshot["users"].get(username)
         current_repos = {
             repository["id"]: repository["name"]
-            for repository in (current_user["explicit_repositories"] if current_user else [])
+            for repository in (current_user["repos"] if current_user else [])
         }
-        target_repos = {
-            repository["id"]: repository["name"]
-            for repository in target_user["explicit_repositories"]
-        }
+        target_repos = {repository["id"]: repository["name"] for repository in target_user["repos"]}
         for repo_id in sorted(
             set(target_repos) - set(current_repos),
             key=lambda value: target_repos[value],
@@ -554,7 +551,11 @@ def _capture_restore_snapshot_state(
     users: list[shared_types.User] = []
     current_snapshot = permission_snapshot.build_snapshot(
         client,
-        shared_sourcegraph.list_users_streaming(client, collect_into=users),
+        shared_sourcegraph.list_users_streaming(
+            client,
+            collect_into=users,
+            include_account_data=False,
+        ),
         parallelism,
         bind_id_mode,
         snapshot_path,
