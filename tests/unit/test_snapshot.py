@@ -95,7 +95,7 @@ class SnapshotTests(unittest.TestCase):
             {"id": f"user-{index}", "username": f"user-{index}"} for index in range(9)
         ]
         pending_counts: list[int] = []
-        real_wait = permission_snapshot.wait
+        real_wait = permission_snapshot.run_context.wait
 
         def recording_wait(futures: Iterable[Future[Any]], **kwargs: Any) -> Any:
             futures_list = list(futures)
@@ -121,7 +121,7 @@ class SnapshotTests(unittest.TestCase):
                 "list_repositories_by_ids",
                 return_value={},
             ),
-            patch.object(permission_snapshot, "wait", side_effect=recording_wait),
+            patch.object(permission_snapshot.run_context, "wait", side_effect=recording_wait),
         ):
             _, scanned_user_count = permission_snapshot.capture_explicit_grants(
                 cast(src.SourcegraphClient, object()),

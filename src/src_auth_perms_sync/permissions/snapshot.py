@@ -8,7 +8,7 @@ import json
 import logging
 import time
 from collections.abc import Callable, Iterable, Sequence
-from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, as_completed, wait
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, TextIO, TypeAlias, TypedDict, cast
@@ -266,108 +266,108 @@ def capture_explicit_grants(
 
     with src.span("capture_explicit_grants", **span_fields) as capture_event:
         capture_failures = 0
-        futures: dict[Any, list[SnapshotUserInput]] = {}
         scanned_user_count = 0
         max_pending_batches = max(1, parallelism * 2)
-
-        def _submit_batch(
-            executor: ThreadPoolExecutor,
-            batch_users: list[SnapshotUserInput],
-        ) -> None:
-            nonlocal scanned_user_count
-            if not batch_users:
-                return
-            submitted_batch = list(batch_users)
-            scanned_user_count += len(submitted_batch)
-            future = src.submit_with_log_context(executor, _fetch, submitted_batch)
-            futures[future] = submitted_batch
 
         # Progress reporting: every 10% when total is known (max 10
         # lines), every 1000 otherwise. Avoids drowning the operator on
         # tiny instances and gives steady feedback on large ones.
         progress_step = max(1, expected_user_count // 10) if expected_user_count else 1000
-        # Start the timer BEFORE submission. The submit-while-iterating
-        # loop blocks on ListUsers pagination, but workers process
-        # already-submitted tasks during those blocks — so by the time
-        # the submit loop finishes, many futures may already be done.
-        # Anchoring `progress_started` here means the first progress
-        # line shows real wall-clock work time, not zero.
+        # Start the timer BEFORE submission. Iterating `users` may block on
+        # ListUsers pagination, but workers process already-submitted tasks
+        # during those blocks — so progress reflects real wall-clock work.
         progress_started = time.perf_counter()
         completed = 0
         next_progress_report = progress_step
-        all_users_submitted = False
+        last_reported_completed = 0
 
-        def _record_completed_futures(done_futures: Iterable[Any]) -> None:
-            nonlocal capture_failures, completed, next_progress_report
-            for future in done_futures:
-                submitted_batch = futures.pop(future)
-                completed += len(submitted_batch)
-                try:
-                    repository_ids_by_username, failures = future.result()
-                    capture_failures += failures
-                    for username, repository_ids in repository_ids_by_username.items():
-                        for repository_id in repository_ids:
-                            usernames_by_repository_id.setdefault(
-                                repository_id,
-                                [],
-                            ).append(username)
-                except Exception as exception:
-                    # Don't blow up the whole capture; warn so the operator
-                    # can see the users whose grants were treated as empty.
-                    capture_failures += len(submitted_batch)
-                    log.warning(
-                        "Failed to fetch explicit grants for %d user(s): %s",
-                        len(submitted_batch),
-                        exception,
-                    )
-
-                if completed >= next_progress_report or (
-                    all_users_submitted and completed == scanned_user_count
-                ):
-                    elapsed = time.perf_counter() - progress_started
-                    rate = completed / elapsed if elapsed > 0 else 0.0
-                    if expected_user_count:
-                        remaining = max(expected_user_count - completed, 0)
-                        eta_seconds = remaining / rate if rate > 0 else 0.0
-                        log.info(
-                            "Captured explicit permissions for %d / %d users (%.0f%%) "
-                            "in %.0fs (%.0f users/sec, ETA %.0fs).",
-                            completed,
-                            expected_user_count,
-                            100.0 * completed / expected_user_count,
-                            elapsed,
-                            rate,
-                            eta_seconds,
-                        )
-                    else:
-                        log.info(
-                            "Captured explicit permissions for %d users in %.0fs (%.0f users/sec).",
-                            completed,
-                            elapsed,
-                            rate,
-                        )
-                    while next_progress_report <= completed:
-                        next_progress_report += progress_step
-
-        # Submit-while-iterating. Iterating `users` may block on each
-        # ListUsers page when a streaming iterator is passed; during those
-        # blocks, workers continue processing already-submitted tasks.
-        with run_context.thread_pool(parallelism, worker_pool) as executor:
+        def _user_batches() -> Iterable[list[SnapshotUserInput]]:
             batch_users: list[SnapshotUserInput] = []
             for user in users:
                 batch_users.append(user)
                 if len(batch_users) >= explicit_permissions_batch_size:
-                    _submit_batch(executor, batch_users)
+                    yield list(batch_users)
                     batch_users = []
-                    if len(futures) >= max_pending_batches:
-                        done_futures, _ = wait(futures, return_when=FIRST_COMPLETED)
-                        _record_completed_futures(done_futures)
-            _submit_batch(executor, batch_users)
-            all_users_submitted = True
+            if batch_users:
+                yield list(batch_users)
 
-            while futures:
-                done_futures, _ = wait(futures, return_when=FIRST_COMPLETED)
-                _record_completed_futures(done_futures)
+        def _log_progress(*, force: bool = False) -> None:
+            nonlocal last_reported_completed, next_progress_report
+            if completed == 0 or (not force and completed < next_progress_report):
+                return
+            if completed == last_reported_completed:
+                return
+            elapsed = time.perf_counter() - progress_started
+            rate = completed / elapsed if elapsed > 0 else 0.0
+            if expected_user_count:
+                remaining = max(expected_user_count - completed, 0)
+                eta_seconds = remaining / rate if rate > 0 else 0.0
+                log.info(
+                    "Captured explicit permissions for %d / %d users (%.0f%%) "
+                    "in %.0fs (%.0f users/sec, ETA %.0fs).",
+                    completed,
+                    expected_user_count,
+                    100.0 * completed / expected_user_count,
+                    elapsed,
+                    rate,
+                    eta_seconds,
+                )
+            else:
+                log.info(
+                    "Captured explicit permissions for %d users in %.0fs (%.0f users/sec).",
+                    completed,
+                    elapsed,
+                    rate,
+                )
+            last_reported_completed = completed
+            while next_progress_report <= completed:
+                next_progress_report += progress_step
+
+        def _record_completed_batch(
+            result: run_context.ParallelResult[
+                list[SnapshotUserInput],
+                tuple[dict[str, list[str]], int],
+            ],
+        ) -> None:
+            nonlocal capture_failures, completed, scanned_user_count
+            submitted_batch = result.item
+            completed += len(submitted_batch)
+            scanned_user_count += len(submitted_batch)
+            if result.exception is not None:
+                # Don't blow up the whole capture; warn so the operator can
+                # see the users whose grants were treated as empty.
+                capture_failures += len(submitted_batch)
+                log.warning(
+                    "Failed to fetch explicit grants for %d user(s): %s",
+                    len(submitted_batch),
+                    result.exception,
+                )
+                _log_progress()
+                return
+            if result.value is None:
+                raise RuntimeError("explicit-grant batch fetch returned no result")
+            repository_ids_by_username, failures = result.value
+            capture_failures += failures
+            for username, repository_ids in repository_ids_by_username.items():
+                for repository_id in repository_ids:
+                    usernames_by_repository_id.setdefault(
+                        repository_id,
+                        [],
+                    ).append(username)
+            _log_progress()
+
+        # Submit-while-iterating. Iterating `users` may block on each
+        # ListUsers page when a streaming iterator is passed; during those
+        # blocks, workers continue processing already-submitted tasks.
+        run_context.parallel_process(
+            _fetch,
+            _user_batches(),
+            parallelism=parallelism,
+            worker_pool=worker_pool,
+            handle_result=_record_completed_batch,
+            max_pending=max_pending_batches,
+        )
+        _log_progress(force=True)
         capture_event["scanned_user_count"] = scanned_user_count
         if capture_failures:
             capture_event["user_permission_lookup_failures"] = capture_failures
@@ -499,28 +499,30 @@ def capture_user_scoped_explicit_grants(
             fetch_event["repo_count"] = len(repos)
             return user, repos
 
+    def _fetch_or_empty(
+        user: SnapshotUser,
+    ) -> tuple[SnapshotUser, list[permission_types.Repository]]:
+        try:
+            return _fetch(user)
+        except Exception as exception:
+            log.warning(
+                "Failed to fetch scoped explicit grants for user=%s: %s",
+                user["username"],
+                exception,
+            )
+            return user, []
+
     with src.span("capture_user_scoped_explicit_grants") as capture_event:
-        futures: dict[Any, SnapshotUser] = {}
-        with run_context.thread_pool(parallelism, worker_pool) as executor:
-            for user in users:
-                futures[src.submit_with_log_context(executor, _fetch, user)] = user
-            for future in as_completed(futures):
-                user = futures[future]
-                fetched_user: SnapshotUser
-                repos: list[permission_types.Repository]
-                try:
-                    fetched_user, repos = future.result()
-                except Exception as exception:
-                    log.warning(
-                        "Failed to fetch scoped explicit grants for user=%s: %s",
-                        user["username"],
-                        exception,
-                    )
-                    fetched_user, repos = user, []
-                scoped_users[fetched_user["username"]] = {
-                    "id": fetched_user["id"],
-                    "explicit_repositories": sorted(repos, key=lambda repo: repo["name"]),
-                }
+        for fetched_user, repos in run_context.parallel_map(
+            _fetch_or_empty,
+            users,
+            parallelism=parallelism,
+            worker_pool=worker_pool,
+        ):
+            scoped_users[fetched_user["username"]] = {
+                "id": fetched_user["id"],
+                "explicit_repositories": sorted(repos, key=lambda repo: repo["name"]),
+            }
         capture_event["scanned_user_count"] = len(scoped_users)
         capture_event["total_grants"] = sum(
             len(user_snapshot["explicit_repositories"]) for user_snapshot in scoped_users.values()

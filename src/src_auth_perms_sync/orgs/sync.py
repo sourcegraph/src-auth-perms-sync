@@ -8,7 +8,7 @@ import logging
 import re
 import time
 from collections.abc import Iterable
-from concurrent.futures import CancelledError, ThreadPoolExecutor, as_completed
+from concurrent.futures import CancelledError, ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
@@ -550,41 +550,44 @@ def _load_current_organization_states(
         lookup_batch_count=len(name_batches),
         member_page_size=ORGANIZATION_MEMBER_PAGE_SIZE,
     ) as load_event:
-        with run_context.thread_pool(parallelism, worker_pool) as executor:
-            futures = {
-                src.submit_with_log_context(
-                    executor, _fetch_organization_batch, client, batch
-                ): batch
-                for batch in name_batches
-            }
-            for future in as_completed(futures):
-                result = future.result()
-                batch_current_user = result["current_user"]
-                if current_user is None:
-                    current_user = batch_current_user
-                elif current_user["id"] != batch_current_user["id"]:
-                    raise RuntimeError(
-                        "currentUser changed between organization lookup batches "
-                        f"({current_user['username']} vs {batch_current_user['username']})"
-                    )
-                states.update(result["states"])
 
-            existing_states = [state for state in states.values() if state.id is not None]
-            load_event["existing_organizations_needing_member_pages"] = len(existing_states)
-            if existing_states:
-                member_futures = {
-                    src.submit_with_log_context(
-                        executor,
-                        _fetch_all_members,
-                        client,
-                        state,
-                    ): state
-                    for state in existing_states
-                }
-                for future in as_completed(member_futures):
-                    state = member_futures[future]
-                    for member in future.result():
-                        state.members_by_id[member["id"]] = member
+        def fetch_organization_batch(
+            batch: list[str],
+        ) -> organization_types.OrganizationBatchLookup:
+            return _fetch_organization_batch(client, batch)
+
+        for result in run_context.parallel_map(
+            fetch_organization_batch,
+            name_batches,
+            parallelism=parallelism,
+            worker_pool=worker_pool,
+        ):
+            batch_current_user = result["current_user"]
+            if current_user is None:
+                current_user = batch_current_user
+            elif current_user["id"] != batch_current_user["id"]:
+                raise RuntimeError(
+                    "currentUser changed between organization lookup batches "
+                    f"({current_user['username']} vs {batch_current_user['username']})"
+                )
+            states.update(result["states"])
+
+        existing_states = [state for state in states.values() if state.id is not None]
+        load_event["existing_organizations_needing_member_pages"] = len(existing_states)
+
+        def fetch_members(
+            state: organization_types.OrganizationState,
+        ) -> tuple[organization_types.OrganizationState, list[organization_types.OrgMember]]:
+            return state, _fetch_all_members(client, state)
+
+        for state, members in run_context.parallel_map(
+            fetch_members,
+            existing_states,
+            parallelism=parallelism,
+            worker_pool=worker_pool,
+        ):
+            for member in members:
+                state.members_by_id[member["id"]] = member
         load_event["existing_organizations"] = sum(1 for state in states.values() if state.id)
         load_event["total_current_members"] = sum(
             len(state.members_by_id) for state in states.values()
@@ -774,36 +777,41 @@ def _apply_create_organizations(
         succeeded = 0
         failed = 0
         canceled = 0
-        with run_context.thread_pool(parallelism, worker_pool) as executor:
-            futures = {
-                src.submit_with_log_context(
-                    executor,
-                    _create_organization,
-                    client,
-                    organization_name,
-                    current_user,
-                ): organization_name
-                for organization_name in organization_names
-            }
-            for future in as_completed(futures):
-                organization_name = futures[future]
-                try:
-                    state = future.result()
-                    current_states[organization_name] = state
-                    succeeded += 1
-                    breaker.record(success=True)
-                    log.info("  OK create org %s.", organization_name)
-                except CancelledError:
-                    canceled += 1
-                    continue
-                except Exception as exception:
-                    failed += 1
-                    breaker.record(success=False)
-                    log.error("  FAIL create org %s: %s", organization_name, exception)
-                if breaker.is_open():
-                    for pending_future in futures:
-                        if not pending_future.done():
-                            pending_future.cancel()
+
+        def create_organization(organization_name: str) -> organization_types.OrganizationState:
+            return _create_organization(client, organization_name, current_user)
+
+        def record_result(
+            result: run_context.ParallelResult[str, organization_types.OrganizationState],
+        ) -> None:
+            nonlocal succeeded, failed, canceled
+            organization_name = result.item
+            if result.exception is None:
+                state = result.value
+                if state is None:
+                    raise RuntimeError(f"create org {organization_name} returned no state")
+                current_states[organization_name] = state
+                succeeded += 1
+                breaker.record(success=True)
+                log.info("  OK create org %s.", organization_name)
+                return
+            if isinstance(result.exception, CancelledError):
+                canceled += 1
+                return
+            failed += 1
+            breaker.record(success=False)
+            log.error("  FAIL create org %s: %s", organization_name, result.exception)
+
+        summary = run_context.parallel_process(
+            create_organization,
+            organization_names,
+            parallelism=parallelism,
+            worker_pool=worker_pool,
+            handle_result=record_result,
+            should_stop=breaker.is_open,
+        )
+        if breaker.is_open():
+            canceled += summary.unsubmitted_count
         batch_event["succeeded"] = succeeded
         batch_event["failed"] = failed
         batch_event["canceled"] = canceled
@@ -878,49 +886,58 @@ def _apply_user_changes(
         succeeded = 0
         failed = 0
         canceled = 0
-        with run_context.thread_pool(parallelism, worker_pool) as executor:
-            futures = {
-                src.submit_with_log_context(
-                    executor,
-                    _apply_user_change,
-                    client,
-                    change,
-                    current_states[change.organization_name],
+
+        def apply_change(change: organization_types.OrganizationUserChange) -> None:
+            _apply_user_change(
+                client,
+                change,
+                current_states[change.organization_name],
+                change_kind,
+            )
+
+        def record_result(
+            result: run_context.ParallelResult[
+                organization_types.OrganizationUserChange,
+                None,
+            ],
+        ) -> None:
+            nonlocal succeeded, failed, canceled
+            change = result.item
+            if result.exception is None:
+                succeeded += 1
+                breaker.record(success=True)
+                log.info(
+                    "  OK %s %s %s org %s.",
                     change_kind,
-                ): change
-                for change in changes
-            }
-            for future in as_completed(futures):
-                change = futures[future]
-                try:
-                    future.result()
-                    succeeded += 1
-                    breaker.record(success=True)
-                    log.info(
-                        "  OK %s %s %s org %s.",
-                        change_kind,
-                        change.username,
-                        "to" if change_kind == "add" else "from",
-                        change.organization_name,
-                    )
-                except CancelledError:
-                    canceled += 1
-                    continue
-                except Exception as exception:
-                    failed += 1
-                    breaker.record(success=False)
-                    log.error(
-                        "  FAIL %s %s %s org %s: %s",
-                        change_kind,
-                        change.username,
-                        "to" if change_kind == "add" else "from",
-                        change.organization_name,
-                        exception,
-                    )
-                if breaker.is_open():
-                    for pending_future in futures:
-                        if not pending_future.done():
-                            pending_future.cancel()
+                    change.username,
+                    "to" if change_kind == "add" else "from",
+                    change.organization_name,
+                )
+                return
+            if isinstance(result.exception, CancelledError):
+                canceled += 1
+                return
+            failed += 1
+            breaker.record(success=False)
+            log.error(
+                "  FAIL %s %s %s org %s: %s",
+                change_kind,
+                change.username,
+                "to" if change_kind == "add" else "from",
+                change.organization_name,
+                result.exception,
+            )
+
+        summary = run_context.parallel_process(
+            apply_change,
+            changes,
+            parallelism=parallelism,
+            worker_pool=worker_pool,
+            handle_result=record_result,
+            should_stop=breaker.is_open,
+        )
+        if breaker.is_open():
+            canceled += summary.unsubmitted_count
         batch_event["succeeded"] = succeeded
         batch_event["failed"] = failed
         batch_event["canceled"] = canceled
