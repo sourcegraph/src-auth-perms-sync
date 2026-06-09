@@ -1262,7 +1262,16 @@ class CommandPermutationRunner:
 
 def main() -> None:
     config = load_end_to_end_config()
-    with src.logging(config, command="test_end_to_end", git_cwd=Path.cwd()):
+    logging_settings = src.logging_settings_from_config(
+        config,
+        logs_dir=Path("logs-test-end-to-end"),
+    )
+    with src.logging(
+        config,
+        command="test_end_to_end",
+        git_cwd=Path.cwd(),
+        logging_config=logging_settings,
+    ):
         run_end_to_end(config)
 
 

@@ -15,6 +15,7 @@ __pycache__
 *.yaml
 build/
 dist/
+logs*/
 logs/
 src-auth-perms-sync-runs/
 wheels/
