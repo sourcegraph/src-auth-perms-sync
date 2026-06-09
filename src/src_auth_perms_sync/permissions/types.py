@@ -11,6 +11,7 @@ SetCommandMode: TypeAlias = Literal[
     "full",
     "users",
     "users_without_explicit_perms",
+    "created_after",
 ]
 
 

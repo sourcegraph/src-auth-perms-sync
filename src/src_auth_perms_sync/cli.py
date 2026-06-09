@@ -80,27 +80,32 @@ LogCommandName: TypeAlias = Literal[
     "set_full",
     "set_users",
     "set_users_without_explicit_perms",
+    "set_created_after",
     "restore",
     "sync_saml_orgs",
     "set_full_sync_saml_orgs",
     "set_users_sync_saml_orgs",
     "set_users_without_explicit_perms_sync_saml_orgs",
+    "set_created_after_sync_saml_orgs",
 ]
 
 SET_COMMAND_LOG_NAMES: dict[permission_types.SetCommandMode, LogCommandName] = {
     "full": "set_full",
     "users": "set_users",
     "users_without_explicit_perms": "set_users_without_explicit_perms",
+    "created_after": "set_created_after",
 }
 SET_COMMAND_ARTIFACT_NAMES: dict[permission_types.SetCommandMode, str] = {
     "full": "set-{run_mode}",
     "users": "set-add-users-{run_mode}",
     "users_without_explicit_perms": "set-add-users-without-explicit-perms-{run_mode}",
+    "created_after": "set-add-users-created-after-{run_mode}",
 }
 SYNC_SET_COMMAND_LOG_NAMES: dict[permission_types.SetCommandMode, LogCommandName] = {
     "full": "set_full_sync_saml_orgs",
     "users": "set_users_sync_saml_orgs",
     "users_without_explicit_perms": "set_users_without_explicit_perms_sync_saml_orgs",
+    "created_after": "set_created_after_sync_saml_orgs",
 }
 SYNC_SET_COMMAND_ARTIFACT_NAMES: dict[permission_types.SetCommandMode, str] = {
     "full": "set-sync-saml-orgs-{run_mode}",
@@ -108,6 +113,7 @@ SYNC_SET_COMMAND_ARTIFACT_NAMES: dict[permission_types.SetCommandMode, str] = {
     "users_without_explicit_perms": (
         "set-add-users-without-explicit-perms-sync-saml-orgs-{run_mode}"
     ),
+    "created_after": "set-add-users-created-after-sync-saml-orgs-{run_mode}",
 }
 
 
@@ -179,7 +185,10 @@ class Config(src.SourcegraphClientConfig, src.LoggingConfig, src.OpenTelemetryCo
         env_var="SRC_AUTH_PERMS_SYNC_FULL",
         cli_flag="--full",
         cli_action="store_true",
-        help="With the set command: run the full overwrite reconciliation mode (default)",
+        help=(
+            "With the set command: run full overwrite reconciliation "
+            "(default only when no user filter is set)"
+        ),
         help_group="Permission sync",
     )
     users: tuple[str, ...] = src.config_field(
@@ -367,6 +376,12 @@ def validate_set_mode_selection(command_name: CommandName, config: Config) -> No
     if command_name != "set":
         return
 
+    if config.full and config.created_after is not None:
+        config_error(
+            "--full cannot be combined with --created-after because full mode "
+            "overwrites mapped repos; omit --full to add grants for new users"
+        )
+
     if sum((config.full, bool(config.users), config.users_without_explicit_perms)) > 1:
         config_error(
             "with set, choose at most one of --full, --users, or --users-without-explicit-perms"
@@ -386,9 +401,13 @@ def set_command_options(config: Config) -> permission_types.SetCommandOptions:
             mode="users_without_explicit_perms",
             user_created_after=config.created_after,
         )
+    if config.created_after is not None:
+        return permission_types.SetCommandOptions(
+            mode="created_after",
+            user_created_after=config.created_after,
+        )
     return permission_types.SetCommandOptions(
         mode="full",
-        user_created_after=config.created_after,
     )
 
 

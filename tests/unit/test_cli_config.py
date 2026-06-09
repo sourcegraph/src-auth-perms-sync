@@ -162,11 +162,11 @@ class CliConfigTests(unittest.TestCase):
         )
         self.assertEqual("users_without_explicit_perms", users_without_permissions.mode)
         self.assertEqual("2026-01-01", users_without_permissions.user_created_after)
-        filtered_full = cli.set_command_options(
+        created_after = cli.set_command_options(
             make_config(maps_path=Path("maps.yaml"), created_after="2026-01-01")
         )
-        self.assertEqual("full", filtered_full.mode)
-        self.assertEqual("2026-01-01", filtered_full.user_created_after)
+        self.assertEqual("created_after", created_after.mode)
+        self.assertEqual("2026-01-01", created_after.user_created_after)
 
     def test_resolve_command_includes_set_mode_names(self) -> None:
         users_command = cli.resolve_command(
@@ -174,12 +174,22 @@ class CliConfigTests(unittest.TestCase):
             make_config(maps_path=Path("maps.yaml"), users=("alice",), apply=True),
         )
         full_command = cli.resolve_command("set", make_config(maps_path=Path("maps.yaml")))
+        created_after_command = cli.resolve_command(
+            "set",
+            make_config(maps_path=Path("maps.yaml"), created_after="2026-01-01"),
+        )
 
         self.assertEqual("set_users", users_command.log_name)
         self.assertEqual("set-add-users-apply", users_command.artifact_name)
         self.assertEqual("users", users_command.set_mode)
         self.assertEqual("set_full", full_command.log_name)
         self.assertEqual("set-dry-run", full_command.artifact_name)
+        self.assertEqual("set_created_after", created_after_command.log_name)
+        self.assertEqual(
+            "set-add-users-created-after-dry-run",
+            created_after_command.artifact_name,
+        )
+        self.assertEqual("created_after", created_after_command.set_mode)
 
     def test_resolve_command_includes_combined_set_sync_names(self) -> None:
         set_command = cli.resolve_command(
@@ -374,6 +384,13 @@ class CliConfigTests(unittest.TestCase):
             "set",
             make_config(maps_path=Path("maps.yaml"), full=True, users=("alice",)),
             "choose at most one",
+        )
+
+    def test_validate_config_rejects_full_created_after(self) -> None:
+        self.assert_config_error(
+            "set",
+            make_config(maps_path=Path("maps.yaml"), full=True, created_after="2026-01-01"),
+            "--full cannot be combined with --created-after",
         )
 
     def test_require_set_input_file_reports_missing_maps_file(self) -> None:

@@ -1,15 +1,5 @@
 # TODO
 
-## High priority: Sync modes
-
-### Fast
-
-- Query the instance for all new repos, which do not yet have explicit perms
-
-### Full: Overwrite all perms
-
-- Separate full sync mode with an arg
-
 ## High priority: Remote trigger on demand
 
 - Sourcegraph webhook for new user coming in v7.4.0
@@ -86,6 +76,9 @@ If/when we revisit:
    actually consume both buckets — the previous code did neither.
 3. Add a CLI flag (e.g. `--cross-check-capture`) gated behind a clear
    "this doubles capture cost" warning.
+
+Also, create a fast mode to query the instance for all new repos,
+which do not yet have explicit perms
 
 ## Low priority: Grouped full-set plan if memory is still too high
 

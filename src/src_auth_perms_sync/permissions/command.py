@@ -528,6 +528,19 @@ def cmd_set(
             do_backup,
             worker_pool,
         )
+    if options.mode == "created_after":
+        assert options.user_created_after is not None
+        return cmd_set_additive_created_after(
+            client,
+            input_path,
+            options.user_created_after,
+            dry_run,
+            parallelism,
+            bind_id_mode,
+            saml_groups_attribute_name_by_config_id,
+            do_backup,
+            worker_pool,
+        )
     return run_context.CommandData()
 
 
@@ -806,6 +819,144 @@ def cmd_set_additive_users_without_explicit_perms(
             bind_id_mode=bind_id_mode,
             do_backup=do_backup,
             command_name="set-add-users-without-explicit-perms",
+            worker_pool=worker_pool,
+        )
+        return run_context.CommandData(auth_providers=context.providers)
+
+
+def cmd_set_additive_created_after(
+    client: src.SourcegraphClient,
+    input_path: Path,
+    user_created_after: str,
+    dry_run: bool,
+    parallelism: int,
+    bind_id_mode: str,
+    saml_groups_attribute_name_by_config_id: dict[str, str],
+    do_backup: bool,
+    worker_pool: ThreadPoolExecutor | None = None,
+) -> run_context.CommandData:
+    """Add missing mapped permissions for users created on or after a date."""
+    created_after_filter = sourcegraph_datetime_filter(
+        parse_cli_date(user_created_after, "--created-after")
+    )
+    with src.span(
+        "cmd_set_additive_created_after",
+        input_path=str(input_path),
+        user_created_after=user_created_after,
+        dry_run=dry_run,
+        parallelism=parallelism,
+        do_backup=do_backup,
+    ):
+        mapping_rules = load_mapping_rules(input_path)
+        if not mapping_rules:
+            log.warning("No maps defined in %s — nothing to do.", input_path)
+            return run_context.CommandData()
+        context = load_mapping_context_discovery(
+            client,
+            mapping_rules,
+            saml_groups_attribute_name_by_config_id,
+        )
+        include_user_emails = permissions_mapping.mapping_rules_need_user_emails(mapping_rules)
+        include_user_account_data = permissions_mapping.mapping_rules_need_saml_account_data(
+            mapping_rules
+        )
+        candidates = permissions_sourcegraph.list_site_user_candidates(
+            client,
+            created_after_filter,
+            parallelism=parallelism,
+            worker_pool=worker_pool,
+        )
+        log.info(
+            "Selected %d active user candidate(s) created on or after %s.",
+            len(candidates),
+            user_created_after,
+        )
+        users = _hydrate_site_user_candidates(
+            client,
+            candidates,
+            include_emails=include_user_emails,
+            include_account_data=include_user_account_data,
+            parallelism=parallelism,
+            worker_pool=worker_pool,
+        )
+        if not users:
+            _run_additive_apply(
+                client,
+                input_path,
+                users,
+                [],
+                dry_run=dry_run,
+                parallelism=parallelism,
+                bind_id_mode=bind_id_mode,
+                do_backup=do_backup,
+                command_name="set-add-users-created-after",
+                worker_pool=worker_pool,
+            )
+            return run_context.CommandData(auth_providers=context.providers)
+
+        matching_rules = _mapping_rules_matching_selected_users(context, users)
+        log.info(
+            "%d / %d mapping rule(s) match the selected user(s).",
+            len(matching_rules),
+            len(context.mapping_rules),
+        )
+        if not matching_rules:
+            _run_additive_apply(
+                client,
+                input_path,
+                users,
+                [],
+                dry_run=dry_run,
+                parallelism=parallelism,
+                bind_id_mode=bind_id_mode,
+                do_backup=do_backup,
+                command_name="set-add-users-created-after",
+                worker_pool=worker_pool,
+            )
+            return run_context.CommandData(auth_providers=context.providers)
+
+        service_ids = _service_ids_required_by_mapping_rules(context, matching_rules)
+        log.info(
+            "Selected mapping rule(s) require repo scans for %d / %d code host connection(s).",
+            len(service_ids),
+            len(context.services_by_id),
+        )
+        context = load_repos_for_mapping_context(
+            client,
+            _mapping_context_with_rules(context, matching_rules),
+            service_ids,
+        )
+        resolved_mappings = resolve_additive_mappings(context)
+        additions: list[permissions_apply.PermissionAddition] = []
+        existing_repos_by_user_id = (
+            _load_selected_user_explicit_repos(client, users) if do_backup else None
+        )
+        for user in users:
+            existing_repo_ids = None
+            if existing_repos_by_user_id is not None:
+                existing_repo_ids = {
+                    repository["id"] for repository in existing_repos_by_user_id[user["id"]]
+                }
+            additions.extend(
+                _plan_additions_for_user(
+                    client,
+                    context,
+                    resolved_mappings,
+                    user,
+                    existing_repo_ids=existing_repo_ids,
+                )
+            )
+        _run_additive_apply(
+            client,
+            input_path,
+            users,
+            additions,
+            dry_run=dry_run,
+            parallelism=parallelism,
+            bind_id_mode=bind_id_mode,
+            do_backup=do_backup,
+            command_name="set-add-users-created-after",
+            existing_repos_by_user_id=existing_repos_by_user_id,
             worker_pool=worker_pool,
         )
         return run_context.CommandData(auth_providers=context.providers)
