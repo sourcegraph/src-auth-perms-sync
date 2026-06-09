@@ -200,12 +200,12 @@ def capture_explicit_grants(
         batch_users: list[SnapshotUserInput],
     ) -> tuple[dict[str, list[str]], int]:
         # High-frequency (one per user-batch):
-        #   - log the whole event (start + end) at DEBUG; failures still
-        #     get bumped to ERROR by the event() helper
-        #   - drop the per-event `status="ok"` / `error_type=null` noise on
+        #   - log the whole span (start + end) at DEBUG; failures still
+        #     get bumped to ERROR by the span() helper
+        #   - drop the per-span `status="ok"` / `error_type=null` noise on
         #     successes (failures still carry both fields)
         #   - omit user IDs since usernames are far more readable
-        with src.event(
+        with src.span(
             "user_explicit_repos_batch_fetch",
             level="DEBUG",
             omit_success_status=True,
@@ -259,7 +259,7 @@ def capture_explicit_grants(
                 repository_ids_by_user_id[user["id"]] = []
         return repository_ids_by_user_id, failures
 
-    with src.event(
+    with src.span(
         "capture_explicit_grants",
         total_users=total_users,
         explicit_permissions_batch_size=explicit_permissions_batch_size,
@@ -375,7 +375,7 @@ def capture_explicit_grants(
     for usernames in usernames_by_repository_id.values():
         usernames.sort()
 
-    with src.event(
+    with src.span(
         "hydrate_explicit_repository_names",
         repository_count=len(usernames_by_repository_id),
     ) as hydrate_event:
@@ -430,7 +430,7 @@ def build_snapshot(
     `total_users`, when known, drives percentage + ETA in the per-batch
     progress log lines emitted by `capture_explicit_grants`.
     """
-    with src.event("build_snapshot", bind_id_mode=bind_id_mode) as build_event:
+    with src.span("build_snapshot", bind_id_mode=bind_id_mode) as build_event:
         repos, user_count = capture_explicit_grants(
             client,
             users,
@@ -485,7 +485,7 @@ def capture_user_scoped_explicit_grants(
     scoped_users: dict[str, UserScopedUserSnapshot] = {}
 
     def _fetch(user: SnapshotUser) -> tuple[SnapshotUser, list[permission_types.Repository]]:
-        with src.event(
+        with src.span(
             "user_scoped_explicit_repos_fetch",
             level="DEBUG",
             omit_success_status=True,
@@ -495,7 +495,7 @@ def capture_user_scoped_explicit_grants(
             fetch_event["repo_count"] = len(repos)
             return user, repos
 
-    with src.event("capture_user_scoped_explicit_grants") as capture_event:
+    with src.span("capture_user_scoped_explicit_grants") as capture_event:
         futures: dict[Any, SnapshotUser] = {}
         with run_context.thread_pool(parallelism, worker_pool) as executor:
             for user in users:
@@ -533,7 +533,7 @@ def build_user_scoped_snapshot(
     worker_pool: ThreadPoolExecutor | None = None,
 ) -> UserScopedSnapshot:
     """Capture a reversible snapshot for only the supplied users."""
-    with src.event("build_user_scoped_snapshot", bind_id_mode=bind_id_mode) as build_event:
+    with src.span("build_user_scoped_snapshot", bind_id_mode=bind_id_mode) as build_event:
         scoped_users = capture_user_scoped_explicit_grants(
             client,
             users,
@@ -711,7 +711,7 @@ def write_snapshot_with_repos(
     repos: Iterable[tuple[str, RepoSnapshot]],
 ) -> None:
     """Persist a full snapshot from an iterable of repo entries."""
-    with src.event(
+    with src.span(
         "disk_io",
         level="DEBUG",
         op="write",
@@ -736,7 +736,7 @@ def write_snapshot(path: Path, snapshot: Snapshot) -> None:
 
 def write_user_scoped_snapshot(path: Path, snapshot: UserScopedSnapshot) -> None:
     """Persist a user-scoped snapshot with readable repository IDs."""
-    with src.event(
+    with src.span(
         "disk_io",
         level="DEBUG",
         op="write",
@@ -785,7 +785,7 @@ def write_user_scoped_snapshot(path: Path, snapshot: UserScopedSnapshot) -> None
 
 
 def _read_snapshot_raw(path: Path, file_kind: str) -> dict[str, Any]:
-    with src.event(
+    with src.span(
         "disk_io",
         level="DEBUG",
         op="read",
@@ -1167,7 +1167,7 @@ def write_snapshot_diff_from_snapshot_parts(
 ) -> None:
     """Persist a full-snapshot diff without materializing every repo diff."""
     plan = _plan_snapshot_diff(before, after, repo_ids, after_repo_for_id)
-    with src.event(
+    with src.span(
         "disk_io",
         level="DEBUG",
         op="write",
@@ -1197,7 +1197,7 @@ def write_snapshot_diff_from_snapshots(path: Path, before: Snapshot, after: Snap
 
 def write_snapshot_diff(path: Path, diff: SnapshotDiff) -> None:
     """Persist a compact full-snapshot diff as pretty-printed JSON."""
-    with src.event(
+    with src.span(
         "disk_io",
         level="DEBUG",
         op="write",
@@ -1270,7 +1270,7 @@ def build_user_scoped_snapshot_diff(
 
 def write_user_scoped_snapshot_diff(path: Path, diff: UserScopedSnapshotDiff) -> None:
     """Persist a compact user-scoped snapshot diff as pretty-printed JSON."""
-    with src.event(
+    with src.span(
         "disk_io",
         level="DEBUG",
         op="write",

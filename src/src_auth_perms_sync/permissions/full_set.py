@@ -418,7 +418,7 @@ def _filter_full_set_plans(
         return _FullSetPlanFilter(overwrites=overwrites, skipped_repo_ids=set())
 
     skipped_repo_ids: set[str] = set()
-    with src.event(
+    with src.span(
         "short_circuit_filter",
         repos_planned=len(overwrites),
     ) as short_circuit_event:
@@ -827,7 +827,7 @@ def cmd_set_full(
     worker_pool: ThreadPoolExecutor | None = None,
 ) -> run_context.CommandData:
     """Overwrite each mapped repo with the union of users from all rules."""
-    with src.event(
+    with src.span(
         "cmd_set",
         input_path=str(input_path),
         user_created_after=user_created_after,

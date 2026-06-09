@@ -143,7 +143,7 @@ def set_repo_permissions(
     same retry plumbing. Application-level GraphQL errors (auth, validation,
     schema) are NOT retried — they propagate on the first attempt.
     """
-    with src.event(
+    with src.span(
         "set_repo_perms",
         repo_id=repo_id,
         user_count=len(user_perms),
@@ -174,7 +174,7 @@ def _mutate_repo_permission_for_user(
     event_name: str,
 ) -> None:
     """Apply one additive repo-permission edge mutation."""
-    with src.event(
+    with src.span(
         event_name,
         repo_id=change.repo_id,
         username=change.username,
@@ -211,7 +211,7 @@ def _apply_permission_changes(
     action: str,
 ) -> shared_types.MutationCounts:
     """Dispatch additive edge mutations across a thread pool."""
-    with src.event(
+    with src.span(
         f"apply_{action}_payloads",
         payload_count=len(changes),
         parallelism=parallelism,
@@ -337,7 +337,7 @@ def _apply_repo_overwrite_plans(
     """Dispatch per-repo overwrite mutations with bounded in-flight work."""
     max_pending_futures = max(1, parallelism * 2)
     payload_grant_count = sum(len(overwrite.usernames) for overwrite in overwrites)
-    with src.event(
+    with src.span(
         "apply_username_overwrites",
         payload_count=len(overwrites),
         parallelism=parallelism,

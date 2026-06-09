@@ -215,7 +215,7 @@ def _dump_readonly_discovery_yaml(
     section_name: str,
     entries: list[dict[str, Any]],
 ) -> None:
-    with src.event(
+    with src.span(
         "disk_io",
         level="DEBUG",
         op="write",
@@ -250,7 +250,7 @@ def create_maps_yaml_if_missing(path: Path) -> bool:
         "\n"
         "- name: Map 1\n"
     )
-    with src.event(
+    with src.span(
         "disk_io",
         level="DEBUG",
         op="write",
@@ -270,7 +270,7 @@ def create_maps_yaml_if_missing(path: Path) -> bool:
 
 
 def load_maps_yaml(path: Path) -> permission_types.ConfigFile:
-    with src.event(
+    with src.span(
         "disk_io",
         level="DEBUG",
         op="read",

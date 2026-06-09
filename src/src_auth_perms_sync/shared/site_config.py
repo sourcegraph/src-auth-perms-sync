@@ -172,7 +172,7 @@ def _query_site_configuration(
     # error_reason) instead of just bubbling up as an un-annotated
     # `error_type=SystemExit` on the run end event. Each underlying GraphQL/HTTP
     # attempt still emits shared-library `graphql_query` / `http_request` events.
-    with src.event(event_name) as site_config_event:
+    with src.span(event_name) as site_config_event:
         try:
             data = client.graphql(queries.QUERY_VALIDATE_PERMISSIONS_CONFIG)
         except src.GraphQLError as exception:

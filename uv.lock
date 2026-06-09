@@ -560,8 +560,8 @@ dev = [
 
 [[package]]
 name = "src-py-lib"
-version = "0.1.10.dev2+g37c970897"
-source = { git = "https://github.com/sourcegraph/src-py-lib.git?rev=amp%2Fotel-standard-instrumentation#37c970897e832ee71c55b019a0a9fb296d305f94" }
+version = "0.1.10.dev5+g1c6337441"
+source = { git = "https://github.com/sourcegraph/src-py-lib.git?rev=amp%2Fotel-standard-instrumentation#1c633744169aba16fa629ae4e65144e6a53a886b" }
 dependencies = [
     { name = "httpx" },
     { name = "opentelemetry-api" },

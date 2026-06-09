@@ -58,7 +58,7 @@ def load_repos_by_external_service(
     services_by_id: dict[int, permission_types.ExternalService],
 ) -> dict[int, list[permission_types.Repository]]:
     """Fetch repos once per discovered code host connection."""
-    with src.event(
+    with src.span(
         "load_repos_by_external_service",
         external_service_count=len(services_by_id),
     ) as load_event:
@@ -246,7 +246,7 @@ def write_maps_backup(
         return None
 
     output_path = maps_backup_path(input_path, timestamp, endpoint, command)
-    with src.event(
+    with src.span(
         "disk_io",
         level="DEBUG",
         op="write",

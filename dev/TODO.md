@@ -1,5 +1,19 @@
 # TODO
 
+## High priority: Instrument with OpenTelemetry — in progress
+
+- Add OTel-native traces, metrics, and wide log events in `src-py-lib`
+  - Would we gain anything by auto-instrumenting httpx?
+    - Need to keep/wrap custom/sanitized fields like request/response bytes,
+      redacted headers, retry counts, Sourcegraph metadata
+  - Keep our custom GraphQL
+  - Would we lose anything by switching to opentelemetry-instrumentation-system-metrics?
+  - Investigate opentelemetry-instrumentation-threading
+- Replace custom trace-context propagation with OTel W3C propagation
+- Add shared OTel bootstrap config/helpers with `--otel` and standard `OTEL_*` args
+- Wire `src-auth-perms-sync` to the shared OTel bootstrap without doing import-time logger/provider setup
+- Verify pyright, tests, and CLI help in both repos
+
 ## High priority: Replace temporary src-py-lib branch source after release
 
 - Merge and release the `src-py-lib` OpenTelemetry branch.

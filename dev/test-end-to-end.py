@@ -1308,7 +1308,7 @@ def run_end_to_end(config: EndToEndConfig) -> None:
     try:
         if sourcegraph_load_monitor is not None:
             sourcegraph_load_monitor.start()
-        with src.event(
+        with src.span(
             "end_to_end_matrix",
             repeat=config.repeat,
             variant_count=len(variants),
