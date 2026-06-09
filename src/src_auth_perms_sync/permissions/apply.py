@@ -230,7 +230,7 @@ def _apply_permission_changes(
             if exception is None:
                 succeeded += 1
                 breaker.record(success=True)
-                log.info(
+                log.debug(
                     "  OK %s %s → %s (id=%d).",
                     action,
                     change.username,
