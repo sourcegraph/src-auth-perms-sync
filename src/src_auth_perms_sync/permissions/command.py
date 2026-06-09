@@ -348,36 +348,26 @@ def _hydrate_site_user_candidates(
     if not candidates:
         return []
 
-    batch_size = shared_sourcegraph.DEFAULT_PAGE_SIZE
     log.info(
-        "Hydrating Sourcegraph metadata for %d selected user candidate(s) "
-        "in batches of %d with parallelism=%d ...",
+        "Hydrating Sourcegraph metadata for %d selected user candidate(s) with parallelism=%d ...",
         len(candidates),
-        batch_size,
         parallelism,
     )
-    candidate_batches = [
-        candidates[start_index : start_index + batch_size]
-        for start_index in range(0, len(candidates), batch_size)
-    ]
 
-    def hydrate_users(
-        candidate_batch: list[shared_types.SiteUserCandidate],
-    ) -> list[shared_types.User | None]:
-        return permissions_sourcegraph.get_users_by_ids(
+    def hydrate_user(candidate: shared_types.SiteUserCandidate) -> shared_types.User | None:
+        return permissions_sourcegraph.get_user_by_id(
             client,
-            [candidate["id"] for candidate in candidate_batch],
+            candidate["id"],
             include_emails=include_emails,
         )
 
-    hydrated_user_batches = run_context.parallel_map(
-        hydrate_users,
-        candidate_batches,
+    hydrated_users = run_context.parallel_map(
+        hydrate_user,
+        candidates,
         parallelism=parallelism,
         worker_pool=worker_pool,
-        progress_label="Hydrated selected Sourcegraph user metadata batches",
+        progress_label="Hydrated selected Sourcegraph user metadata",
     )
-    hydrated_users = [user for batch in hydrated_user_batches for user in batch]
     users = [user for user in hydrated_users if user is not None]
     missing_user_count = len(hydrated_users) - len(users)
     if missing_user_count:
