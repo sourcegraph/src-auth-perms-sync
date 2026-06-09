@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fit a Sourcegraph permissions memory model from e2e result JSON.
+"""Fit a Sourcegraph permissions memory model from e2e memory result JSON.
 
 The model is intentionally small and dependency-free:
 

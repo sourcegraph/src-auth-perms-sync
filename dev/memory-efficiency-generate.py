@@ -164,7 +164,7 @@ class GeneratedMap:
 
 @dataclass(frozen=True)
 class CommandRunResult:
-    """One CLI execution result written in analyze-memory.py-compatible shape."""
+    """One CLI execution result written in memory-efficiency-analyze.py-compatible shape."""
 
     generated_map: GeneratedMap
     mode: RunMode

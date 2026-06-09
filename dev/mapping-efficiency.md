@@ -21,9 +21,9 @@ maps:
 
 ### Original
 
-- Repo-centric plan, but each and every single repo gets a full copy of the list of users,
+- Repo-centric plan, but every repo gets a full copy of the list of users,
   so the memory storage size is truly users x repos
-- If you your list of users is 1,000 users, and 10 MB RAM, and you have 1,000 repos,
+- If your list of users is 1,000 users, and 10 MB RAM, and you have 1,000 repos,
   then this is 1,000,000 repo+user pairs, which is 1,000 x 10 MB RAM = 10 GB RAM
 - This is a "full square"
 

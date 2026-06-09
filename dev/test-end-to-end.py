@@ -314,7 +314,7 @@ class EndToEndConfig(src.SourcegraphClientConfig, src.LoggingConfig):
     monitor_sourcegraph_load: bool = src.config_field(
         default=False,
         env_var="SRC_AUTH_PERMS_SYNC_E2E_MONITOR_SOURCEGRAPH_LOAD",
-        cli_flag="--test-memory-efficiency-server-load",
+        cli_flag="--monitor-sourcegraph-load",
         cli_action="store_true",
         help=(
             "Start the Sourcegraph pod/Postgres load monitor for this e2e run and write "
@@ -1427,7 +1427,7 @@ def sourcegraph_monitor_output_dir(config: EndToEndConfig) -> Path:
 
 def sourcegraph_monitor_script_path() -> Path:
     """Return the lower-level monitor script used by the e2e orchestrator."""
-    return Path(__file__).resolve().with_name("test-memory-efficiency-server-load.sh")
+    return Path(__file__).resolve().with_name("memory-efficiency-monitor-sourcegraph.sh")
 
 
 def complete_jaeger_trace_path(trace_directory: Path, trace_request: dict[str, Any]) -> Path:

@@ -1,4 +1,4 @@
-# Testing memory efficiency
+# Memory efficiency testing
 
 Use this when full snapshot capture or full-set apply is slow. The goal is to
 correlate `src-auth-perms-sync` structured logs with Sourcegraph Jaeger spans
@@ -137,7 +137,7 @@ artifact paths into the result JSON:
 ```bash
 uv run python dev/test-end-to-end.py \
   --trace \
-  --test-memory-efficiency-server-load \
+  --monitor-sourcegraph-load \
   --sample-interval 0 \
   --external-sample-interval 0 \
   --results-json /tmp/src-auth-perms-sync-end-to-end-trace.json \
@@ -154,7 +154,7 @@ The lower-level helper remains available for focused profiling outside a full
 e2e run:
 
 ```bash
-dev/test-memory-efficiency-server-load.sh \
+dev/memory-efficiency-monitor-sourcegraph.sh \
   --namespace m \
   --output-dir /tmp/src-auth-perms-sync-sourcegraph-load-$(date -u +%Y%m%d-%H%M%S)
 ```

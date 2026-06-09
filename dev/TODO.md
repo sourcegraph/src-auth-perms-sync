@@ -29,7 +29,7 @@
 ## High priority: Reduce worst-case full-permission sync load
 
 - Use the stress-run evidence in
-  [sourcegraph-explicit-permissions-tracing.md](./sourcegraph-explicit-permissions-tracing.md)
+  [memory-efficiency.md](./memory-efficiency.md)
   to request Sourcegraph bulk explicit-permission read and write APIs.
 - Add an explicit destructive/performance-test mode to the e2e runner so giant
   stress runs can skip or defer full restore cleanup when the goal is finding
