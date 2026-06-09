@@ -532,13 +532,6 @@ def run_fields(config: Config, command: ResolvedCommand, endpoint: str) -> dict[
     return fields
 
 
-def startup_config_fields(config: Config) -> dict[str, object]:
-    """Return the startup config snapshot plus derived runtime limits."""
-    fields = src.config_snapshot(config)
-    fields["SRC_AUTH_PERMS_SYNC_MAX_PENDING_BATCHES"] = max(1, config.parallelism * 2)
-    return fields
-
-
 def run_with_client(
     config: Config,
     command: ResolvedCommand,
@@ -777,7 +770,7 @@ def _run_or_raise(command_name: CommandName, config: Config) -> None:
     with (
         backups.run_artifacts_context(run_directory, run_timestamp),
         src.logging(
-            startup_config_fields(config),
+            config,
             command=command.name,
             git_cwd=__file__,
             logging_config=logging_settings,
