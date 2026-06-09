@@ -250,7 +250,7 @@ def main() -> int:
         explicit_permissions_batch_size=arguments.explicit_permissions_batch_size,
         http_timeout_seconds=arguments.http_timeout_seconds,
         sample_interval=arguments.sample_interval,
-        trace=arguments.trace,
+        fetch_sg_traces=arguments.fetch_sg_traces,
         sourcegraph_user_count=total_user_count,
         sourcegraph_inventory_repo_count=inventory_repo_count,
     )
@@ -371,9 +371,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="CLI --sample-interval for resource samples (default: 1).",
     )
     parser.add_argument(
-        "--trace",
+        "--fetch-sg-traces",
         action="store_true",
-        help="Pass --trace to src-auth-perms-sync sweep runs.",
+        help="Pass --fetch-sg-traces to src-auth-perms-sync sweep runs.",
     )
     return parser
 
@@ -841,7 +841,7 @@ def run_sweep(
     explicit_permissions_batch_size: int,
     http_timeout_seconds: float,
     sample_interval: float,
-    trace: bool,
+    fetch_sg_traces: bool,
     sourcegraph_user_count: int,
     sourcegraph_inventory_repo_count: int,
 ) -> list[CommandRunResult]:
@@ -858,7 +858,7 @@ def run_sweep(
             explicit_permissions_batch_size=explicit_permissions_batch_size,
             http_timeout_seconds=http_timeout_seconds,
             sample_interval=sample_interval,
-            trace=trace,
+            fetch_sg_traces=fetch_sg_traces,
         )
         environment = command_environment(endpoint, access_token)
         process = subprocess.run(
@@ -911,7 +911,7 @@ def command_arguments(
     explicit_permissions_batch_size: int,
     http_timeout_seconds: float,
     sample_interval: float,
-    trace: bool,
+    fetch_sg_traces: bool,
 ) -> list[str]:
     arguments = [
         *shlex.split(command),
@@ -932,8 +932,8 @@ def command_arguments(
         arguments.append("--apply")
     if mode == "apply-no-backup":
         arguments.append("--no-backup")
-    if trace:
-        arguments.append("--trace")
+    if fetch_sg_traces:
+        arguments.append("--fetch-sg-traces")
     return arguments
 
 

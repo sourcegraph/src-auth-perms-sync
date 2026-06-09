@@ -1,17 +1,11 @@
 # TODO
 
-## High priority: Instrument with OpenTelemetry — in progress
+## High priority: Replace temporary src-py-lib branch source after release
 
-- [ ] Add OTel-native traces, metrics, and wide log events in `src-py-lib`.
-- [ ] Add shared OTel bootstrap config/helpers with `--otel` and standard
-  `OTEL_*` env-var-backed CLI args.
-- [ ] Replace custom trace-context propagation with OTel W3C propagation.
-- [ ] Instrument shared HTTP and GraphQL clients manually, preserving safe
-  sanitized attributes and Sourcegraph-specific metadata.
-- [ ] Rename Sourcegraph debug tracing from `--trace` to `--fetch-sg-traces`.
-- [ ] Wire `src-auth-perms-sync` to the shared OTel bootstrap without doing
-  import-time logger/provider setup.
-- [ ] Verify pyright, tests, and CLI help in both repos.
+- Merge and release the `src-py-lib` OpenTelemetry branch.
+- Replace the `src-auth-perms-sync` `tool.uv.sources.src-py-lib` branch source
+  with the released `src-py-lib[otel]` version.
+- Re-run pyright, unit tests, and CLI help after the dependency is pinned.
 
 ## High priority: End to End test cases
 
