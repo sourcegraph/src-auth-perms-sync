@@ -263,36 +263,31 @@ def _load_get_users(
             created_after_filter = sourcegraph_datetime_filter(
                 parse_cli_date(user_created_after, "--created-after")
             )
-        candidates = permissions_sourcegraph.list_site_user_candidates(
-            client,
-            created_after_filter,
-            parallelism=parallelism,
-            worker_pool=worker_pool,
-        )
-        log.info("Loaded %d active user candidate(s).", len(candidates))
         if users_without_explicit_perms:
-            log.info(
-                "Checking %d active user candidate(s) for existing explicit repo permissions "
-                "in batches of %d ...",
-                len(candidates),
-                explicit_permissions_batch_size,
+            candidate_selection = (
+                permissions_sourcegraph.list_site_user_candidates_without_explicit_repos(
+                    client,
+                    created_after_filter,
+                    batch_size=explicit_permissions_batch_size,
+                    parallelism=parallelism,
+                    worker_pool=worker_pool,
+                )
             )
-            explicit_user_ids = permissions_sourcegraph.user_ids_with_explicit_repos(
-                client,
-                [candidate["id"] for candidate in candidates],
-                batch_size=explicit_permissions_batch_size,
-                parallelism=parallelism,
-                worker_pool=worker_pool,
-            )
-            candidates = [
-                candidate for candidate in candidates if candidate["id"] not in explicit_user_ids
-            ]
+            candidates = candidate_selection.candidates
             log.info(
                 "Selected %d active user candidate(s) without explicit repo permissions; "
                 "skipped %d with existing explicit permissions.",
                 len(candidates),
-                len(explicit_user_ids),
+                candidate_selection.explicit_user_count,
             )
+        else:
+            candidates = permissions_sourcegraph.list_site_user_candidates(
+                client,
+                created_after_filter,
+                parallelism=parallelism,
+                worker_pool=worker_pool,
+            )
+            log.info("Loaded %d active user candidate(s).", len(candidates))
 
         users = _hydrate_site_user_candidates(
             client,
@@ -573,34 +568,21 @@ def cmd_set_additive_users_without_explicit_perms(
             context.mapping_rules
         )
         resolved_mappings = resolve_additive_mappings(context)
-        candidates = permissions_sourcegraph.list_site_user_candidates(
-            client,
-            created_after_filter,
-            parallelism=parallelism,
-            worker_pool=worker_pool,
+        candidate_selection = (
+            permissions_sourcegraph.list_site_user_candidates_without_explicit_repos(
+                client,
+                created_after_filter,
+                batch_size=explicit_permissions_batch_size,
+                parallelism=parallelism,
+                worker_pool=worker_pool,
+            )
         )
-        log.info("Loaded %d active user candidate(s).", len(candidates))
-        log.info(
-            "Checking %d active user candidate(s) for existing explicit repo permissions, "
-            "in batches of %d ...",
-            len(candidates),
-            explicit_permissions_batch_size,
-        )
-        explicit_user_ids = permissions_sourcegraph.user_ids_with_explicit_repos(
-            client,
-            [candidate["id"] for candidate in candidates],
-            batch_size=explicit_permissions_batch_size,
-            parallelism=parallelism,
-            worker_pool=worker_pool,
-        )
-        candidates = [
-            candidate for candidate in candidates if candidate["id"] not in explicit_user_ids
-        ]
+        candidates = candidate_selection.candidates
         log.info(
             "Selected %d active user candidate(s) without explicit repo permissions; "
             "skipped %d with existing explicit permissions.",
             len(candidates),
-            len(explicit_user_ids),
+            candidate_selection.explicit_user_count,
         )
 
         users = _hydrate_site_user_candidates(

@@ -93,8 +93,8 @@ def parallel_map(
         index, value = result.value
         results_by_index[index] = value
         completed += 1
-        if progress_label is not None and _parallel_progress_due(completed, total_count):
-            _log_parallel_progress(progress_label, completed, total_count, started)
+        if progress_label is not None and parallel_progress_due(completed, total_count):
+            log_parallel_progress(progress_label, completed, total_count, started)
 
     parallel_process(
         run_indexed,
@@ -237,11 +237,13 @@ def _unsubmitted_count(known_total_count: int | None, submitted_count: int) -> i
     return max(known_total_count - submitted_count, 0)
 
 
-def _parallel_progress_due(completed: int, total_count: int) -> bool:
+def parallel_progress_due(completed: int, total_count: int) -> bool:
+    """Return whether a bounded parallel run should log progress now."""
+
     return completed == total_count or completed % max(1, total_count // 10) == 0
 
 
-def _log_parallel_progress(
+def log_parallel_progress(
     progress_label: str,
     completed: int,
     total_count: int,

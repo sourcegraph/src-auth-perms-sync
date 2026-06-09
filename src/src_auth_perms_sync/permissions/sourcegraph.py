@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import logging
 import time
+from collections import deque
 from collections.abc import Iterable, Iterator, Sequence
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
+from dataclasses import dataclass
 from typing import Any, cast
 
 import src_py_lib as src
@@ -18,6 +20,20 @@ from . import types as permission_types
 
 log = logging.getLogger(__name__)
 SITE_USER_CANDIDATE_PAGE_SIZE = 1000
+
+
+@dataclass(frozen=True)
+class SiteUserCandidateSelection:
+    """Active user candidates after filtering explicit repo-permission owners."""
+
+    candidates: list[shared_types.SiteUserCandidate]
+    explicit_user_count: int
+
+
+@dataclass(frozen=True)
+class _SiteUserCandidatePage:
+    offset: int
+    candidates: list[shared_types.SiteUserCandidate]
 
 
 def list_external_services(client: src.SourcegraphClient) -> list[permission_types.ExternalService]:
@@ -156,6 +172,93 @@ def list_site_user_candidates(
     return candidates
 
 
+def list_site_user_candidates_without_explicit_repos(
+    client: src.SourcegraphClient,
+    created_after: str | None,
+    *,
+    batch_size: int,
+    parallelism: int,
+    worker_pool: ThreadPoolExecutor | None = None,
+) -> SiteUserCandidateSelection:
+    """Return active site users that do not already have explicit API grants.
+
+    Candidate pages and explicit-permission checks are pipelined so the slow
+    permission checks can start as soon as the first candidate page yields a
+    full batch of users.
+    """
+    if batch_size < 1:
+        raise ValueError("batch_size must be at least 1")
+
+    created_filter = {"gte": created_after} if created_after is not None else None
+    created_filter_label = f" created on or after {created_after}" if created_after else ""
+    log.info("Querying active Sourcegraph user candidates%s ...", created_filter_label)
+    started = time.perf_counter()
+    first_page, total_count = _site_user_candidate_page(
+        client,
+        created_filter,
+        offset=0,
+        page_size=SITE_USER_CANDIDATE_PAGE_SIZE,
+    )
+    if not first_page:
+        return SiteUserCandidateSelection(candidates=[], explicit_user_count=0)
+
+    if len(first_page) >= total_count or parallelism <= 1:
+        _log_user_candidate_load_progress(len(first_page), total_count, started)
+        log.info(
+            "Checking %d active user candidate(s)%s for existing explicit repo permissions "
+            "in batches of %d ...",
+            len(first_page),
+            created_filter_label,
+            batch_size,
+        )
+        explicit_user_ids = user_ids_with_explicit_repos(
+            client,
+            [candidate["id"] for candidate in first_page],
+            batch_size=batch_size,
+            parallelism=parallelism,
+            worker_pool=worker_pool,
+        )
+        return SiteUserCandidateSelection(
+            candidates=[
+                candidate for candidate in first_page if candidate["id"] not in explicit_user_ids
+            ],
+            explicit_user_count=len(explicit_user_ids),
+        )
+
+    page_size = len(first_page)
+    page_count = (total_count + page_size - 1) // page_size
+    log.info(
+        "Loading %d active Sourcegraph user candidate(s)%s across %d page(s) "
+        "of %d users/page, while checking explicit repo permissions in batches "
+        "of %d with parallelism=%d ...",
+        total_count,
+        created_filter_label,
+        page_count,
+        page_size,
+        batch_size,
+        parallelism,
+    )
+    pages, explicit_user_ids = _load_candidate_pages_and_explicit_user_ids(
+        client,
+        created_filter,
+        first_page,
+        total_count=total_count,
+        page_size=page_size,
+        batch_size=batch_size,
+        parallelism=parallelism,
+        worker_pool=worker_pool,
+        started=started,
+    )
+    candidates = _dedupe_site_user_candidate_pages(pages)
+    _log_user_candidate_load_progress(len(candidates), total_count, started)
+    return SiteUserCandidateSelection(
+        candidates=[
+            candidate for candidate in candidates if candidate["id"] not in explicit_user_ids
+        ],
+        explicit_user_count=len(explicit_user_ids),
+    )
+
+
 def _site_user_candidate_page(
     client: src.SourcegraphClient,
     created_filter: dict[str, str] | None,
@@ -181,6 +284,152 @@ def _site_user_candidate_page(
     total_count = int(cast(float, site_users["totalCount"]))
     nodes = cast(list[shared_types.SiteUserCandidate], site_users["nodes"])
     return nodes, total_count
+
+
+def _load_candidate_pages_and_explicit_user_ids(
+    client: src.SourcegraphClient,
+    created_filter: dict[str, str] | None,
+    first_page: list[shared_types.SiteUserCandidate],
+    *,
+    total_count: int,
+    page_size: int,
+    batch_size: int,
+    parallelism: int,
+    worker_pool: ThreadPoolExecutor | None,
+    started: float,
+) -> tuple[list[tuple[int, list[shared_types.SiteUserCandidate]]], set[str]]:
+    pages: list[tuple[int, list[shared_types.SiteUserCandidate]]] = [(0, first_page)]
+    explicit_user_ids: set[str] = set()
+    queued_user_ids: set[str] = set()
+    candidate_batch_buffer: list[str] = []
+    ready_user_batches = deque[tuple[str, ...]]()
+    page_offsets = iter(range(page_size, total_count, page_size))
+    page_count = (total_count + page_size - 1) // page_size
+    total_batch_count = (total_count + batch_size - 1) // batch_size
+    completed_page_count = 1
+    completed_batch_count = 0
+    pages_exhausted = False
+    page_pending_limit = max(1, parallelism // 2)
+    early_permission_pending_limit = max(1, parallelism - page_pending_limit)
+    pending_page_futures: dict[Future[_SiteUserCandidatePage], int] = {}
+    pending_permission_futures: dict[Future[set[str]], tuple[str, ...]] = {}
+
+    def queue_user_batches(candidates: Sequence[shared_types.SiteUserCandidate]) -> None:
+        for candidate in candidates:
+            user_id = candidate["id"]
+            if user_id in queued_user_ids:
+                continue
+            queued_user_ids.add(user_id)
+            candidate_batch_buffer.append(user_id)
+            if len(candidate_batch_buffer) == batch_size:
+                ready_user_batches.append(tuple(candidate_batch_buffer))
+                candidate_batch_buffer.clear()
+
+    def fetch_page(offset: int) -> _SiteUserCandidatePage:
+        candidates, _ = _site_user_candidate_page(
+            client,
+            created_filter,
+            offset=offset,
+            page_size=SITE_USER_CANDIDATE_PAGE_SIZE,
+        )
+        return _SiteUserCandidatePage(offset=offset, candidates=candidates)
+
+    def submit_candidate_pages(executor: ThreadPoolExecutor) -> None:
+        nonlocal pages_exhausted
+        while not pages_exhausted and len(pending_page_futures) < page_pending_limit:
+            try:
+                offset = next(page_offsets)
+            except StopIteration:
+                pages_exhausted = True
+                return
+            future = cast(
+                Future[_SiteUserCandidatePage],
+                src.submit_with_log_context(executor, fetch_page, offset),
+            )
+            pending_page_futures[future] = offset
+
+    def flush_final_user_batch() -> None:
+        if pages_exhausted and not pending_page_futures and candidate_batch_buffer:
+            ready_user_batches.append(tuple(candidate_batch_buffer))
+            candidate_batch_buffer.clear()
+
+    def permission_pending_limit() -> int:
+        if pages_exhausted and not pending_page_futures:
+            return parallelism
+        return early_permission_pending_limit
+
+    def submit_permission_batches(executor: ThreadPoolExecutor) -> None:
+        while ready_user_batches and len(pending_permission_futures) < permission_pending_limit():
+            user_batch = ready_user_batches.popleft()
+            future = cast(
+                Future[set[str]],
+                src.submit_with_log_context(
+                    executor,
+                    _user_ids_with_explicit_repos_batch,
+                    client,
+                    user_batch,
+                ),
+            )
+            pending_permission_futures[future] = user_batch
+
+    def cancel_pending_futures() -> None:
+        for future in list(pending_page_futures) + list(pending_permission_futures):
+            future.cancel()
+
+    queue_user_batches(first_page)
+    with run_context.thread_pool(parallelism, worker_pool) as executor:
+        try:
+            submit_candidate_pages(executor)
+            flush_final_user_batch()
+            submit_permission_batches(executor)
+            while pending_page_futures or pending_permission_futures:
+                pending_futures: set[Future[object]] = {
+                    cast(Future[object], future) for future in pending_page_futures
+                }
+                pending_futures.update(
+                    cast(Future[object], future) for future in pending_permission_futures
+                )
+                completed_futures, _ = wait(
+                    pending_futures,
+                    return_when=FIRST_COMPLETED,
+                )
+                for completed_future in completed_futures:
+                    page_future = cast(Future[_SiteUserCandidatePage], completed_future)
+                    if page_future in pending_page_futures:
+                        page = page_future.result()
+                        pending_page_futures.pop(page_future)
+                        pages.append((page.offset, page.candidates))
+                        completed_page_count += 1
+                        if run_context.parallel_progress_due(completed_page_count, page_count):
+                            run_context.log_parallel_progress(
+                                "Loaded active Sourcegraph user candidate pages",
+                                completed_page_count,
+                                page_count,
+                                started,
+                            )
+                        queue_user_batches(page.candidates)
+                    else:
+                        permission_future = cast(Future[set[str]], completed_future)
+                        pending_permission_futures.pop(permission_future)
+                        explicit_user_ids.update(permission_future.result())
+                        completed_batch_count += 1
+                        if run_context.parallel_progress_due(
+                            completed_batch_count,
+                            total_batch_count,
+                        ):
+                            run_context.log_parallel_progress(
+                                "Checked explicit repo permissions for user batches",
+                                completed_batch_count,
+                                total_batch_count,
+                                started,
+                            )
+                submit_candidate_pages(executor)
+                flush_final_user_batch()
+                submit_permission_batches(executor)
+        except BaseException:
+            cancel_pending_futures()
+            raise
+    return pages, explicit_user_ids
 
 
 def _dedupe_site_user_candidate_pages(
