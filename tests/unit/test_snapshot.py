@@ -379,6 +379,25 @@ class SnapshotTests(unittest.TestCase):
 
         self.assertIn("expected 5", str(exit_context.exception))
 
+    def test_snapshot_with_repository_filter_recomputes_stats(self) -> None:
+        snapshot = self.make_snapshot()
+        second_repo_id = src.encode_repository_id(2)
+        snapshot["repos"][second_repo_id] = {
+            "name": "github.com/sourcegraph/second",
+            "users": ["alice", "carol"],
+        }
+
+        filtered = permission_snapshot.snapshot_with_repository_filter(
+            snapshot,
+            {second_repo_id},
+        )
+
+        self.assertEqual({second_repo_id}, set(filtered["repos"]))
+        self.assertEqual(2, filtered["stats"]["users_with_explicit_grants"])
+        self.assertEqual(1, filtered["stats"]["repos_with_explicit_grants"])
+        self.assertEqual(2, filtered["stats"]["total_grants"])
+        self.assertEqual(2, filtered["stats"]["total_users_scanned"])
+
     def make_snapshot(self) -> permission_snapshot.Snapshot:
         return {
             "schema_version": permission_snapshot.SNAPSHOT_SCHEMA_VERSION,

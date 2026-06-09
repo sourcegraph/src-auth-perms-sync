@@ -77,9 +77,6 @@ If/when we revisit:
 3. Add a CLI flag (e.g. `--cross-check-capture`) gated behind a clear
    "this doubles capture cost" warning.
 
-Also, create a fast mode to query the instance for all new repos,
-which do not yet have explicit perms
-
 ## Low priority: Grouped full-set plan if memory is still too high
 
 Phase 1 now avoids per-repo username sets for non-overlapping full-set maps.

@@ -17,6 +17,7 @@ from src_py_lib.utils import config as shared_config
 import src_auth_perms_sync
 from src_auth_perms_sync import cli
 from src_auth_perms_sync.permissions import command as permissions_command
+from src_auth_perms_sync.permissions import types as permission_types
 from src_auth_perms_sync.shared import backups
 
 
@@ -137,6 +138,16 @@ class CliConfigTests(unittest.TestCase):
 
         self.assertEqual(("alice", "bob@example.com", "carol"), config.users)
 
+    def test_repos_config_loads_comma_delimited_values(self) -> None:
+        config = load_config_from_env(
+            SRC_AUTH_PERMS_SYNC_REPOS="github.com/sourcegraph/one, github.com/sourcegraph/two"
+        )
+
+        self.assertEqual(
+            ("github.com/sourcegraph/one", "github.com/sourcegraph/two"),
+            config.repos,
+        )
+
     def test_set_command_options_match_each_incremental_mode(self) -> None:
         self.assertEqual(
             "full",
@@ -167,6 +178,23 @@ class CliConfigTests(unittest.TestCase):
         )
         self.assertEqual("created_after", created_after.mode)
         self.assertEqual("2026-01-01", created_after.user_created_after)
+        repos = cli.set_command_options(
+            make_config(
+                maps_path=Path("maps.yaml"),
+                repos=("github.com/sourcegraph/one",),
+            )
+        )
+        self.assertEqual("repos", repos.mode)
+        self.assertEqual(("github.com/sourcegraph/one",), repos.repository_names)
+        repos_without_permissions = cli.set_command_options(
+            make_config(maps_path=Path("maps.yaml"), repos_without_explicit_perms=True)
+        )
+        self.assertEqual("repos_without_explicit_perms", repos_without_permissions.mode)
+        repos_created_after = cli.set_command_options(
+            make_config(maps_path=Path("maps.yaml"), repos_created_after="2026-01-01")
+        )
+        self.assertEqual("repos_created_after", repos_created_after.mode)
+        self.assertEqual("2026-01-01", repos_created_after.repository_created_after)
 
     def test_resolve_command_includes_set_mode_names(self) -> None:
         users_command = cli.resolve_command(
@@ -177,6 +205,13 @@ class CliConfigTests(unittest.TestCase):
         created_after_command = cli.resolve_command(
             "set",
             make_config(maps_path=Path("maps.yaml"), created_after="2026-01-01"),
+        )
+        repos_command = cli.resolve_command(
+            "set",
+            make_config(
+                maps_path=Path("maps.yaml"),
+                repos=("github.com/sourcegraph/one",),
+            ),
         )
 
         self.assertEqual("set_users", users_command.log_name)
@@ -190,6 +225,9 @@ class CliConfigTests(unittest.TestCase):
             created_after_command.artifact_name,
         )
         self.assertEqual("created_after", created_after_command.set_mode)
+        self.assertEqual("set_repos", repos_command.log_name)
+        self.assertEqual("set-repos-dry-run", repos_command.artifact_name)
+        self.assertEqual("repos", repos_command.set_mode)
 
     def test_resolve_command_includes_combined_set_sync_names(self) -> None:
         set_command = cli.resolve_command(
@@ -257,6 +295,11 @@ class CliConfigTests(unittest.TestCase):
         cli.validate_config("get", make_config(users_without_explicit_perms=True))
         cli.validate_config("get", make_config(created_after="2026-01-01"))
 
+    def test_validate_config_allows_get_repo_filters_without_set(self) -> None:
+        cli.validate_config("get", make_config(repos=("github.com/sourcegraph/one",)))
+        cli.validate_config("get", make_config(repos_without_explicit_perms=True))
+        cli.validate_config("get", make_config(repos_created_after="2026-01-01"))
+
     def test_validate_config_rejects_get_user_filter_conflicts(self) -> None:
         self.assert_config_error(
             "get",
@@ -268,6 +311,31 @@ class CliConfigTests(unittest.TestCase):
         self.assert_config_error(
             "restore",
             make_config(restore_path=Path("snapshot.json"), users=("alice",)),
+            "require get or set",
+        )
+
+    def test_validate_config_rejects_repo_filter_conflicts(self) -> None:
+        self.assert_config_error(
+            "get",
+            make_config(
+                repos=("github.com/sourcegraph/one",),
+                repos_without_explicit_perms=True,
+            ),
+            "choose only one of --repos",
+        )
+        self.assert_config_error(
+            "get",
+            make_config(users=("alice",), repos=("github.com/sourcegraph/one",)),
+            "choose either user filters or repo filters",
+        )
+
+    def test_validate_config_rejects_repo_filters_on_non_get_set_commands(self) -> None:
+        self.assert_config_error(
+            "restore",
+            make_config(
+                restore_path=Path("snapshot.json"),
+                repos=("github.com/sourcegraph/one",),
+            ),
             "require get or set",
         )
 
@@ -517,6 +585,9 @@ class CliConfigTests(unittest.TestCase):
                 user_identifiers=(),
                 users_without_explicit_perms=False,
                 user_created_after=None,
+                repository_names=(),
+                repositories_without_explicit_perms=False,
+                repository_created_after=None,
                 parallelism=1,
                 explicit_permissions_batch_size=25,
                 bind_id_mode="USERNAME",
@@ -527,6 +598,37 @@ class CliConfigTests(unittest.TestCase):
 
         build_snapshot.assert_not_called()
         write_maps_backup.assert_not_called()
+
+    def test_cmd_set_dispatches_repo_filters_to_full_set(self) -> None:
+        client = cast(src.SourcegraphClient, object())
+        options = permission_types.SetCommandOptions(
+            mode="repos",
+            repository_names=("github.com/sourcegraph/one",),
+        )
+
+        with mock.patch.object(
+            permissions_command.permissions_full_set,
+            "cmd_set_full",
+            return_value=cli.run_context.CommandData(),
+        ) as cmd_set_full:
+            permissions_command.cmd_set(
+                client,
+                Path("maps.yaml"),
+                options,
+                dry_run=True,
+                parallelism=1,
+                explicit_permissions_batch_size=25,
+                bind_id_mode="USERNAME",
+                saml_groups_attribute_name_by_config_id={},
+                do_backup=True,
+            )
+
+        self.assertEqual(
+            ("github.com/sourcegraph/one",),
+            cmd_set_full.call_args.kwargs["repository_names"],
+        )
+        self.assertFalse(cmd_set_full.call_args.kwargs["repositories_without_explicit_perms"])
+        self.assertIsNone(cmd_set_full.call_args.kwargs["repository_created_after"])
 
     def test_run_command_passes_set_data_to_combined_sync(self) -> None:
         configuration = make_config(sync_saml_organizations=True)

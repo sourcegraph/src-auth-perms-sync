@@ -164,6 +164,7 @@ def capture_explicit_grants(
     explicit_permissions_batch_size: int,
     expected_user_count: int | None = None,
     worker_pool: ThreadPoolExecutor | None = None,
+    selected_repository_ids: set[str] | None = None,
 ) -> tuple[dict[str, RepoSnapshot], int]:
     """Build the per-repo inverse index of explicit-API grants.
 
@@ -348,8 +349,13 @@ def capture_explicit_grants(
                 raise RuntimeError("explicit-grant batch fetch returned no result")
             repository_ids_by_username, failures = result.value
             capture_failures += failures
-            for username, repository_ids in repository_ids_by_username.items():
-                for repository_id in repository_ids:
+            for username, user_repository_ids in repository_ids_by_username.items():
+                for repository_id in user_repository_ids:
+                    if (
+                        selected_repository_ids is not None
+                        and repository_id not in selected_repository_ids
+                    ):
+                        continue
                     usernames_by_repository_id.setdefault(
                         repository_id,
                         [],
@@ -422,6 +428,7 @@ def build_snapshot(
     expected_user_count: int | None = None,
     explicit_permissions_batch_size: int,
     worker_pool: ThreadPoolExecutor | None = None,
+    selected_repository_ids: set[str] | None = None,
 ) -> Snapshot:
     """Capture a full Snapshot: explicit grants + pending-bindIDs + metadata.
 
@@ -441,6 +448,7 @@ def build_snapshot(
             explicit_permissions_batch_size,
             expected_user_count=expected_user_count,
             worker_pool=worker_pool,
+            selected_repository_ids=selected_repository_ids,
         )
         pending = permissions_sourcegraph.list_pending_bind_ids(client)
 
@@ -477,6 +485,39 @@ def build_snapshot(
             },
             "repos": dict(sorted(repos.items())),  # sort by repo_id for stable file
         }
+
+
+def snapshot_with_repository_filter(
+    snapshot: Snapshot,
+    selected_repository_ids: set[str],
+) -> Snapshot:
+    """Return a snapshot containing only selected repository entries."""
+    repos = {
+        repository_id: repo
+        for repository_id, repo in snapshot["repos"].items()
+        if repository_id in selected_repository_ids
+    }
+    distinct_users: set[str] = set()
+    total_grants = 0
+    for repo in repos.values():
+        distinct_users.update(repo["users"])
+        total_grants += len(repo["users"])
+    return {
+        "schema_version": snapshot["schema_version"],
+        "captured_at": snapshot["captured_at"],
+        "endpoint": snapshot["endpoint"],
+        "bindID_mode": snapshot["bindID_mode"],
+        "config_file": snapshot["config_file"],
+        "config_sha256": snapshot["config_sha256"],
+        "pending_bindIDs": list(snapshot["pending_bindIDs"]),
+        "stats": {
+            "total_users_scanned": snapshot["stats"]["total_users_scanned"],
+            "users_with_explicit_grants": len(distinct_users),
+            "repos_with_explicit_grants": len(repos),
+            "total_grants": total_grants,
+        },
+        "repos": dict(sorted(repos.items())),
+    }
 
 
 def capture_user_scoped_explicit_grants(

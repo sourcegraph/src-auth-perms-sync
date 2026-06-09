@@ -12,6 +12,9 @@ SetCommandMode: TypeAlias = Literal[
     "users",
     "users_without_explicit_perms",
     "created_after",
+    "repos",
+    "repos_without_explicit_perms",
+    "repos_created_after",
 ]
 
 
@@ -22,6 +25,8 @@ class SetCommandOptions:
     mode: SetCommandMode
     user_identifiers: tuple[str, ...] = ()
     user_created_after: str | None = None
+    repository_names: tuple[str, ...] = ()
+    repository_created_after: str | None = None
 
 
 class UserRef(TypedDict):

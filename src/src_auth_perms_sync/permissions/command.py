@@ -28,6 +28,8 @@ from .workflow import (
     load_mapping_context_discovery,
     load_mapping_rules,
     load_repos_for_mapping_context,
+    load_repository_candidates_by_names,
+    load_repository_candidates_created_on_or_after,
     parse_cli_date,
     snapshot_path,
     sourcegraph_datetime_filter,
@@ -129,6 +131,67 @@ def _providers_need_saml_account_data(providers: list[shared_types.AuthProvider]
     return any(provider["serviceType"] == saml_groups.SAML_SERVICE_TYPE for provider in providers)
 
 
+def _repository_filter_selected(
+    repository_names: tuple[str, ...],
+    repositories_without_explicit_perms: bool,
+    repository_created_after: str | None,
+) -> bool:
+    return any(
+        (
+            bool(repository_names),
+            repositories_without_explicit_perms,
+            repository_created_after is not None,
+        )
+    )
+
+
+def _repository_ids(candidates: list[permissions_sourcegraph.RepositoryCandidate]) -> set[str]:
+    return {candidate.repository["id"] for candidate in candidates}
+
+
+def _load_get_repository_filter_ids(
+    client: src.SourcegraphClient,
+    *,
+    repository_names: tuple[str, ...],
+    repository_created_after: str | None,
+) -> set[str] | None:
+    """Return selected repo IDs for get snapshot filtering when known up front."""
+    if repository_names:
+        return _repository_ids(load_repository_candidates_by_names(client, repository_names))
+    if repository_created_after is not None:
+        return _repository_ids(
+            load_repository_candidates_created_on_or_after(
+                client,
+                repository_created_after,
+                "--repos-created-after",
+            )
+        )
+    return None
+
+
+def _filter_get_snapshot_to_repositories_without_explicit_perms(
+    client: src.SourcegraphClient,
+    before_snapshot: permission_snapshot.Snapshot,
+) -> permission_snapshot.Snapshot:
+    """Return a get snapshot scoped to repos with no explicit API grants."""
+    candidates = permissions_sourcegraph.list_repository_candidates(client)
+    explicit_repository_ids = set(before_snapshot["repos"])
+    selected_repository_ids = {
+        candidate.repository["id"]
+        for candidate in candidates
+        if candidate.repository["id"] not in explicit_repository_ids
+    }
+    log.info(
+        "Selected %d / %d repo(s) without explicit repo permissions.",
+        len(selected_repository_ids),
+        len(candidates),
+    )
+    return permission_snapshot.snapshot_with_repository_filter(
+        before_snapshot,
+        selected_repository_ids,
+    )
+
+
 def cmd_get(
     client: src.SourcegraphClient,
     code_hosts_path: Path,
@@ -138,6 +201,9 @@ def cmd_get(
     user_identifiers: tuple[str, ...],
     users_without_explicit_perms: bool,
     user_created_after: str | None,
+    repository_names: tuple[str, ...],
+    repositories_without_explicit_perms: bool,
+    repository_created_after: str | None,
     parallelism: int,
     explicit_permissions_batch_size: int,
     bind_id_mode: str,
@@ -173,6 +239,12 @@ def cmd_get(
         cmd_fields["users_without_explicit_perms"] = True
     if user_created_after is not None:
         cmd_fields["created_after"] = user_created_after
+    if repository_names:
+        cmd_fields["repositories"] = repository_names
+    if repositories_without_explicit_perms:
+        cmd_fields["repositories_without_explicit_perms"] = True
+    if repository_created_after is not None:
+        cmd_fields["repositories_created_after"] = repository_created_after
     if not do_backup:
         cmd_fields["backup"] = False
 
@@ -238,6 +310,11 @@ def cmd_get(
         log.info("Wrote %s and %s", code_hosts_path, auth_providers_path)
 
         if do_backup:
+            selected_repository_ids = _load_get_repository_filter_ids(
+                client,
+                repository_names=repository_names,
+                repository_created_after=repository_created_after,
+            )
             timestamp = backups.backup_timestamp()
             before_snapshot = permission_snapshot.build_snapshot(
                 client,
@@ -248,7 +325,13 @@ def cmd_get(
                 expected_user_count=len(users),
                 explicit_permissions_batch_size=explicit_permissions_batch_size,
                 worker_pool=worker_pool,
+                selected_repository_ids=selected_repository_ids,
             )
+            if repositories_without_explicit_perms:
+                before_snapshot = _filter_get_snapshot_to_repositories_without_explicit_perms(
+                    client,
+                    before_snapshot,
+                )
             before_path = snapshot_path(maps_path, timestamp, client.endpoint, "get", "before")
             permission_snapshot.write_snapshot(before_path, before_snapshot)
             cmd_event["before_snapshot_path"] = str(before_path)
@@ -272,6 +355,11 @@ def cmd_get(
             if not user_identifiers
             and not users_without_explicit_perms
             and user_created_after is None
+            and not _repository_filter_selected(
+                repository_names,
+                repositories_without_explicit_perms,
+                repository_created_after,
+            )
             and retain_saml_group_users
             else None
         )
@@ -492,14 +580,70 @@ def cmd_set(
             client,
             input_path,
             options.user_created_after,
-            dry_run,
-            parallelism,
-            explicit_permissions_batch_size,
-            bind_id_mode,
-            saml_groups_attribute_name_by_config_id,
-            do_backup,
-            retain_saml_group_users,
-            worker_pool,
+            repository_names=(),
+            repositories_without_explicit_perms=False,
+            repository_created_after=None,
+            dry_run=dry_run,
+            parallelism=parallelism,
+            explicit_permissions_batch_size=explicit_permissions_batch_size,
+            bind_id_mode=bind_id_mode,
+            saml_groups_attribute_name_by_config_id=saml_groups_attribute_name_by_config_id,
+            do_backup=do_backup,
+            retain_saml_group_users=retain_saml_group_users,
+            worker_pool=worker_pool,
+        )
+    if options.mode == "repos":
+        assert options.repository_names
+        return permissions_full_set.cmd_set_full(
+            client,
+            input_path,
+            None,
+            repository_names=options.repository_names,
+            repositories_without_explicit_perms=False,
+            repository_created_after=None,
+            dry_run=dry_run,
+            parallelism=parallelism,
+            explicit_permissions_batch_size=explicit_permissions_batch_size,
+            bind_id_mode=bind_id_mode,
+            saml_groups_attribute_name_by_config_id=saml_groups_attribute_name_by_config_id,
+            do_backup=do_backup,
+            retain_saml_group_users=retain_saml_group_users,
+            worker_pool=worker_pool,
+        )
+    if options.mode == "repos_without_explicit_perms":
+        return permissions_full_set.cmd_set_full(
+            client,
+            input_path,
+            None,
+            repository_names=(),
+            repositories_without_explicit_perms=True,
+            repository_created_after=None,
+            dry_run=dry_run,
+            parallelism=parallelism,
+            explicit_permissions_batch_size=explicit_permissions_batch_size,
+            bind_id_mode=bind_id_mode,
+            saml_groups_attribute_name_by_config_id=saml_groups_attribute_name_by_config_id,
+            do_backup=do_backup,
+            retain_saml_group_users=retain_saml_group_users,
+            worker_pool=worker_pool,
+        )
+    if options.mode == "repos_created_after":
+        assert options.repository_created_after is not None
+        return permissions_full_set.cmd_set_full(
+            client,
+            input_path,
+            None,
+            repository_names=(),
+            repositories_without_explicit_perms=False,
+            repository_created_after=options.repository_created_after,
+            dry_run=dry_run,
+            parallelism=parallelism,
+            explicit_permissions_batch_size=explicit_permissions_batch_size,
+            bind_id_mode=bind_id_mode,
+            saml_groups_attribute_name_by_config_id=saml_groups_attribute_name_by_config_id,
+            do_backup=do_backup,
+            retain_saml_group_users=retain_saml_group_users,
+            worker_pool=worker_pool,
         )
     if options.mode == "users":
         assert options.user_identifiers

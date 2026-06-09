@@ -47,6 +47,9 @@ GET_CONFIG_FIELDS = src.config_field_names(
     "users",
     "users_without_explicit_perms",
     "created_after",
+    "repos",
+    "repos_without_explicit_perms",
+    "repos_created_after",
     "no_backup",
     "explicit_permissions_batch_size",
     *COMMON_CONFIG_FIELDS,
@@ -57,6 +60,9 @@ SET_CONFIG_FIELDS = src.config_field_names(
     "users",
     "users_without_explicit_perms",
     "created_after",
+    "repos",
+    "repos_without_explicit_perms",
+    "repos_created_after",
     "sync_saml_organizations",
     "apply",
     "no_backup",
@@ -81,12 +87,18 @@ LogCommandName: TypeAlias = Literal[
     "set_users",
     "set_users_without_explicit_perms",
     "set_created_after",
+    "set_repos",
+    "set_repos_without_explicit_perms",
+    "set_repos_created_after",
     "restore",
     "sync_saml_orgs",
     "set_full_sync_saml_orgs",
     "set_users_sync_saml_orgs",
     "set_users_without_explicit_perms_sync_saml_orgs",
     "set_created_after_sync_saml_orgs",
+    "set_repos_sync_saml_orgs",
+    "set_repos_without_explicit_perms_sync_saml_orgs",
+    "set_repos_created_after_sync_saml_orgs",
 ]
 
 SET_COMMAND_LOG_NAMES: dict[permission_types.SetCommandMode, LogCommandName] = {
@@ -94,18 +106,27 @@ SET_COMMAND_LOG_NAMES: dict[permission_types.SetCommandMode, LogCommandName] = {
     "users": "set_users",
     "users_without_explicit_perms": "set_users_without_explicit_perms",
     "created_after": "set_created_after",
+    "repos": "set_repos",
+    "repos_without_explicit_perms": "set_repos_without_explicit_perms",
+    "repos_created_after": "set_repos_created_after",
 }
 SET_COMMAND_ARTIFACT_NAMES: dict[permission_types.SetCommandMode, str] = {
     "full": "set-{run_mode}",
     "users": "set-add-users-{run_mode}",
     "users_without_explicit_perms": "set-add-users-without-explicit-perms-{run_mode}",
     "created_after": "set-add-users-created-after-{run_mode}",
+    "repos": "set-repos-{run_mode}",
+    "repos_without_explicit_perms": "set-repos-without-explicit-perms-{run_mode}",
+    "repos_created_after": "set-repos-created-after-{run_mode}",
 }
 SYNC_SET_COMMAND_LOG_NAMES: dict[permission_types.SetCommandMode, LogCommandName] = {
     "full": "set_full_sync_saml_orgs",
     "users": "set_users_sync_saml_orgs",
     "users_without_explicit_perms": "set_users_without_explicit_perms_sync_saml_orgs",
     "created_after": "set_created_after_sync_saml_orgs",
+    "repos": "set_repos_sync_saml_orgs",
+    "repos_without_explicit_perms": "set_repos_without_explicit_perms_sync_saml_orgs",
+    "repos_created_after": "set_repos_created_after_sync_saml_orgs",
 }
 SYNC_SET_COMMAND_ARTIFACT_NAMES: dict[permission_types.SetCommandMode, str] = {
     "full": "set-sync-saml-orgs-{run_mode}",
@@ -114,6 +135,9 @@ SYNC_SET_COMMAND_ARTIFACT_NAMES: dict[permission_types.SetCommandMode, str] = {
         "set-add-users-without-explicit-perms-sync-saml-orgs-{run_mode}"
     ),
     "created_after": "set-add-users-created-after-sync-saml-orgs-{run_mode}",
+    "repos": "set-repos-sync-saml-orgs-{run_mode}",
+    "repos_without_explicit_perms": ("set-repos-without-explicit-perms-sync-saml-orgs-{run_mode}"),
+    "repos_created_after": "set-repos-created-after-sync-saml-orgs-{run_mode}",
 }
 
 
@@ -216,6 +240,31 @@ class Config(src.SourcegraphClientConfig, src.LoggingConfig, src.OpenTelemetryCo
         help="Process Sourcegraph users created on or after this date",
         help_group="User filters",
     )
+    repos: tuple[str, ...] = src.config_field(
+        default=(),
+        env_var="SRC_AUTH_PERMS_SYNC_REPOS",
+        cli_flag="--repos",
+        metavar="REPOS",
+        help="Process comma-delimited Sourcegraph repository names",
+        help_group="Repo filters",
+    )
+    repos_without_explicit_perms: bool = src.config_field(
+        default=False,
+        env_var="SRC_AUTH_PERMS_SYNC_REPOS_WITHOUT_EXPLICIT_PERMS",
+        cli_flag="--repos-without-explicit-perms",
+        cli_action="store_true",
+        help="Process Sourcegraph repositories without explicit permissions",
+        help_group="Repo filters",
+    )
+    repos_created_after: str | None = src.config_field(
+        default=None,
+        env_var="SRC_AUTH_PERMS_SYNC_REPOS_CREATED_AFTER",
+        cli_flag="--repos-created-after",
+        metavar="YYYY-MM-DD",
+        pattern=r"^\d{4}-\d{2}-\d{2}$",
+        help="Process Sourcegraph repositories created on or after this date",
+        help_group="Repo filters",
+    )
     sync_saml_organizations: bool = src.config_field(
         default=False,
         env_var="SRC_AUTH_PERMS_SYNC_SYNC_SAML_ORGS",
@@ -237,7 +286,7 @@ class Config(src.SourcegraphClientConfig, src.LoggingConfig, src.OpenTelemetryCo
         env_var="SRC_AUTH_PERMS_SYNC_NO_BACKUP",
         cli_flag="--no-backup",
         cli_action="store_true",
-        help="With mutating commands: skip before/after snapshots and validation",
+        help="Skip before/after snapshot artifacts and validation where supported",
         help_group="Mutation",
     )
     parallelism: int = src.config_field(
@@ -339,6 +388,7 @@ def validate_config(command_name: CommandName, config: Config) -> None:
     """Validate cross-field CLI/config constraints."""
     validate_command_options(command_name, config)
     validate_user_filter_selection(command_name, config)
+    validate_repository_filter_selection(command_name, config)
     validate_set_mode_selection(command_name, config)
 
 
@@ -368,6 +418,34 @@ def validate_user_filter_selection(command_name: CommandName, config: Config) ->
         )
 
 
+def validate_repository_filter_selection(command_name: CommandName, config: Config) -> None:
+    """Validate repo-scope filters and their compatible commands."""
+    repository_filter_count = sum(
+        (
+            bool(config.repos),
+            config.repos_without_explicit_perms,
+            config.repos_created_after is not None,
+        )
+    )
+    if repository_filter_count > 1:
+        config_error(
+            "choose only one of --repos, --repos-without-explicit-perms, or --repos-created-after"
+        )
+
+    repository_filter_selected = repository_filter_count > 0
+    repository_filter_allowed = command_name in {"get", "set"}
+    if repository_filter_selected and not repository_filter_allowed:
+        config_error(
+            "--repos, --repos-without-explicit-perms, and --repos-created-after require get or set"
+        )
+
+    user_filter_selected = any(
+        (bool(config.users), config.users_without_explicit_perms, config.created_after is not None)
+    )
+    if repository_filter_selected and user_filter_selected:
+        config_error("choose either user filters or repo filters, not both")
+
+
 def validate_set_mode_selection(command_name: CommandName, config: Config) -> None:
     """Validate set command mode flags."""
     if config.full and command_name != "set":
@@ -382,9 +460,23 @@ def validate_set_mode_selection(command_name: CommandName, config: Config) -> No
             "overwrites mapped repos; omit --full to add grants for new users"
         )
 
-    if sum((config.full, bool(config.users), config.users_without_explicit_perms)) > 1:
+    if (
+        sum(
+            (
+                config.full,
+                bool(config.users),
+                config.users_without_explicit_perms,
+                bool(config.repos),
+                config.repos_without_explicit_perms,
+                config.repos_created_after is not None,
+            )
+        )
+        > 1
+    ):
         config_error(
-            "with set, choose at most one of --full, --users, or --users-without-explicit-perms"
+            "with set, choose at most one of --full, --users, "
+            "--users-without-explicit-perms, --repos, "
+            "--repos-without-explicit-perms, or --repos-created-after"
         )
 
 
@@ -405,6 +497,20 @@ def set_command_options(config: Config) -> permission_types.SetCommandOptions:
         return permission_types.SetCommandOptions(
             mode="created_after",
             user_created_after=config.created_after,
+        )
+    if config.repos:
+        return permission_types.SetCommandOptions(
+            mode="repos",
+            repository_names=config.repos,
+        )
+    if config.repos_without_explicit_perms:
+        return permission_types.SetCommandOptions(
+            mode="repos_without_explicit_perms",
+        )
+    if config.repos_created_after is not None:
+        return permission_types.SetCommandOptions(
+            mode="repos_created_after",
+            repository_created_after=config.repos_created_after,
         )
     return permission_types.SetCommandOptions(
         mode="full",
@@ -548,6 +654,12 @@ def run_fields(config: Config, command: ResolvedCommand, endpoint: str) -> dict[
         fields["sync_saml_orgs"] = True
     if config.created_after is not None:
         fields["created_after"] = config.created_after
+    if config.repos:
+        fields["repos"] = config.repos
+    if config.repos_without_explicit_perms:
+        fields["repos_without_explicit_perms"] = True
+    if config.repos_created_after is not None:
+        fields["repos_created_after"] = config.repos_created_after
     return fields
 
 
@@ -705,6 +817,9 @@ def run_get(
         user_identifiers=config.users,
         users_without_explicit_perms=config.users_without_explicit_perms,
         user_created_after=config.created_after,
+        repository_names=config.repos,
+        repositories_without_explicit_perms=config.repos_without_explicit_perms,
+        repository_created_after=config.repos_created_after,
         parallelism=config.parallelism,
         explicit_permissions_batch_size=config.explicit_permissions_batch_size,
         bind_id_mode=sourcegraph_site_config.bind_id_mode,

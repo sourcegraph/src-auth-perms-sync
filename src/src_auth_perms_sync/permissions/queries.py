@@ -48,6 +48,67 @@ query ReposByExternalService($esID: ID!, $first: Int!, $after: String) {
 }
 """
 
+REPOSITORY_CANDIDATE_FIELDS = """
+id
+name
+createdAt
+externalServices(first: 50) {
+  nodes { id }
+}
+"""
+
+QUERY_REPOSITORIES_BY_NAMES = f"""
+query RepositoriesByNames($names: [String!]!, $first: Int!, $after: String) {{
+  repositories(
+    names: $names
+    first: $first
+    after: $after
+    cloned: true
+    notCloned: true
+  ) {{
+    nodes {{
+      {REPOSITORY_CANDIDATE_FIELDS}
+    }}
+    pageInfo {{ hasNextPage endCursor }}
+  }}
+}}
+"""
+
+QUERY_REPOSITORY_CANDIDATES = f"""
+query RepositoryCandidates($first: Int!, $after: String) {{
+  repositories(
+    first: $first
+    after: $after
+    cloned: true
+    notCloned: true
+    orderBy: REPOSITORY_NAME
+  ) {{
+    nodes {{
+      {REPOSITORY_CANDIDATE_FIELDS}
+    }}
+    pageInfo {{ hasNextPage endCursor }}
+  }}
+}}
+"""
+
+QUERY_REPOSITORY_CANDIDATES_BY_CREATED_AT = f"""
+query RepositoryCandidatesByCreatedAt($first: Int!, $after: String) {{
+  repositories(
+    first: $first
+    after: $after
+    cloned: true
+    notCloned: true
+    orderBy: REPO_CREATED_AT
+    descending: true
+  ) {{
+    nodes {{
+      {REPOSITORY_CANDIDATE_FIELDS}
+    }}
+    pageInfo {{ hasNextPage endCursor }}
+  }}
+}}
+"""
+
 MUTATION_SET_REPO_PERMISSIONS = """
 mutation SetRepoPerms($repo: ID!, $userPerms: [UserPermissionInput!]!) {
   setRepositoryPermissionsForUsers(repository: $repo, userPermissions: $userPerms) {

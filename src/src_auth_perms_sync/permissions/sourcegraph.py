@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime
 import logging
 import time
 from collections import deque
@@ -37,6 +38,15 @@ class _SiteUserCandidatePage:
     candidates: list[shared_types.SiteUserCandidate]
 
 
+@dataclass(frozen=True)
+class RepositoryCandidate:
+    """Repository selected for repo-scoped get/set work."""
+
+    repository: permission_types.Repository
+    created_at: str
+    external_service_ids: tuple[str, ...]
+
+
 def list_external_services(client: src.SourcegraphClient) -> list[permission_types.ExternalService]:
     return [
         cast(permission_types.ExternalService, node)
@@ -60,6 +70,80 @@ def list_repos_for_external_service(
             page_size=REPOSITORY_PAGE_SIZE,
         )
     ]
+
+
+def list_repository_candidates_by_names(
+    client: src.SourcegraphClient,
+    repository_names: Sequence[str],
+) -> list[RepositoryCandidate]:
+    """Return repositories whose names exactly match `repository_names`."""
+    unique_names = tuple(dict.fromkeys(repository_names))
+    if not unique_names:
+        return []
+    return [
+        _repository_candidate_from_node(node)
+        for node in client.stream_connection_nodes(
+            queries.QUERY_REPOSITORIES_BY_NAMES,
+            {"names": list(unique_names)},
+            connection_path=("repositories",),
+            page_size=REPOSITORY_PAGE_SIZE,
+        )
+    ]
+
+
+def list_repository_candidates(client: src.SourcegraphClient) -> list[RepositoryCandidate]:
+    """Return all repositories with enough metadata for repo filtering."""
+    return [
+        _repository_candidate_from_node(node)
+        for node in client.stream_connection_nodes(
+            queries.QUERY_REPOSITORY_CANDIDATES,
+            connection_path=("repositories",),
+            page_size=REPOSITORY_PAGE_SIZE,
+        )
+    ]
+
+
+def list_repository_candidates_created_on_or_after(
+    client: src.SourcegraphClient,
+    created_after: str,
+) -> list[RepositoryCandidate]:
+    """Return repositories with Sourcegraph rows created on or after a timestamp."""
+    threshold = _parse_sourcegraph_datetime(created_after)
+    candidates: list[RepositoryCandidate] = []
+    for node in client.stream_connection_nodes(
+        queries.QUERY_REPOSITORY_CANDIDATES_BY_CREATED_AT,
+        connection_path=("repositories",),
+        page_size=REPOSITORY_PAGE_SIZE,
+    ):
+        candidate = _repository_candidate_from_node(node)
+        if _parse_sourcegraph_datetime(candidate.created_at) < threshold:
+            break
+        candidates.append(candidate)
+    return candidates
+
+
+def _repository_candidate_from_node(node: dict[str, Any]) -> RepositoryCandidate:
+    repository_id = src.json_str(node, "id")
+    repository_name = src.json_str(node, "name")
+    created_at = src.json_str(node, "createdAt")
+    external_services = src.json_dict(node.get("externalServices"))
+    external_service_ids = tuple(
+        external_service_id
+        for external_service_id in (
+            src.json_dict(external_service).get("id")
+            for external_service in src.json_list(external_services.get("nodes"))
+        )
+        if isinstance(external_service_id, str)
+    )
+    return RepositoryCandidate(
+        repository={"id": repository_id, "name": repository_name},
+        created_at=created_at,
+        external_service_ids=external_service_ids,
+    )
+
+
+def _parse_sourcegraph_datetime(value: str) -> datetime.datetime:
+    return datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
 
 
 def get_user_by_username(

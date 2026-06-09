@@ -210,6 +210,72 @@ def load_repos_for_mapping_context(
     )
 
 
+def mapping_context_with_repository_candidates(
+    context: permission_types.MappingContext,
+    candidates: list[permissions_sourcegraph.RepositoryCandidate],
+) -> permission_types.MappingContext:
+    """Return context limited to selected repository candidates."""
+    repos_by_external_service_id: dict[int, list[permission_types.Repository]] = {}
+    all_repos_by_id: dict[str, permission_types.Repository] = {}
+    for candidate in candidates:
+        repository = candidate.repository
+        all_repos_by_id[repository["id"]] = repository
+        for external_service_id in candidate.external_service_ids:
+            decoded_service_id = src.decode_external_service_id(external_service_id)
+            if decoded_service_id not in context.services_by_id:
+                continue
+            repos_by_external_service_id.setdefault(decoded_service_id, []).append(repository)
+    log.info(
+        "Selected %d repo(s) across %d code host connection(s).",
+        len(all_repos_by_id),
+        len(repos_by_external_service_id),
+    )
+    return permission_types.MappingContext(
+        mapping_rules=context.mapping_rules,
+        providers=context.providers,
+        saml_groups_attribute_names=context.saml_groups_attribute_names,
+        services_by_id=context.services_by_id,
+        repos_by_external_service_id=repos_by_external_service_id,
+        all_repos_by_id=all_repos_by_id,
+    )
+
+
+def load_repository_candidates_by_names(
+    client: src.SourcegraphClient,
+    repository_names: tuple[str, ...],
+) -> list[permissions_sourcegraph.RepositoryCandidate]:
+    """Load exact repository-name matches or exit with missing names."""
+    candidates = permissions_sourcegraph.list_repository_candidates_by_names(
+        client,
+        repository_names,
+    )
+    found_names = {candidate.repository["name"] for candidate in candidates}
+    missing_names = [name for name in repository_names if name not in found_names]
+    if missing_names:
+        raise SystemExit("No Sourcegraph repo found for: " + ", ".join(sorted(missing_names)))
+    log.info("Selected %d repo(s) by exact name.", len(candidates))
+    return candidates
+
+
+def load_repository_candidates_created_on_or_after(
+    client: src.SourcegraphClient,
+    value: str,
+    flag_name: str,
+) -> list[permissions_sourcegraph.RepositoryCandidate]:
+    """Load repositories whose Sourcegraph row was created on or after a CLI date."""
+    filter_value = sourcegraph_datetime_filter(parse_cli_date(value, flag_name))
+    candidates = permissions_sourcegraph.list_repository_candidates_created_on_or_after(
+        client,
+        filter_value,
+    )
+    log.info(
+        "Selected %d Sourcegraph repo(s) created on or after %s.",
+        len(candidates),
+        value,
+    )
+    return candidates
+
+
 def snapshot_path(
     input_path: Path,
     timestamp: str,

@@ -16,10 +16,15 @@ from ..shared import types as shared_types
 from . import apply as permissions_apply
 from . import mapping as permissions_mapping
 from . import snapshot as permission_snapshot
+from . import sourcegraph as permissions_sourcegraph
 from . import types as permission_types
 from .workflow import (
+    load_mapping_context_discovery,
     load_mapping_context_for_rules,
     load_mapping_rules,
+    load_repository_candidates_by_names,
+    load_repository_candidates_created_on_or_after,
+    mapping_context_with_repository_candidates,
     render_projected_snapshot_diff,
     snapshot_path,
     user_ids_created_on_or_after,
@@ -50,6 +55,7 @@ class _FullSetSnapshotState:
     users: list[permission_snapshot.SnapshotUser]
     before_snapshot: permission_snapshot.Snapshot | None = None
     before_timestamp: str | None = None
+    selected_repository_ids: set[str] | None = None
 
 
 @dataclass(frozen=True)
@@ -100,6 +106,7 @@ def _capture_full_set_snapshot_state(
     worker_pool: ThreadPoolExecutor | None = None,
     include_user_emails: bool = False,
     include_user_account_data: bool = True,
+    selected_repository_ids: set[str] | None = None,
 ) -> _FullSetUserState:
     """Load users while capturing the before-snapshot."""
     expected_user_count = shared_sourcegraph.count_users(client)
@@ -124,6 +131,7 @@ def _capture_full_set_snapshot_state(
         expected_user_count=expected_user_count,
         explicit_permissions_batch_size=explicit_permissions_batch_size,
         worker_pool=worker_pool,
+        selected_repository_ids=selected_repository_ids,
     )
     log.info(
         "Received %d total users; before-snapshot has %d repo(s) "
@@ -149,6 +157,7 @@ def _load_full_set_snapshot_state(
     worker_pool: ThreadPoolExecutor | None = None,
     include_user_emails: bool = False,
     include_user_account_data: bool = True,
+    selected_repository_ids: set[str] | None = None,
 ) -> _FullSetUserState:
     """Load all users, optionally with a before-snapshot."""
     if capture_before:
@@ -161,6 +170,7 @@ def _load_full_set_snapshot_state(
             worker_pool,
             include_user_emails=include_user_emails,
             include_user_account_data=include_user_account_data,
+            selected_repository_ids=selected_repository_ids,
         )
 
     log.info("Loading users from %s ...", client.endpoint)
@@ -193,15 +203,78 @@ def _filter_full_set_users_by_created_at(
     return filtered_users
 
 
+def _repository_ids(
+    candidates: list[permissions_sourcegraph.RepositoryCandidate],
+) -> set[str]:
+    """Return Sourcegraph repository node IDs from candidates."""
+    return {candidate.repository["id"] for candidate in candidates}
+
+
+def _load_pre_snapshot_repository_candidates(
+    client: src.SourcegraphClient,
+    repository_names: tuple[str, ...],
+    repository_created_after: str | None,
+) -> list[permissions_sourcegraph.RepositoryCandidate] | None:
+    """Load repo filters that do not depend on current explicit grants."""
+    if repository_names:
+        return load_repository_candidates_by_names(client, repository_names)
+    if repository_created_after is not None:
+        return load_repository_candidates_created_on_or_after(
+            client,
+            repository_created_after,
+            "--repos-created-after",
+        )
+    return None
+
+
+def _load_repositories_without_explicit_permissions(
+    client: src.SourcegraphClient,
+    before_snapshot: permission_snapshot.Snapshot,
+) -> list[permissions_sourcegraph.RepositoryCandidate]:
+    """Load repo candidates without any explicit API grants."""
+    candidates = permissions_sourcegraph.list_repository_candidates(client)
+    explicit_repository_ids = set(before_snapshot["repos"])
+    selected_candidates = [
+        candidate
+        for candidate in candidates
+        if candidate.repository["id"] not in explicit_repository_ids
+    ]
+    log.info(
+        "Selected %d / %d repo(s) without explicit repo permissions.",
+        len(selected_candidates),
+        len(candidates),
+    )
+    return selected_candidates
+
+
+def _filter_full_set_user_state_snapshot(
+    snapshot_state: _FullSetUserState,
+    selected_repository_ids: set[str] | None,
+) -> _FullSetUserState:
+    """Return user state with before-snapshot scoped to selected repos."""
+    if snapshot_state.before_snapshot is None or selected_repository_ids is None:
+        return snapshot_state
+    return _FullSetUserState(
+        users=snapshot_state.users,
+        before_snapshot=permission_snapshot.snapshot_with_repository_filter(
+            snapshot_state.before_snapshot,
+            selected_repository_ids,
+        ),
+        before_timestamp=snapshot_state.before_timestamp,
+    )
+
+
 def _compact_full_set_snapshot_state(
     snapshot_state: _FullSetUserState,
     users: list[shared_types.User],
+    selected_repository_ids: set[str] | None = None,
 ) -> _FullSetSnapshotState:
     """Return snapshot state with only fields needed for later capture."""
     return _FullSetSnapshotState(
         users=permission_snapshot.compact_snapshot_users(users),
         before_snapshot=snapshot_state.before_snapshot,
         before_timestamp=snapshot_state.before_timestamp,
+        selected_repository_ids=selected_repository_ids,
     )
 
 
@@ -565,6 +638,7 @@ def _finish_full_set_apply_with_backup(
             expected_user_count=len(snapshot_state.users),
             explicit_permissions_batch_size=explicit_permissions_batch_size,
             worker_pool=worker_pool,
+            selected_repository_ids=snapshot_state.selected_repository_ids,
         )
 
     after_path = snapshot_path(input_path, timestamp, client.endpoint, "set-apply", "after")
@@ -643,6 +717,9 @@ def _finish_empty_full_set_mapping_rules(
     input_path: Path,
     command_name: str,
     dry_run: bool,
+    repository_names: tuple[str, ...],
+    repositories_without_explicit_perms: bool,
+    repository_created_after: str | None,
     parallelism: int,
     explicit_permissions_batch_size: int,
     bind_id_mode: str,
@@ -654,6 +731,16 @@ def _finish_empty_full_set_mapping_rules(
     if not (dry_run or do_backup):
         return
 
+    selected_repository_candidates = _load_pre_snapshot_repository_candidates(
+        client,
+        repository_names,
+        repository_created_after,
+    )
+    selected_repository_ids = (
+        _repository_ids(selected_repository_candidates)
+        if selected_repository_candidates is not None
+        else None
+    )
     snapshot_state = _capture_full_set_snapshot_state(
         client,
         input_path,
@@ -662,7 +749,18 @@ def _finish_empty_full_set_mapping_rules(
         bind_id_mode,
         worker_pool,
         include_user_account_data=False,
+        selected_repository_ids=selected_repository_ids,
     )
+    if repositories_without_explicit_perms:
+        before_snapshot, _ = _require_before_snapshot(snapshot_state)
+        selected_repository_candidates = _load_repositories_without_explicit_permissions(
+            client,
+            before_snapshot,
+        )
+        snapshot_state = _filter_full_set_user_state_snapshot(
+            snapshot_state,
+            _repository_ids(selected_repository_candidates),
+        )
     _write_noop_full_set_artifacts(
         input_path,
         client.endpoint,
@@ -678,11 +776,15 @@ def _load_full_set_plan(
     input_path: Path,
     mapping_rules: list[permission_types.MappingRule],
     user_created_after: str | None,
+    repository_names: tuple[str, ...],
+    repositories_without_explicit_perms: bool,
+    repository_created_after: str | None,
     parallelism: int,
     explicit_permissions_batch_size: int,
     bind_id_mode: str,
     saml_groups_attribute_name_by_config_id: dict[str, str],
     capture_before: bool,
+    write_before_snapshot: bool,
     command_name: str,
     command_event: dict[str, Any],
     retain_saml_group_users: bool,
@@ -692,6 +794,16 @@ def _load_full_set_plan(
     include_user_account_data = (
         permissions_mapping.mapping_rules_need_saml_account_data(mapping_rules)
         or retain_saml_group_users
+    )
+    selected_repository_candidates = _load_pre_snapshot_repository_candidates(
+        client,
+        repository_names,
+        repository_created_after,
+    )
+    selected_repository_ids = (
+        _repository_ids(selected_repository_candidates)
+        if selected_repository_candidates is not None
+        else None
     )
     user_state = _load_full_set_snapshot_state(
         client,
@@ -703,9 +815,22 @@ def _load_full_set_plan(
         worker_pool=worker_pool,
         include_user_emails=include_user_emails,
         include_user_account_data=include_user_account_data,
+        selected_repository_ids=selected_repository_ids,
     )
+    if repositories_without_explicit_perms:
+        before_snapshot, _ = _require_before_snapshot(user_state)
+        selected_repository_candidates = _load_repositories_without_explicit_permissions(
+            client,
+            before_snapshot,
+        )
+        selected_repository_ids = _repository_ids(selected_repository_candidates)
+        user_state = _filter_full_set_user_state_snapshot(
+            user_state,
+            selected_repository_ids,
+        )
+
     before_path: Path | None = None
-    if capture_before:
+    if write_before_snapshot:
         before_snapshot, before_timestamp = _require_before_snapshot(user_state)
         before_path = _write_full_set_before_snapshot(
             input_path,
@@ -716,18 +841,36 @@ def _load_full_set_plan(
             command_event,
         )
 
-    context = load_mapping_context_for_rules(
-        client,
-        mapping_rules,
-        saml_groups_attribute_name_by_config_id,
-    )
+    if selected_repository_candidates is None:
+        context = load_mapping_context_for_rules(
+            client,
+            mapping_rules,
+            saml_groups_attribute_name_by_config_id,
+        )
+    else:
+        context = mapping_context_with_repository_candidates(
+            load_mapping_context_discovery(
+                client,
+                mapping_rules,
+                saml_groups_attribute_name_by_config_id,
+            ),
+            selected_repository_candidates,
+        )
+
+    if selected_repository_ids is not None:
+        command_event["selected_repo_count"] = len(selected_repository_ids)
+
     users = _filter_full_set_users_by_created_at(
         client,
         user_state.users,
         user_created_after,
     )
     plan = plan_full_set_permissions(context, users)
-    snapshot_state = _compact_full_set_snapshot_state(user_state, users)
+    snapshot_state = _compact_full_set_snapshot_state(
+        user_state,
+        users,
+        selected_repository_ids,
+    )
     saml_group_users = (
         saml_groups.compact_saml_group_users(
             user_state.users,
@@ -828,6 +971,9 @@ def cmd_set_full(
     client: src.SourcegraphClient,
     input_path: Path,
     user_created_after: str | None,
+    repository_names: tuple[str, ...],
+    repositories_without_explicit_perms: bool,
+    repository_created_after: str | None,
     dry_run: bool,
     parallelism: int,
     explicit_permissions_batch_size: int,
@@ -842,6 +988,9 @@ def cmd_set_full(
         "cmd_set",
         input_path=str(input_path),
         user_created_after=user_created_after,
+        repository_names=repository_names or None,
+        repositories_without_explicit_perms=(True if repositories_without_explicit_perms else None),
+        repository_created_after=repository_created_after,
         dry_run=dry_run,
         parallelism=parallelism,
         do_backup=do_backup,
@@ -854,6 +1003,9 @@ def cmd_set_full(
                 input_path,
                 command_name,
                 dry_run,
+                repository_names,
+                repositories_without_explicit_perms,
+                repository_created_after,
                 parallelism,
                 explicit_permissions_batch_size,
                 bind_id_mode,
@@ -868,11 +1020,15 @@ def cmd_set_full(
             input_path,
             mapping_rules,
             user_created_after,
+            repository_names,
+            repositories_without_explicit_perms,
+            repository_created_after,
             parallelism,
             explicit_permissions_batch_size,
             bind_id_mode,
             saml_groups_attribute_name_by_config_id,
-            capture_before=dry_run or do_backup,
+            capture_before=dry_run or do_backup or repositories_without_explicit_perms,
+            write_before_snapshot=dry_run or do_backup,
             command_name=command_name,
             command_event=command_event,
             retain_saml_group_users=retain_saml_group_users,
