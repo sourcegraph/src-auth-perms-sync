@@ -13,6 +13,9 @@ Levels (each level runs only its own checks):
   --performance  Repeated timed runs of the expensive paths against the test
                  instance, with Sourcegraph trace retention and resource
                  sampling, reported as a TSV and median summary.
+  --install      PyPI install smoke test: pip-install the published package
+                 (default: latest src-auth-perms-sync) into a clean venv and
+                 run every --help command. Needs network to pypi.org only.
 
 --live and --performance optionally take a comma-delimited list of test
 names (substring match) to run a subset, e.g. --live full-overwrite-unions.
@@ -29,6 +32,7 @@ Examples:
   uv run tests/run.py
   uv run tests/run.py --live
   uv run tests/run.py --performance --repeat 3
+  uv run tests/run.py --install
   uv run tests/run.py --update-golden
 """
 
@@ -195,7 +199,7 @@ def configure_logging(log_file: Path, quiet: bool = False) -> None:
 class TestArguments:
     """Parsed command-line options for this test run."""
 
-    level: str  # "local" | "live" | "performance"
+    level: str  # "local" | "live" | "performance" | "install"
     test_filter: tuple[str, ...]  # empty = run everything in the level
     quiet: bool
     update_golden: bool
@@ -219,6 +223,8 @@ class TestArguments:
     monitor_interval_seconds: int
     monitor_postgres_interval_seconds: int
     monitor_statements_interval_seconds: int
+    install_python: str
+    install_package: str
 
 
 def parse_arguments(argv: Sequence[str] | None = None) -> TestArguments:
@@ -248,6 +254,12 @@ def parse_arguments(argv: Sequence[str] | None = None) -> TestArguments:
         metavar="TESTS",
         help="Repeated timed runs against the .env instance with traces and resource "
         "sampling. Optionally pass a comma-delimited list of test names (substring match)",
+    )
+    level_group.add_argument(
+        "--install",
+        action="store_true",
+        help="PyPI install smoke test: pip-install the published package into a "
+        "clean venv and run every --help command. Needs network to pypi.org only",
     )
     parser.add_argument(
         "-q",
@@ -349,6 +361,18 @@ def parse_arguments(argv: Sequence[str] | None = None) -> TestArguments:
     monitor_group.add_argument("--monitor-interval-seconds", type=int, default=5)
     monitor_group.add_argument("--monitor-postgres-interval-seconds", type=int, default=10)
     monitor_group.add_argument("--monitor-statements-interval-seconds", type=int, default=30)
+    install_group = parser.add_argument_group("install smoke test")
+    install_group.add_argument(
+        "--install-python",
+        default="python3.13",
+        help="Python interpreter used to create the clean venv (default: python3.13)",
+    )
+    install_group.add_argument(
+        "--install-package",
+        default="src-auth-perms-sync",
+        help="pip requirement to install, e.g. 'src-auth-perms-sync==1.2.3' or a "
+        "wheel path (default: src-auth-perms-sync, the latest from PyPI)",
+    )
     options = parser.parse_args(argv)
     level = "local"
     test_filter: tuple[str, ...] = ()
@@ -358,6 +382,8 @@ def parse_arguments(argv: Sequence[str] | None = None) -> TestArguments:
     if options.performance is not None:
         level = "performance"
         test_filter = parse_test_filter(cast(str, options.performance))
+    if options.install:
+        level = "install"
     return TestArguments(
         level=level,
         test_filter=test_filter,
@@ -385,6 +411,8 @@ def parse_arguments(argv: Sequence[str] | None = None) -> TestArguments:
         monitor_interval_seconds=int(options.monitor_interval_seconds),
         monitor_postgres_interval_seconds=int(options.monitor_postgres_interval_seconds),
         monitor_statements_interval_seconds=int(options.monitor_statements_interval_seconds),
+        install_python=str(options.install_python),
+        install_package=str(options.install_package),
     )
 
 
@@ -1171,6 +1199,59 @@ class TestSuite:
                     )
                     return
         self.record("wheel install smoke", "live", True, time.monotonic() - started)
+
+    # -- install smoke (--install) -------------------------------------------------
+
+    def run_install(self) -> None:
+        """PyPI install smoke: pip-install the published package into a clean
+        venv and run every --help command. Replaces dev/test-cli-pypi-install.sh."""
+        python = self.arguments.install_python
+        package = self.arguments.install_package
+        log.info("\n=== Install smoke: %s via %s ===", package, python)
+        with tempfile.TemporaryDirectory(prefix="src-auth-perms-sync-pypi-install-") as temporary:
+            venv_directory = Path(temporary) / "venv"
+            venv_python = venv_directory / "bin" / "python"
+            cli_path = venv_directory / "bin" / "src-auth-perms-sync"
+            setup_steps: tuple[tuple[str, list[str]], ...] = (
+                (
+                    f"install: create venv ({python})",
+                    [python, "-m", "venv", str(venv_directory)],
+                ),
+                (
+                    "install: upgrade pip",
+                    [str(venv_python), "-m", "pip", "install", "--quiet", "--upgrade", "pip"],
+                ),
+                (
+                    # Not --quiet: the log must show which version was resolved.
+                    f"install: pip install {package}",
+                    [str(venv_python), "-m", "pip", "install", package],
+                ),
+            )
+            for name, command in setup_steps:
+                started = time.monotonic()
+                execution = self.stream_command(command)
+                passed = execution.return_code == 0
+                self.record(
+                    name,
+                    "install",
+                    passed,
+                    time.monotonic() - started,
+                    "" if passed else f"exit {execution.return_code}",
+                )
+                if not passed:
+                    return
+            for help_arguments in ((), ("get",), ("set",), ("restore",), ("sync-saml-orgs",)):
+                name = "install: src-auth-perms-sync " + " ".join((*help_arguments, "--help"))
+                started = time.monotonic()
+                execution = self.stream_command([str(cli_path), *help_arguments, "--help"])
+                usage_shown = "usage: src-auth-perms-sync" in execution.output
+                passed = execution.return_code == 0 and usage_shown
+                detail = ""
+                if execution.return_code != 0:
+                    detail = f"exit {execution.return_code}"
+                elif not usage_shown:
+                    detail = "usage text missing from --help output"
+                self.record(name, "install", passed, time.monotonic() - started, detail)
 
     def run_live_fixture_cases(self, environment: dict[str, str]) -> None:
         log.info("\n--- Live: tests.yaml cases against the real instance ---")
@@ -2860,6 +2941,8 @@ def main() -> None:
         suite.run_property_checks()
     elif arguments.level == "live":
         suite.run_live()
+    elif arguments.level == "install":
+        suite.run_install()
     else:
         suite.run_performance()
 

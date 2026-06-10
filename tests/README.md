@@ -4,7 +4,7 @@ All testing is driven by one entrypoint and one case registry:
 
 | Path | Purpose |
 | ---- | ------- |
-| [run.py](./run.py) | The single test entrypoint: `uv run tests/run.py [--local \| --live \| --performance]` |
+| [run.py](./run.py) | The single test entrypoint: `uv run tests/run.py [--local \| --live \| --performance \| --install]` |
 | [tests.yaml](./tests.yaml) | The case registry: what each case runs, where, and what it must produce (see its header comment for the full schema) |
 | [e2e/fixtures/](./e2e/fixtures/) | Per-case state files, in a directory matching the case name |
 | [e2e/case_runner.py](./e2e/case_runner.py) | The case execution engine: registry loader, in-memory Sourcegraph instance (`FakeSourcegraphClient`), full-command runs for state cases, in-process parser replays for replay cases |
@@ -67,6 +67,18 @@ files (e.g. `test_user_09991`, `test-repo-49981`), and exact selectors only
   grants outside the involved repos).
 - **performance** — same as live, but timed and measured (traces, RSS
   sampling, TSV row).
+
+## PyPI install smoke (`--install`)
+
+`uv run tests/run.py --install` pip-installs the **published** package into a
+clean venv (`--install-python`, default `python3.13`) and runs every `--help`
+command, asserting exit 0 and usage output. It needs network to pypi.org
+only — no Sourcegraph instance. `--install-package` pins a version
+(`src-auth-perms-sync==1.2.3`) or points at a wheel path. This complements
+the live tier's "wheel install smoke", which builds and installs the
+*local* wheel; CI separately installs the locally-built wheel in
+validate.yml. Use `--install` after a release to verify the artifact
+operators actually download.
 
 ## Workflow for adding or editing a case
 
