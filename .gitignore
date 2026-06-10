@@ -12,6 +12,7 @@ __pycache__
 *.py[cod]
 *.py[oc]
 *.swp
+*.tsv
 *.yaml
 build/
 dist/

@@ -33,8 +33,10 @@ log = logging.getLogger(__name__)
 
 CommandName: TypeAlias = Literal["get", "set", "restore", "sync_saml_orgs"]
 DEFAULT_MAPS_FILE_NAME = "maps.yaml"
-COMMON_CONFIG_FIELDS = src.config_field_names(
+COMMON_CONFIG_FIELDS_BEFORE = src.config_field_names(
     src.SourcegraphClientConfig,
+)
+COMMON_CONFIG_FIELDS_AFTER = src.config_field_names(
     src.LoggingConfig,
     src.OpenTelemetryConfig,
     "parallelism",
@@ -44,6 +46,7 @@ COMMON_CONFIG_FIELDS = src.config_field_names(
     "fetch_sg_traces",
 )
 GET_CONFIG_FIELDS = src.config_field_names(
+    *COMMON_CONFIG_FIELDS_BEFORE,
     "users",
     "users_without_explicit_perms",
     "created_after",
@@ -52,9 +55,10 @@ GET_CONFIG_FIELDS = src.config_field_names(
     "repos_created_after",
     "no_backup",
     "explicit_permissions_batch_size",
-    *COMMON_CONFIG_FIELDS,
+    *COMMON_CONFIG_FIELDS_AFTER,
 )
 SET_CONFIG_FIELDS = src.config_field_names(
+    *COMMON_CONFIG_FIELDS_BEFORE,
     "maps_path",
     "full",
     "users",
@@ -67,19 +71,22 @@ SET_CONFIG_FIELDS = src.config_field_names(
     "apply",
     "no_backup",
     "explicit_permissions_batch_size",
-    *COMMON_CONFIG_FIELDS,
+    *COMMON_CONFIG_FIELDS_AFTER,
 )
 RESTORE_CONFIG_FIELDS = src.config_field_names(
+    *COMMON_CONFIG_FIELDS_BEFORE,
     "restore_path",
     "apply",
     "no_backup",
     "explicit_permissions_batch_size",
-    *COMMON_CONFIG_FIELDS,
+    *COMMON_CONFIG_FIELDS_AFTER,
 )
 SYNC_SAML_ORGS_CONFIG_FIELDS = src.config_field_names(
+    *COMMON_CONFIG_FIELDS_BEFORE,
     "apply",
     "no_backup",
-    *COMMON_CONFIG_FIELDS,
+    "parallelism",
+    *COMMON_CONFIG_FIELDS_AFTER,
 )
 LogCommandName: TypeAlias = Literal[
     "get",
@@ -187,9 +194,9 @@ class Config(src.SourcegraphClientConfig, src.LoggingConfig, src.OpenTelemetryCo
         cli_flag="--maps-path",
         metavar="FILE",
         help=(
-            "Maps YAML file for the set command.\n"
-            "If omitted, set uses maps.yaml under src-auth-perms-sync-runs/<endpoint>/.\n"
-            "Relative paths are resolved from the current working directory."
+            "Maps YAML file for the set command\n"
+            "(default: ./src-auth-perms-sync-runs/<src-endpoint>/maps.yaml)\n"
+            "Relative paths are resolved from the current working directory"
         ),
         help_group="Permission sync",
     )
@@ -199,8 +206,8 @@ class Config(src.SourcegraphClientConfig, src.LoggingConfig, src.OpenTelemetryCo
         cli_flag="--restore-path",
         metavar="FILE",
         help=(
-            "Snapshot JSON file for the restore command.\n"
-            "Relative paths are resolved from the current working directory."
+            "Snapshot JSON file for the restore command\n"
+            "Relative paths are resolved from the current working directory"
         ),
         help_group="Restore",
     )
@@ -210,8 +217,8 @@ class Config(src.SourcegraphClientConfig, src.LoggingConfig, src.OpenTelemetryCo
         cli_flag="--full",
         cli_action="store_true",
         help=(
-            "With the set command: run full overwrite reconciliation "
-            "(default only when no user filter is set)"
+            "Full overwrite of all explicit perms for the repos in scope\n"
+            "Must be passed explicitly when no user or repo filter args are provided"
         ),
         help_group="Permission sync",
     )
@@ -220,7 +227,7 @@ class Config(src.SourcegraphClientConfig, src.LoggingConfig, src.OpenTelemetryCo
         env_var="SRC_AUTH_PERMS_SYNC_USERS",
         cli_flag="--users",
         metavar="USERS",
-        help="Process comma-delimited Sourcegraph usernames and/or email addresses",
+        help="Process a comma-delimited list of Sourcegraph usernames and/or email addresses",
         help_group="User filters",
     )
     users_without_explicit_perms: bool = src.config_field(
@@ -245,7 +252,7 @@ class Config(src.SourcegraphClientConfig, src.LoggingConfig, src.OpenTelemetryCo
         env_var="SRC_AUTH_PERMS_SYNC_REPOS",
         cli_flag="--repos",
         metavar="REPOS",
-        help="Process comma-delimited Sourcegraph repository names",
+        help="Process a comma-delimited list of Sourcegraph repository names",
         help_group="Repo filters",
     )
     repos_without_explicit_perms: bool = src.config_field(
@@ -253,7 +260,7 @@ class Config(src.SourcegraphClientConfig, src.LoggingConfig, src.OpenTelemetryCo
         env_var="SRC_AUTH_PERMS_SYNC_REPOS_WITHOUT_EXPLICIT_PERMS",
         cli_flag="--repos-without-explicit-perms",
         cli_action="store_true",
-        help="Process Sourcegraph repositories without explicit permissions",
+        help="Process repositories without explicit permissions",
         help_group="Repo filters",
     )
     repos_created_after: str | None = src.config_field(
@@ -262,7 +269,7 @@ class Config(src.SourcegraphClientConfig, src.LoggingConfig, src.OpenTelemetryCo
         cli_flag="--repos-created-after",
         metavar="YYYY-MM-DD",
         pattern=r"^\d{4}-\d{2}-\d{2}$",
-        help="Process Sourcegraph repositories created on or after this date",
+        help="Process repositories cloned to the Sourcegraph instance on or after this date",
         help_group="Repo filters",
     )
     sync_saml_organizations: bool = src.config_field(
@@ -278,7 +285,7 @@ class Config(src.SourcegraphClientConfig, src.LoggingConfig, src.OpenTelemetryCo
         env_var="SRC_AUTH_PERMS_SYNC_APPLY",
         cli_flag="--apply",
         cli_action="store_true",
-        help="With mutating commands: actually mutate state. Default is dry-run",
+        help="Apply changes (default is dry run)",
         help_group="Mutation",
     )
     no_backup: bool = src.config_field(
@@ -296,7 +303,7 @@ class Config(src.SourcegraphClientConfig, src.LoggingConfig, src.OpenTelemetryCo
         metavar="N",
         ge=1,
         help="Concurrent Sourcegraph API worker threads (default: 16)",
-        help_group="Runtime",
+        help_group="Performance",
     )
     explicit_permissions_batch_size: int = src.config_field(
         default=25,
@@ -307,7 +314,7 @@ class Config(src.SourcegraphClientConfig, src.LoggingConfig, src.OpenTelemetryCo
         help=(
             "Users per GraphQL request when capturing explicit repository permissions (default: 25)"
         ),
-        help_group="Runtime",
+        help_group="Performance",
     )
     max_attempts: int = src.config_field(
         default=5,
@@ -316,7 +323,7 @@ class Config(src.SourcegraphClientConfig, src.LoggingConfig, src.OpenTelemetryCo
         metavar="N",
         ge=1,
         help="Max attempts per HTTP request before giving up (default: 5)",
-        help_group="Runtime",
+        help_group="Performance",
     )
     http_timeout_seconds: float = src.config_field(
         default=60.0,
@@ -325,7 +332,7 @@ class Config(src.SourcegraphClientConfig, src.LoggingConfig, src.OpenTelemetryCo
         metavar="SECONDS",
         gt=0,
         help="HTTP read timeout per request in seconds (default: 60)",
-        help_group="Runtime",
+        help_group="Performance",
     )
     sample_interval: float = src.config_field(
         default=10.0,
@@ -334,7 +341,7 @@ class Config(src.SourcegraphClientConfig, src.LoggingConfig, src.OpenTelemetryCo
         metavar="SECONDS",
         ge=0,
         help="Seconds between logging compute resource samples; set 0 to disable (default: 10)",
-        help_group="Runtime",
+        help_group="Performance",
     )
     fetch_sg_traces: bool = src.config_field(
         default=False,
@@ -342,7 +349,7 @@ class Config(src.SourcegraphClientConfig, src.LoggingConfig, src.OpenTelemetryCo
         cli_flag="--fetch-sg-traces",
         cli_action="store_true",
         help="Ask Sourcegraph to retain GraphQL traces and return debug trace metadata",
-        help_group="Runtime",
+        help_group="Performance",
     )
 
 
@@ -479,6 +486,24 @@ def validate_set_mode_selection(command_name: CommandName, config: Config) -> No
             "--repos-without-explicit-perms, or --repos-created-after"
         )
 
+    set_mode_selected = any(
+        (
+            config.full,
+            bool(config.users),
+            config.users_without_explicit_perms,
+            config.created_after is not None,
+            bool(config.repos),
+            config.repos_without_explicit_perms,
+            config.repos_created_after is not None,
+        )
+    )
+    if not set_mode_selected:
+        config_error(
+            "set requires one of --full, --users, --users-without-explicit-perms, "
+            "--created-after, --repos, --repos-without-explicit-perms, or "
+            "--repos-created-after"
+        )
+
 
 def set_command_options(config: Config) -> permission_types.SetCommandOptions:
     """Return the validated set mode options."""
@@ -600,6 +625,9 @@ def load_cli(argv: Sequence[str] | None = None) -> CliInput:
         parser.error(str(exception))
     command_name = cast(CommandName, arguments.command_name)
     validate_config(command_name, config)
+    if command_name == "restore":
+        assert config.restore_path is not None
+        require_restore_input_file(config.restore_path)
     return CliInput(command_name=command_name, config=config)
 
 
@@ -627,6 +655,15 @@ def require_set_input_file(maps_path: Path) -> None:
         "Run `uv run src-auth-perms-sync get` to create the default maps.yaml, "
         "or pass a path to an existing maps file."
     )
+
+
+def require_restore_input_file(restore_path: Path) -> None:
+    """Exit with a clear error if the selected restore snapshot is missing."""
+    if restore_path.is_file():
+        return
+    if restore_path.exists():
+        raise SystemExit(f"restore snapshot path is not a file: {restore_path}")
+    raise SystemExit(f"restore snapshot file does not exist: {restore_path}")
 
 
 def run_fields(config: Config, command: ResolvedCommand, endpoint: str) -> dict[str, object]:
@@ -761,6 +798,7 @@ def run_restore(
 ) -> None:
     """Run the selected repo-permission restore command."""
     assert config.restore_path is not None
+    require_restore_input_file(config.restore_path)
     permissions_command.cmd_restore(
         client,
         config.restore_path,
