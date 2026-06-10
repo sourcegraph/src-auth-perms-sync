@@ -1,0 +1,13 @@
+maps:
+  - name: Okta account holders get the LOB1 Bitbucket repos
+    users:
+      authProvider:
+        type: saml
+        serviceID: http://www.okta.com/test123
+        clientID: https://sourcegraph.test/.auth/saml/metadata
+        displayName: Okta
+    repos:
+      codeHostConnection:
+        url: https://bitbucket.test/
+        displayName: Bitbucket LOB1
+        username: LOB1-SA1

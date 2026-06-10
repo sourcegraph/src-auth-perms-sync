@@ -56,12 +56,13 @@ class LocalCaseTests(unittest.TestCase):
                         "{user} resolves to the live --user; local mode cannot use it",
                     )
                 argv = shlex.split(cli_command)
-                if argv[:1] == ["restore"]:
+                if argv[:1] == ["restore"] and {"live", "performance"} & set(case_modes(case)):
                     self.assertNotIn(
                         "--apply",
                         argv,
-                        "registry cases must not run a bare restore --apply; restores "
-                        "are managed by the seeded set-apply cycle",
+                        "instance-mode registry cases must not run a bare restore --apply; "
+                        "live restores are managed by the seeded set-apply cycle "
+                        "(local-only cases may restore --apply against the fake)",
                     )
 
     def test_local_replay_cases(self) -> None:

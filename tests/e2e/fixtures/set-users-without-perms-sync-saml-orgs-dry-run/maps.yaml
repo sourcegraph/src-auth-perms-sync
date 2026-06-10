@@ -1,0 +1,8 @@
+maps:
+  - name: Everyone may read the canary repo
+    users:
+      usernameRegexes:
+        - '.*'
+    repos:
+      names:
+        - test-repo-49981

@@ -1,0 +1,9 @@
+maps:
+  - name: test_user_09991 and test_user_09992 own test-repo-49981
+    users:
+      usernames:
+        - test_user_09991
+        - test_user_09992
+    repos:
+      names:
+        - test-repo-49981

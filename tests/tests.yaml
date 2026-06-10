@@ -392,6 +392,86 @@ cases:
     cliCommand: set --repos-created-after 2026-02-01 --apply --no-backup --parallelism 1
     expectedMutations: 1
 
+  full-overwrite-dry-run:
+    description: >-
+      set without --apply plans the full overwrite but makes zero mutations
+      and leaves state untouched — the dry-run default never mutates.
+    modes:
+      - local
+    cliCommand: set --full --no-backup --parallelism 1
+    expectedMutations: 0
+
+  empty-maps-noop:
+    description: >-
+      An empty maps list is a no-op, not an error: zero mutations, existing
+      grants untouched.
+    modes:
+      - local
+    cliCommand: set --full --apply --no-backup --parallelism 1
+    expectedMutations: 0
+
+  match-provider-and-host-fields:
+    description: >-
+      Users matched by authProvider type/serviceID/clientID/displayName
+      (without configID or samlGroup) and repos matched by codeHostConnection
+      url/displayName/username get grants; the builtin-only user does not.
+    modes:
+      - local
+    cliCommand: set --full --apply --no-backup --parallelism 1
+    expectedMutations: 2
+
+  add-users-by-email-and-list:
+    description: >-
+      --users accepts a comma-delimited mix of an email address and a
+      username; only the two selected users gain grants, additively.
+    modes:
+      - local
+    cliCommand: >-
+      set --users
+      marc.leblanc+test09991-m.eks.m.ps.sgdev.org@sourcegraph.com,test_user_09993
+      --apply --no-backup --parallelism 1
+    expectedMutations: 4
+
+  restore-dry-run-noop:
+    description: >-
+      restore without --apply plans against a snapshot that differs from
+      current state but makes zero mutations.
+    modes:
+      - local
+    cliCommand: >-
+      restore --restore-path tests/e2e/fixtures/restore-dry-run-noop/snapshot.json
+      --no-backup --parallelism 1
+    expectedMutations: 0
+
+  restore-applies-snapshot:
+    description: >-
+      restore --apply overwrites the repo that differs from the snapshot and
+      skips the repo that already matches.
+    modes:
+      - local
+    cliCommand: >-
+      restore --restore-path tests/e2e/fixtures/restore-applies-snapshot/snapshot.json
+      --apply --no-backup --parallelism 1
+    expectedMutations: 1
+
+  full-overwrite-with-backup:
+    description: >-
+      The default backup path (no --no-backup) captures before/after
+      snapshots and validates the apply without changing the outcome.
+    modes:
+      - local
+    cliCommand: set --full --apply --parallelism 1
+    expectedMutations: 1
+
+  get-user-grants:
+    description: >-
+      get scoped to one user captures that user's explicit grants and never
+      mutates the instance.
+    modes:
+      - local
+    cliCommand: get --users test_user_09991
+    expectedMutations: 0
+
   # ── Local + live: expected-error cases, replayed read-only on the instance ──
   invalid-bad-regex:
     description: >-
@@ -452,6 +532,41 @@ cases:
     expectedMutations: 0
     expectedErrors:
       - "--repos-created-after must use YYYY-MM-DD"
+
+  invalid-set-unknown-user:
+    description: >-
+      A --users value naming no Sourcegraph user fails before any mutation.
+    modes:
+      - local
+      - live
+    cliCommand: set --users username_doesnt_exist_01
+    expectedMutations: 0
+    expectedErrors:
+      - "No Sourcegraph user found for 'username_doesnt_exist_01'"
+
+  invalid-set-unknown-repo:
+    description: >-
+      A --repos value naming no Sourcegraph repo fails before any mutation.
+    modes:
+      - local
+      - live
+    cliCommand: set --repos repo-doesnt-exist-49999
+    expectedMutations: 0
+    expectedErrors:
+      - "No Sourcegraph repo found for: repo-doesnt-exist-49999"
+
+  invalid-restore-wrong-schema-version:
+    description: >-
+      A snapshot with an unsupported schema_version is refused without
+      changing any state.
+    modes:
+      - local
+    cliCommand: >-
+      restore --restore-path
+      tests/e2e/fixtures/invalid-restore-wrong-schema-version/snapshot.json
+    expectedMutations: 0
+    expectedErrors:
+      - "snapshot schema_version is 1, expected"
 
   restore-missing-file:
     description: >-
@@ -633,6 +748,61 @@ cases:
     expectedOutput:
       - Dry run complete
 
+  set-full-sync-saml-orgs-dry-run:
+    description: >-
+      Combined permission + organization sync dispatch, full mode, dry run
+      only.
+    modes:
+      - live
+    cliCommand: set --full --sync-saml-orgs
+    expectedExitCode: 0
+    expectedOutput:
+      - Dry run complete
+
+  set-created-after-sync-saml-orgs-dry-run:
+    description: >-
+      Combined permission + organization sync dispatch, created-after mode
+      (far-future date selects no users), dry run only.
+    modes:
+      - live
+    cliCommand: set --created-after 2099-01-01 --sync-saml-orgs
+    expectedExitCode: 0
+    expectedOutput:
+      - Dry run complete
+
+  set-repos-sync-saml-orgs-dry-run:
+    description: >-
+      Combined permission + organization sync dispatch, repo-scoped, dry run
+      only.
+    modes:
+      - live
+    cliCommand: set --repos test-repo-49981 --sync-saml-orgs
+    expectedExitCode: 0
+    expectedOutput:
+      - Dry run complete
+
+  set-users-without-perms-sync-saml-orgs-dry-run:
+    description: >-
+      Combined permission + organization sync dispatch,
+      users-without-explicit-perms mode, dry run only.
+    modes:
+      - live
+    cliCommand: set --users-without-explicit-perms --sync-saml-orgs
+    expectedExitCode: 0
+    expectedOutput:
+      - Dry run complete
+
+  set-repos-created-after-sync-saml-orgs-dry-run:
+    description: >-
+      Combined permission + organization sync dispatch, repos-created-after
+      mode (far-future date selects no repos), dry run only.
+    modes:
+      - live
+    cliCommand: set --repos-created-after 2099-01-01 --sync-saml-orgs
+    expectedExitCode: 0
+    expectedOutput:
+      - Dry run complete
+
   sync-saml-orgs-apply:
     description: >-
       Org membership sync converges to SAML group data and validates its own
@@ -668,3 +838,37 @@ cases:
       - performance
     cliCommand: get --users {user}
     expectedExitCode: 0
+
+  get-full-snapshot:
+    description: >-
+      Bare get captures the full instance snapshot. Locally it proves get
+      never mutates; on the instance it is the timed full 10k-user capture,
+      which is why it runs in the performance tier rather than live.
+    modes:
+      - local
+      - performance
+    cliCommand: get
+    expectedMutations: 0
+
+  get-repos-without-explicit-perms:
+    description: >-
+      get --repos-without-explicit-perms scopes the snapshot to repos with
+      no explicit grants. Requires the full before-snapshot, so on the
+      instance it runs in the performance tier.
+    modes:
+      - local
+      - performance
+    cliCommand: get --repos-without-explicit-perms
+    expectedMutations: 0
+
+  set-repos-without-perms-sync-saml-orgs-dry-run:
+    description: >-
+      Combined permission + organization sync dispatch,
+      repos-without-explicit-perms mode, dry run only. Needs the full
+      before-snapshot, so it runs in the performance tier.
+    modes:
+      - performance
+    cliCommand: set --repos-without-explicit-perms --sync-saml-orgs
+    expectedExitCode: 0
+    expectedOutput:
+      - Dry run complete
