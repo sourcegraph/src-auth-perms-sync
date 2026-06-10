@@ -13,14 +13,6 @@
 - How do we avoid stampedes (e.g., bulk repo sync triggering thousands
   of re-runs)?
 
-## High priority: End to End test cases
-
-- Create test cases. Each test case should contain:
-  - Before state
-  - maps.yaml file
-  - Expected after state
-- Script to run the script, and verify the after state matches the expected after state
-
 ## High priority: Verify perms are updated when a user's SAML groups change
 
 - If a user gets added to a new SAML group, which hits a mapping, ensure they

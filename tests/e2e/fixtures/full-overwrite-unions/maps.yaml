@@ -1,0 +1,16 @@
+maps:
+  - name: Alice owns app and lib
+    users:
+      usernames:
+        - alice
+    repos:
+      names:
+        - github.com/acme/app
+        - github.com/acme/lib
+  - name: Bob also owns lib
+    users:
+      usernames:
+        - bob
+    repos:
+      names:
+        - github.com/acme/lib
