@@ -111,7 +111,7 @@ class CliConfigTests(unittest.TestCase):
         ):
             env_file = Path(directory) / ".env"
             env_file.write_text("")
-            cli_input = cli.load_cli(["set", "--env-file", str(env_file)])
+            cli_input = cli.load_cli(["set", "--env-file", str(env_file), "--full"])
 
         self.assertEqual("set", cli_input.command_name)
         self.assertIsNone(cli_input.config.maps_path)
@@ -133,6 +133,35 @@ class CliConfigTests(unittest.TestCase):
 
         self.assertEqual(Path.cwd() / "snapshot.json", config.restore_path)
 
+    def test_load_cli_rejects_missing_restore_snapshot_file(self) -> None:
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            mock.patch.dict(
+                os.environ,
+                {
+                    "SRC_ENDPOINT": "https://sourcegraph.example.com",
+                    "SRC_ACCESS_TOKEN": "secret",
+                },
+                clear=True,
+            ),
+        ):
+            env_file = Path(directory) / ".env"
+            env_file.write_text("")
+            missing_snapshot = Path(directory) / "missing-before.json"
+
+            with self.assertRaises(SystemExit) as exit_context:
+                cli.load_cli(
+                    [
+                        "restore",
+                        "--env-file",
+                        str(env_file),
+                        "--restore-path",
+                        str(missing_snapshot),
+                    ]
+                )
+
+        self.assertIn("restore snapshot file does not exist", str(exit_context.exception))
+
     def test_users_config_loads_comma_delimited_values(self) -> None:
         config = load_config_from_env(SRC_AUTH_PERMS_SYNC_USERS="alice, bob@example.com,,carol")
 
@@ -151,7 +180,7 @@ class CliConfigTests(unittest.TestCase):
     def test_set_command_options_match_each_incremental_mode(self) -> None:
         self.assertEqual(
             "full",
-            cli.set_command_options(make_config(maps_path=Path("maps.yaml"))).mode,
+            cli.set_command_options(make_config(maps_path=Path("maps.yaml"), full=True)).mode,
         )
         self.assertEqual(
             ("users", ("alice", "bob@example.com")),
@@ -201,7 +230,10 @@ class CliConfigTests(unittest.TestCase):
             "set",
             make_config(maps_path=Path("maps.yaml"), users=("alice",), apply=True),
         )
-        full_command = cli.resolve_command("set", make_config(maps_path=Path("maps.yaml")))
+        full_command = cli.resolve_command(
+            "set",
+            make_config(maps_path=Path("maps.yaml"), full=True),
+        )
         created_after_command = cli.resolve_command(
             "set",
             make_config(maps_path=Path("maps.yaml"), created_after="2026-01-01"),
@@ -236,6 +268,7 @@ class CliConfigTests(unittest.TestCase):
                 maps_path=Path("maps.yaml"),
                 apply=True,
                 sync_saml_organizations=True,
+                full=True,
             ),
         )
 
@@ -247,7 +280,7 @@ class CliConfigTests(unittest.TestCase):
     def test_validate_config_allows_sync_saml_orgs_with_set(self) -> None:
         cli.validate_config(
             "set",
-            make_config(maps_path=Path("maps.yaml"), sync_saml_organizations=True),
+            make_config(maps_path=Path("maps.yaml"), sync_saml_organizations=True, full=True),
         )
 
     def test_validate_config_rejects_sync_saml_orgs_without_set(self) -> None:
@@ -339,8 +372,12 @@ class CliConfigTests(unittest.TestCase):
             "require get or set",
         )
 
-    def test_validate_config_allows_set_without_explicit_mode(self) -> None:
-        cli.validate_config("set", make_config(maps_path=Path("maps.yaml")))
+    def test_validate_config_rejects_set_without_explicit_mode(self) -> None:
+        self.assert_config_error(
+            "set",
+            make_config(maps_path=Path("maps.yaml")),
+            "set requires one of --full",
+        )
 
     def test_created_after_config_accepts_yyyy_mm_dd_date_arguments(self) -> None:
         config = load_config_from_env(SRC_AUTH_PERMS_SYNC_CREATED_AFTER="2026-01-01")
@@ -470,6 +507,16 @@ class CliConfigTests(unittest.TestCase):
             with self.assertRaises(SystemExit) as exit_context:
                 cli.require_set_input_file(Path(directory) / "missing.yaml")
             self.assertIn("set input file does not exist", str(exit_context.exception))
+
+    def test_require_restore_input_file_reports_missing_snapshot_file(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            existing_path = Path(directory) / "before.json"
+            existing_path.write_text("{}\n")
+            cli.require_restore_input_file(existing_path)
+
+            with self.assertRaises(SystemExit) as exit_context:
+                cli.require_restore_input_file(Path(directory) / "missing.json")
+            self.assertIn("restore snapshot file does not exist", str(exit_context.exception))
 
     def test_config_with_default_paths_only_defaults_omitted_maps_path(self) -> None:
         endpoint_directory = Path.cwd() / backups.ARTIFACTS_DIR_NAME / "sourcegraph.example.com"
@@ -631,7 +678,7 @@ class CliConfigTests(unittest.TestCase):
         self.assertIsNone(cmd_set_full.call_args.kwargs["repository_created_after"])
 
     def test_run_command_passes_set_data_to_combined_sync(self) -> None:
-        configuration = make_config(sync_saml_organizations=True)
+        configuration = make_config(sync_saml_organizations=True, full=True)
         command = cli.resolve_command("set", configuration)
         client = cast(src.SourcegraphClient, object())
         sourcegraph_site_config = object()
