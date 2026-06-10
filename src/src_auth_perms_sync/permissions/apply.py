@@ -28,25 +28,28 @@ MISSING_MUTATION_RESOURCE_TERMS = (
 
 @dataclass
 class CircuitBreaker:
-    """Sliding-window circuit breaker for the apply phase.
+    """Sliding-window circuit breaker for bulk GraphQL phases.
 
-    Tracks the most recent `window_size` mutation outcomes (success or
+    Tracks the most recent `window_size` request outcomes (success or
     failure). Once `failure_rate` over that window exceeds
     `failure_threshold` AND we have at least `min_samples` outcomes
     recorded, the breaker opens and `is_open()` returns True for the rest
     of the run (no half-open / reset logic — once we decide the backend
     is too unhealthy, we stay tripped).
 
-    Designed to bail out of a hopeless run (e.g., backend down or
-    severely rate-limiting) instead of grinding through every remaining
-    mutation, retrying each request repeatedly, and burning hours of
-    wall-clock in retries while making things worse for the server.
+    Designed to bail out of a hopeless run (e.g., backend down, severely
+    rate-limiting, or saturated to the point of read timeouts) instead of
+    grinding through every remaining request, retrying each one
+    repeatedly, and burning hours of wall-clock in retries while making
+    things worse for the server.
 
-    Used by the apply helpers: each completed mutation calls
-    `breaker.record(success=...)`, then `is_open()` is checked between
-    completions; once open, the remaining queued futures are cancelled
-    and the loop exits, leaving the operator a clear ERROR log + a
-    non-zero exit code.
+    Used by the apply helpers and the snapshot capture functions: each
+    completed request calls `breaker.record(success=...)`, then
+    `is_open()` is checked between completions; once open, the remaining
+    queued futures are cancelled and the loop exits. Apply phases finish
+    with the after-snapshot + validation and exit 1; capture phases raise
+    immediately, because a snapshot with silently-missing grants must
+    never be written (it could later drive an incorrect restore).
     """
 
     window_size: int = 50
@@ -86,10 +89,9 @@ class CircuitBreaker:
                 )
                 log.error(
                     "Circuit breaker OPEN: %d/%d (%.0f%%) of last %d "
-                    "mutations failed; halting apply to avoid hammering "
-                    "a struggling instance. Remaining work will be "
-                    "cancelled; the run will continue with the after-"
-                    "snapshot+validation, then exit 1.",
+                    "requests failed; halting this phase to avoid "
+                    "hammering a struggling instance. Remaining work "
+                    "will be cancelled and the run will fail.",
                     failures,
                     len(self._outcomes),
                     100 * rate,

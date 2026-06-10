@@ -8,7 +8,7 @@ import json
 import logging
 import time
 from collections.abc import Callable, Iterable, Sequence
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import CancelledError, ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, TextIO, TypeAlias, TypedDict, cast
@@ -17,10 +17,29 @@ import src_py_lib as src
 
 from ..shared import run_context
 from ..shared import types as shared_types
+from . import apply as permissions_apply
 from . import sourcegraph as permissions_sourcegraph
 from . import types as permission_types
 
 log = logging.getLogger(__name__)
+
+
+def _raise_if_capture_circuit_open(breaker: permissions_apply.CircuitBreaker) -> None:
+    """Abort a capture whose circuit breaker has opened.
+
+    Unlike the apply phases (which finish with an after-snapshot and exit 1),
+    a capture must raise: failed lookups are otherwise recorded as "no
+    grants", and a snapshot with silently-missing grants could later drive
+    an incorrect restore.
+    """
+    if not breaker.is_open():
+        return
+    raise RuntimeError(
+        "Permissions capture aborted: circuit breaker opened after "
+        f"{breaker.total_failures} failed grant lookup(s) "
+        f"({breaker.total_successes} succeeded). Refusing to build a "
+        "snapshot with missing grants. Re-run once the instance is healthy."
+    )
 
 
 class RepoSnapshot(TypedDict):
@@ -196,6 +215,7 @@ def capture_explicit_grants(
     # Invert directly as each per-user fetch completes. Store only repo IDs
     # first, then hydrate each unique repo name once after all users complete.
     usernames_by_repository_id: dict[str, list[str]] = {}
+    breaker = permissions_apply.CircuitBreaker()
 
     def _fetch(
         batch_users: list[SnapshotUserInput],
@@ -219,7 +239,9 @@ def capture_explicit_grants(
                     batch_size=explicit_permissions_batch_size,
                 )
                 failures = 0
+                breaker.record(success=True)
             except Exception as exception:
+                breaker.record(success=False)
                 log.warning(
                     "Failed to batch-fetch explicit grants for %d user(s): %s. "
                     "Falling back to one query per user.",
@@ -244,6 +266,11 @@ def capture_explicit_grants(
         repository_ids_by_user_id: dict[str, list[str]] = {}
         failures = 0
         for user in batch_users:
+            if breaker.is_open():
+                # The whole capture is about to be aborted; don't grind
+                # through the rest of the batch (each lookup can burn
+                # minutes in retries against a saturated instance).
+                break
             try:
                 repository_ids_by_user_id[user["id"]] = (
                     permissions_sourcegraph.list_user_explicit_repo_ids(
@@ -251,8 +278,10 @@ def capture_explicit_grants(
                         user["id"],
                     )
                 )
+                breaker.record(success=True)
             except Exception as exception:
                 failures += 1
+                breaker.record(success=False)
                 log.warning(
                     "Failed to fetch explicit grants for user=%s: %s",
                     user["username"],
@@ -332,11 +361,16 @@ def capture_explicit_grants(
         ) -> None:
             nonlocal capture_failures, completed, scanned_user_count
             submitted_batch = result.item
+            if isinstance(result.exception, CancelledError):
+                # Cancelled by the circuit breaker opening; the capture is
+                # about to be aborted, so don't count these as scanned.
+                return
             completed += len(submitted_batch)
             scanned_user_count += len(submitted_batch)
             if result.exception is not None:
                 # Don't blow up the whole capture; warn so the operator can
                 # see the users whose grants were treated as empty.
+                breaker.record(success=False)
                 capture_failures += len(submitted_batch)
                 log.warning(
                     "Failed to fetch explicit grants for %d user(s): %s",
@@ -371,12 +405,14 @@ def capture_explicit_grants(
             parallelism=parallelism,
             worker_pool=worker_pool,
             handle_result=_record_completed_batch,
+            should_stop=breaker.is_open,
             max_pending=max_pending_batches,
         )
         _log_progress(force=True)
         capture_event["scanned_user_count"] = scanned_user_count
         if capture_failures:
             capture_event["user_permission_lookup_failures"] = capture_failures
+        _raise_if_capture_circuit_open(breaker)
 
     # Stable sort: users alphabetical within each repo.
     for usernames in usernames_by_repository_id.values():
@@ -528,8 +564,9 @@ def capture_user_scoped_explicit_grants(
 ) -> dict[str, UserScopedUserSnapshot]:
     """Capture explicit API grants for only the supplied users."""
     scoped_users: dict[str, UserScopedUserSnapshot] = {}
+    breaker = permissions_apply.CircuitBreaker()
 
-    def _fetch(user: SnapshotUser) -> tuple[SnapshotUser, list[permission_types.Repository]]:
+    def _fetch(user: SnapshotUser) -> list[permission_types.Repository]:
         with src.span(
             "user_scoped_explicit_repos_fetch",
             level="DEBUG",
@@ -538,36 +575,44 @@ def capture_user_scoped_explicit_grants(
         ) as fetch_event:
             repos = permissions_sourcegraph.list_user_explicit_repos(client, user["id"])
             fetch_event["repo_count"] = len(repos)
-            return user, repos
+            return repos
 
-    def _fetch_or_empty(
-        user: SnapshotUser,
-    ) -> tuple[SnapshotUser, list[permission_types.Repository]]:
-        try:
-            return _fetch(user)
-        except Exception as exception:
+    def _record_result(
+        result: run_context.ParallelResult[SnapshotUser, list[permission_types.Repository]],
+    ) -> None:
+        user = result.item
+        if isinstance(result.exception, CancelledError):
+            return
+        if result.exception is not None:
+            breaker.record(success=False)
             log.warning(
                 "Failed to fetch scoped explicit grants for user=%s: %s",
                 user["username"],
-                exception,
+                result.exception,
             )
-            return user, []
+            scoped_users[user["username"]] = {"id": user["id"], "repos": []}
+            return
+        breaker.record(success=True)
+        repos = result.value if result.value is not None else []
+        scoped_users[user["username"]] = {
+            "id": user["id"],
+            "repos": sorted(repos, key=lambda repo: repo["name"]),
+        }
 
     with src.span("capture_user_scoped_explicit_grants") as capture_event:
-        for fetched_user, repos in run_context.parallel_map(
-            _fetch_or_empty,
+        run_context.parallel_process(
+            _fetch,
             users,
             parallelism=parallelism,
             worker_pool=worker_pool,
-        ):
-            scoped_users[fetched_user["username"]] = {
-                "id": fetched_user["id"],
-                "repos": sorted(repos, key=lambda repo: repo["name"]),
-            }
+            handle_result=_record_result,
+            should_stop=breaker.is_open,
+        )
         capture_event["scanned_user_count"] = len(scoped_users)
         capture_event["total_grants"] = sum(
             len(user_snapshot["repos"]) for user_snapshot in scoped_users.values()
         )
+        _raise_if_capture_circuit_open(breaker)
     return dict(sorted(scoped_users.items()))
 
 

@@ -1,7 +1,0 @@
-{
-  "description": "Additive --users mode grants mapped repos to one user without dropping existing repo users.",
-  "set": {
-    "users": ["bob"]
-  },
-  "expectedMutations": 2
-}

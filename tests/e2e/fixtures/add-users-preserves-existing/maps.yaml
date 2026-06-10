@@ -2,9 +2,9 @@ maps:
   - name: Grant app and lib to selected users
     users:
       usernames:
-        - alice
-        - bob
+        - test_user_09991
+        - test_user_09992
     repos:
       names:
-        - github.com/acme/app
-        - github.com/acme/lib
+        - test-repo-49981
+        - test-repo-49982

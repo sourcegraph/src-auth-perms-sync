@@ -1,0 +1,8 @@
+maps:
+  - name: Valid rule that must never run because the date value is rejected
+    users:
+      usernames:
+        - test_user_09991
+    repos:
+      names:
+        - test-repo-49981

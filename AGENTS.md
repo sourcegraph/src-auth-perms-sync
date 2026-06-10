@@ -26,21 +26,40 @@ uv run src-auth-perms-sync --help
 
 ## Testing
 
-- First run a dry-run (default behaviour, without `--apply` flag) against a Sourcegraph instance
+All testing runs through one entrypoint: `tests/run.py`. Output goes to the
+console and to a per-run log file under `logs/`. Each level runs only its
+own checks.
 
 ```bash
-uv run src-auth-perms-sync [--get]
-uv run src-auth-perms-sync --set maps.yaml --full
-uv run src-auth-perms-sync --restore backups/<source>/<run>/before.json
+# Fast, no network (also what the pre-commit hook runs):
+# lint, format, pyright, unit + fixture tests, CLI rejection matrix,
+# randomized permission invariants
+uv run tests/run.py
+
+# End-to-end runs against the .env test instance with independent GraphQL
+# read-back verification, and a wheel install smoke test
+uv run tests/run.py --live
+
+# Run a subset: comma-delimited test names, substring match
+uv run tests/run.py --live full-overwrite-unions
+uv run tests/run.py --live wheel,baseline
+
+# Repeated timed runs with Jaeger trace retention, RSS sampling,
+# optional kubectl load monitoring, and baseline comparison
+uv run tests/run.py --performance --repeat 3
+uv run tests/run.py --performance --baseline-command "uvx src-auth-perms-sync@latest" \
+  --fail-on-memory-regression-percent 10
+
+# Regenerate fixture goldens after editing tests/e2e/fixtures/ cases
+uv run tests/run.py --update-golden
 ```
 
-- Read the output, and evaluate the expected changes
-- If the expected changes look correct
-  - Run with the `--apply` flag against the test instance
-  - Read and evaluate the output for expected changes
-  - Run with the `--restore` flag against the test instance
-  - Always inspect the before / after snapshots in
-    `src-auth-perms-sync-runs/<endpoint>/backups/` afterward to confirm the diff matches what you expected
+- Fixture cases live in `tests/e2e/fixtures/<case>/` — see the README there
+  for the format. Add cases there to cover new mapping behaviors.
+- For manual verification against a real instance, dry-run first (no
+  `--apply`), read the planned changes, then `--apply` on a scratch instance
+  and inspect the before/after snapshots under
+  `src-auth-perms-sync-runs/<endpoint>/runs/`.
 
 ## Release process
 

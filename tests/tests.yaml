@@ -1,0 +1,670 @@
+# Registry of end-to-end test cases.
+#
+# Each key under `cases:` may have a matching directory in tests/e2e/fixtures/
+# holding the case's state files. The directory is only required when the
+# case actually uses files:
+#   before.json   instance state before the run (providers, services, users,
+#                 repos with explicitPermissionsUsers). Required for local
+#                 mode and for mutating (--apply) live/performance runs.
+#   maps.yaml     the mapping rules under test. Required for set commands
+#                 that do not pass their own --maps-path.
+#   after.json    expected state after the run (omit when state must NOT
+#                 change: no-op cases and expected-error cases)
+# A read-only non-set command (e.g. `get --users x`) needs no directory.
+#
+# Case fields:
+#   description       What the case proves.
+#   modes             Where the case runs: local, live, performance.
+#                       local        run the CLI in-process against an
+#                                    in-memory instance built from before.json;
+#                                    assert the full resulting state
+#                       live         run cliCommand against the .env test
+#                                    instance. Read-only commands just assert
+#                                    exit code and expectedErrors. Mutating
+#                                    commands (--apply) first seed the
+#                                    before.json state onto the involved
+#                                    repos, run, verify the result with an
+#                                    independent GraphQL read-back, and
+#                                    finally restore the original state.
+#                                    Live cases must use REAL instance
+#                                    users/repos in their fixture files, and
+#                                    exact selectors only (users:
+#                                    usernames/emails, repos: names).
+#                       performance  same as live, but timed and measured
+#                                    (traces, RSS sampling, TSV row)
+#   cliCommand        CLI arguments to run, parsed by the real argument
+#                     parser. For set commands, --maps-path <case dir>/maps.yaml
+#                     is appended automatically when not supplied.
+#   importConfig      Optional. Also run the case through the Python import
+#                     API (cli.Config + cli.resolve_command + cli.run_command)
+#                     like a library consumer would. Keys are Config field
+#                     names plus `command`; maps_path defaults to the case
+#                     directory's maps.yaml for set commands.
+#   expectedMutations Exact number of permission mutations the run must make.
+#   expectedErrors    The command must FAIL, every substring must appear in
+#                     the failure, and state must be unchanged.
+#   live.involvedRepos        For mutating instance runs: extra repos to
+#                     capture, seed, verify, and restore beyond the fixture
+#                     state and exact rule names. Required when rules use
+#                     non-exact repo selectors (regexes): declare every repo
+#                     the selector can match. Involved repos absent from
+#                     after.json are canaries that must read back unchanged.
+#   live.usersWithoutOtherGrants  Preflight: these users must hold no
+#                     explicit grants outside the involved repos, making
+#                     globally-scoped modes (--users-without-explicit-perms)
+#                     deterministic.
+#   expectedExitCode  Either of these makes the case replay-style: assert the
+#   expectedOutput    exit code and output substrings instead of instance
+#                     state. Locally, replay cases run the real argument
+#                     parser in-process and need no fixture files.
+#
+# `{user}` in a cliCommand resolves to the configured --user on the test
+# instance (live/performance modes only).
+
+cases:
+
+  # ── Local parse replays: argument validation, in-process, no files (fastest) ──
+  reject-bare-invocation:
+    description: A bare invocation without a command prints usage and exits 2.
+    modes:
+      - local
+    cliCommand: ""
+    expectedExitCode: 2
+    expectedOutput:
+      - "the following arguments are required: COMMAND"
+
+  reject-unknown-command:
+    description: An unknown subcommand is rejected with the valid choices.
+    modes:
+      - local
+    cliCommand: bogus
+    expectedExitCode: 2
+    expectedOutput:
+      - "invalid choice: 'bogus'"
+
+  reject-two-commands:
+    description: Two subcommands in one invocation are rejected.
+    modes:
+      - local
+    cliCommand: get set
+    expectedExitCode: 2
+    expectedOutput:
+      - unrecognized arguments
+
+  reject-get-apply:
+    description: get is read-only; --apply is rejected.
+    modes:
+      - local
+    cliCommand: get --apply
+    expectedExitCode: 2
+    expectedOutput:
+      - unrecognized arguments
+
+  reject-get-full:
+    description: --full requires the set command.
+    modes:
+      - local
+    cliCommand: get --full
+    expectedExitCode: 2
+    expectedOutput:
+      - unrecognized arguments
+
+  reject-malformed-date:
+    description: dates must match YYYY-MM-DD before any network call.
+    modes:
+      - local
+    cliCommand: get --created-after 2026-1-01
+    expectedExitCode: 2
+    expectedOutput:
+      - string_pattern_mismatch
+
+  reject-user-filter-conflict:
+    description: user filters are mutually exclusive.
+    modes:
+      - local
+    cliCommand: get --users test_user_09991 --users-without-explicit-perms
+    expectedExitCode: 2
+    expectedOutput:
+      - choose only one of --users
+
+  reject-user-and-repo-filters:
+    description: user filters and repo filters cannot be combined.
+    modes:
+      - local
+    cliCommand: get --users test_user_09991 --repos test-repo-49981
+    expectedExitCode: 2
+    expectedOutput:
+      - choose either user filters or repo filters
+
+  reject-repo-filter-conflict:
+    description: repo filters are mutually exclusive.
+    modes:
+      - local
+    cliCommand: get --repos test-repo-49981 --repos-without-explicit-perms
+    expectedExitCode: 2
+    expectedOutput:
+      - choose only one of --repos
+
+  reject-repos-created-after-malformed:
+    description: repo creation dates must match YYYY-MM-DD at parse time.
+    modes:
+      - local
+    cliCommand: get --repos-created-after 2026-1-01
+    expectedExitCode: 2
+    expectedOutput:
+      - string_pattern_mismatch
+
+  reject-get-removed-repositories-created-after:
+    description: >-
+      The removed --repositories-created-after spelling stays removed; the
+      flag is --repos-created-after.
+    modes:
+      - local
+    cliCommand: get --repositories-created-after 2026-01-01
+    expectedExitCode: 2
+    expectedOutput:
+      - "unrecognized arguments: --repositories-created-after"
+
+  reject-verbosity-conflict:
+    description: the --verbose and --quiet log-level aliases are mutually exclusive.
+    modes:
+      - local
+    cliCommand: get --users username_doesnt_exist_01 --verbose --quiet
+    expectedExitCode: 2
+    expectedOutput:
+      - choose only one of --verbose/-v, --quiet/-q, or --silent/-s
+
+  reject-bare-set:
+    description: set requires an explicit mode flag.
+    modes:
+      - local
+    cliCommand: set
+    expectedExitCode: 2
+    expectedOutput:
+      - set requires one of --full
+
+  reject-set-full-and-users:
+    description: set modes are mutually exclusive.
+    modes:
+      - local
+    cliCommand: set --full --users test_user_09991
+    expectedExitCode: 2
+    expectedOutput:
+      - choose at most one
+
+  reject-set-user-filter-conflict:
+    description: set user filters are mutually exclusive.
+    modes:
+      - local
+    cliCommand: set --users test_user_09991 --users-without-explicit-perms
+    expectedExitCode: 2
+    expectedOutput:
+      - choose only one of --users
+
+  reject-set-full-and-created-after:
+    description: full overwrite cannot be combined with the additive date filter.
+    modes:
+      - local
+    cliCommand: set --full --created-after 2099-01-01
+    expectedExitCode: 2
+    expectedOutput:
+      - "--full cannot be combined with --created-after"
+
+  reject-set-restore-path:
+    description: "--restore-path belongs to restore; set does not accept it."
+    modes:
+      - local
+    cliCommand: set --restore-path definitely-missing.json
+    expectedExitCode: 2
+    expectedOutput:
+      - "unrecognized arguments: --restore-path"
+
+  reject-bare-restore:
+    description: restore requires a snapshot path.
+    modes:
+      - local
+    cliCommand: restore
+    expectedExitCode: 2
+    expectedOutput:
+      - restore requires --restore-path
+
+  reject-restore-with-users:
+    description: restore does not take user filters.
+    modes:
+      - local
+    cliCommand: restore --restore-path definitely-missing.json --users test_user_09991
+    expectedExitCode: 2
+    expectedOutput:
+      - unrecognized arguments
+
+  reject-restore-repos:
+    description: restore does not take repo filters.
+    modes:
+      - local
+    cliCommand: restore --restore-path definitely-missing.json --repos test-repo-49981
+    expectedExitCode: 2
+    expectedOutput:
+      - "unrecognized arguments: --repos"
+
+  reject-restore-sync-saml-orgs:
+    description: "--sync-saml-orgs belongs to set; restore does not accept it."
+    modes:
+      - local
+    cliCommand: restore --restore-path definitely-missing.json --sync-saml-orgs
+    expectedExitCode: 2
+    expectedOutput:
+      - "unrecognized arguments: --sync-saml-orgs"
+
+  reject-sync-saml-orgs-created-after:
+    description: sync-saml-orgs does not take user filters.
+    modes:
+      - local
+    cliCommand: sync-saml-orgs --created-after 2099-01-01
+    expectedExitCode: 2
+    expectedOutput:
+      - unrecognized arguments
+
+  reject-sync-saml-orgs-users:
+    description: sync-saml-orgs does not take a user list.
+    modes:
+      - local
+    cliCommand: sync-saml-orgs --users username_doesnt_exist_01
+    expectedExitCode: 2
+    expectedOutput:
+      - "unrecognized arguments: --users"
+
+  reject-sync-saml-orgs-full:
+    description: "--full belongs to set; sync-saml-orgs does not accept it."
+    modes:
+      - local
+    cliCommand: sync-saml-orgs --full
+    expectedExitCode: 2
+    expectedOutput:
+      - "unrecognized arguments: --full"
+
+  reject-sync-saml-orgs-restore-path:
+    description: "--restore-path belongs to restore; sync-saml-orgs does not accept it."
+    modes:
+      - local
+    cliCommand: sync-saml-orgs --restore-path definitely-missing.json
+    expectedExitCode: 2
+    expectedOutput:
+      - "unrecognized arguments: --restore-path"
+
+  # ── Local state cases: full CLI runs against an in-memory instance ──
+  and-filters-intersect:
+    description: >-
+      Multiple user filters AND together: both users are in the SAML group,
+      but only test_user_09991 matches the email filter.
+    modes:
+      - local
+    cliCommand: set --full --apply --no-backup --parallelism 1
+    expectedMutations: 1
+
+  regex-filters-scope:
+    description: >-
+      Email and repo-name regex filters scope grants to matching users and
+      repos only. Live, the declared involvedRepos cover the full closed
+      regex range; the unmatched repos in it are canaries that must read
+      back unchanged, which catches a widened repo regex.
+    modes:
+      - local
+      - live
+      - performance
+    cliCommand: set --full --apply --no-backup --parallelism 1
+    live:
+      involvedRepos:
+        - test-repo-49980
+        - test-repo-49981
+        - test-repo-49982
+        - test-repo-49983
+        - test-repo-49984
+        - test-repo-49985
+        - test-repo-49986
+        - test-repo-49987
+        - test-repo-49988
+        - test-repo-49989
+    expectedMutations: 2
+
+  saml-group-filter:
+    description: >-
+      authProvider samlGroup filter grants Bitbucket repos only to users whose
+      SAML assertion includes the group.
+    modes:
+      - local
+    cliCommand: set --full --apply --no-backup --parallelism 1
+    expectedMutations: 2
+
+  set-users-created-after:
+    description: >-
+      createdAfter mode additively grants mapped repos to users created
+      on/after the date, preserving existing grants.
+    modes:
+      - local
+    cliCommand: >-
+      set --created-after 2026-02-01 --apply --no-backup --parallelism 1
+
+    importConfig:
+      command: set
+      created_after: "2026-02-01"
+      apply: true
+      no_backup: true
+      parallelism: 1
+    expectedMutations: 4
+
+  set-users-without-explicit-perms:
+    description: >-
+      --users-without-explicit-perms additively grants mapped repos only to
+      users who currently hold no explicit grants anywhere. Live, the
+      preflight asserts the named users hold no grants outside the involved
+      repos, which makes the selection deterministic. Also pins
+      --explicit-permissions-batch-size by forcing the smallest batch.
+    modes:
+      - local
+      - live
+      - performance
+    live:
+      usersWithoutOtherGrants:
+        - test_user_09961
+        - test_user_09962
+    cliCommand: >-
+      set --users-without-explicit-perms --apply --no-backup --parallelism 1
+      --explicit-permissions-batch-size 1
+    expectedMutations: 2
+
+  set-repos-without-explicit-perms:
+    description: >-
+      --repos-without-explicit-perms overwrites only repos that currently
+      have no explicit grants. Runs in the performance tier on the instance
+      because the mode requires a full before-snapshot (a 10k-user scan).
+    modes:
+      - local
+      - performance
+    cliCommand: set --repos-without-explicit-perms --apply --no-backup --parallelism 1
+    expectedMutations: 1
+
+  set-repos-created-after:
+    description: >-
+      --repos-created-after scopes the overwrite to repos created on/after
+      the date.
+    modes:
+      - local
+    cliCommand: set --repos-created-after 2026-02-01 --apply --no-backup --parallelism 1
+    expectedMutations: 1
+
+  # ── Local + live: expected-error cases, replayed read-only on the instance ──
+  invalid-bad-regex:
+    description: >-
+      An invalid Python regex in a filter is rejected by structural validation
+      before any mutation.
+    modes:
+      - local
+      - live
+    cliCommand: set --full
+    expectedMutations: 0
+    expectedErrors:
+      - is not a valid Python regex
+
+  invalid-missing-repos-section:
+    description: >-
+      A rule without a repos section is rejected by structural validation
+      before any mutation.
+    modes:
+      - local
+      - live
+    cliCommand: set --full
+    expectedMutations: 0
+    expectedErrors:
+      - "`repos:` section is missing"
+
+  invalid-unknown-selector-field:
+    description: >-
+      A typo'd selector field is rejected by structural validation before any
+      mutation.
+    modes:
+      - local
+      - live
+    cliCommand: set --full
+    expectedMutations: 0
+    expectedErrors:
+      - unknown users field 'userNames'
+
+  invalid-set-created-after-date:
+    description: >-
+      An impossible calendar date passes the YYYY-MM-DD shape check but set
+      rejects it post-parse, before any mutation.
+    modes:
+      - local
+      - live
+    cliCommand: set --created-after 2026-02-31
+    expectedMutations: 0
+    expectedErrors:
+      - "--created-after must use YYYY-MM-DD"
+
+  invalid-set-repos-created-after-date:
+    description: >-
+      An impossible calendar date passes the YYYY-MM-DD shape check but the
+      repo-scoped set rejects it post-parse, before any mutation.
+    modes:
+      - local
+      - live
+    cliCommand: set --repos-created-after 2026-02-31
+    expectedMutations: 0
+    expectedErrors:
+      - "--repos-created-after must use YYYY-MM-DD"
+
+  restore-missing-file:
+    description: >-
+      restore with a snapshot path that does not exist fails without changing
+      any state.
+    modes:
+      - local
+      - live
+    cliCommand: restore --restore-path definitely-missing-restore.json
+    expectedMutations: 0
+    expectedErrors:
+      - "restore snapshot file does not exist"
+
+  # ── Local + live: mutating cases, seeded and restored on the instance ──
+  no-match-noop:
+    description: >-
+      A rule matching no users produces zero mutations and leaves existing
+      grants untouched.
+    modes:
+      - local
+      - live
+    cliCommand: set --full --apply --no-backup --parallelism 1
+    expectedMutations: 0
+
+  set-repos-filter:
+    description: >-
+      --repos scopes the full overwrite to the listed repos; other mapped
+      repos keep their existing grants. Also pins --src-log-level DEBUG:
+      maximum verbosity must not change the run's behavior.
+    modes:
+      - local
+      - live
+      - performance
+    cliCommand: >-
+      set --repos test-repo-49971 --apply --no-backup --parallelism 1
+      --src-log-level DEBUG
+    expectedMutations: 1
+
+  add-users-preserves-existing:
+    description: >-
+      Additive --users mode grants mapped repos to one user without dropping
+      existing repo users.
+    modes:
+      - local
+      - live
+    cliCommand: set --users test_user_09992 --apply --no-backup --parallelism 1
+    importConfig:
+      command: set
+      users:
+        - test_user_09992
+      apply: true
+      no_backup: true
+      parallelism: 1
+    expectedMutations: 2
+
+  full-overwrite-removes-stale-grant:
+    description: >-
+      Full set mode overwrites a mapped repo's explicit users, removing grants
+      that no rule justifies.
+    modes:
+      - local
+      - live
+    cliCommand: set --full --apply --no-backup --parallelism 1
+    expectedMutations: 1
+
+  # ── Live only: real-instance validation and organization sync ──
+  invalid-created-after-date:
+    description: >-
+      An impossible calendar date passes the YYYY-MM-DD shape check but is
+      rejected by date validation.
+    modes:
+      - live
+    cliCommand: get --created-after 2026-02-31
+    expectedErrors:
+      - "--created-after must use YYYY-MM-DD"
+
+  invalid-missing-maps-file:
+    description: >-
+      A maps path that does not exist is rejected with a pointer to the
+      command that creates the default maps file. Also pins the --quiet
+      alias: the error must reach the operator even at WARNING verbosity.
+    modes:
+      - live
+    cliCommand: set --full --maps-path definitely-missing-maps.yaml --quiet
+    expectedErrors:
+      - set input file does not exist
+
+  get-created-after-future:
+    description: >-
+      A far-future --created-after selects no users on the real instance.
+    modes:
+      - live
+    cliCommand: get --created-after 2099-01-01
+    expectedExitCode: 0
+    expectedOutput:
+      - Selected 0 user(s) for get output.
+
+  get-user-created-after-future:
+    description: >-
+      --users combined with a far-future --created-after filters the named
+      user out of the selection.
+    modes:
+      - live
+    cliCommand: get --users {user} --created-after 2099-01-01
+    expectedExitCode: 0
+    expectedOutput:
+      - no user metadata selected
+
+  get-users-without-perms-created-after-future:
+    description: >-
+      --users-without-explicit-perms combined with a far-future
+      --created-after selects no users.
+    modes:
+      - live
+    cliCommand: get --users-without-explicit-perms --created-after 2099-01-01
+    expectedExitCode: 0
+    expectedOutput:
+      - Selected 0 user(s) for get output.
+
+  get-repos-filter:
+    description: get scoped to one repo by exact name.
+    modes:
+      - live
+    cliCommand: get --repos test-repo-49981
+    expectedExitCode: 0
+    expectedOutput:
+      - Selected 1 repo(s) by exact name.
+
+  get-repos-created-after-future:
+    description: >-
+      A far-future --repos-created-after selects no repos. Also pins the
+      --verbose alias: DEBUG verbosity must not hide the INFO summary.
+    modes:
+      - live
+    cliCommand: get --repos-created-after 2099-01-01 --verbose
+    expectedExitCode: 0
+    expectedOutput:
+      - Selected 0 Sourcegraph repo(s) created on or after 2099-01-01.
+
+  set-users-created-after-noop:
+    description: >-
+      A far-future --created-after selects no users on the real instance:
+      zero mutations, seeded state untouched.
+    modes:
+      - live
+      - performance
+    cliCommand: set --created-after 2099-01-01 --apply --no-backup --parallelism 1
+    expectedMutations: 0
+
+  set-repos-created-after-noop:
+    description: >-
+      A far-future --repos-created-after selects no repos on the real
+      instance: zero mutations, seeded state untouched.
+    modes:
+      - live
+      - performance
+    cliCommand: set --repos-created-after 2099-01-01 --apply --no-backup --parallelism 1
+    expectedMutations: 0
+
+  sync-saml-orgs-dry-run:
+    description: >-
+      Standalone organization sync dry run. Also pins the explicit
+      --env-file flag against its default value.
+    modes:
+      - live
+    cliCommand: sync-saml-orgs --env-file .env
+    expectedExitCode: 0
+    expectedOutput:
+      - Dry run complete
+
+  set-users-sync-saml-orgs-dry-run:
+    description: >-
+      Combined permission + organization sync dispatch, user-scoped, dry run
+      only.
+    modes:
+      - live
+    cliCommand: set --users {user} --sync-saml-orgs
+    expectedExitCode: 0
+    expectedOutput:
+      - Dry run complete
+
+  sync-saml-orgs-apply:
+    description: >-
+      Org membership sync converges to SAML group data and validates its own
+      outcome; it is safe to re-run.
+    modes:
+      - live
+    cliCommand: sync-saml-orgs --apply
+    expectedExitCode: 0
+    expectedOutput:
+      - "VALIDATION OK: all target org memberships match"
+
+  # ── Live + performance: timed, measured runs (slowest) ──
+  full-overwrite-unions:
+    description: >-
+      Full set mode unions users across rules, overwrites mapped repos, and
+      leaves unmapped repos alone.
+    modes:
+      - local
+      - live
+      - performance
+    cliCommand: set --full --apply --no-backup --parallelism 1
+    importConfig:
+      command: set
+      full: true
+      apply: true
+      no_backup: true
+      parallelism: 1
+    expectedMutations: 2
+
+  get-user-baseline:
+    description: Timed read-only baseline of one user's explicit grants.
+    modes:
+      - performance
+    cliCommand: get --users {user}
+    expectedExitCode: 0

@@ -1,0 +1,9 @@
+maps:
+  - name: Everyone gets the mapped repos
+    users:
+      usernameRegexes:
+        - '.*'
+    repos:
+      names:
+        - test-repo-49981
+        - test-repo-49982

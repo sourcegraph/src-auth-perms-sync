@@ -1,0 +1,8 @@
+maps:
+  - name: Broken regex
+    users:
+      usernameRegexes:
+        - '[unclosed'
+    repos:
+      names:
+        - test-repo-49981

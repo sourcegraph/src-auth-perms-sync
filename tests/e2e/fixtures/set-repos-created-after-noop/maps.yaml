@@ -1,0 +1,8 @@
+maps:
+  - name: Mapped repos for whoever the date filter selects
+    users:
+      usernames:
+        - test_user_09941
+    repos:
+      names:
+        - test-repo-49941

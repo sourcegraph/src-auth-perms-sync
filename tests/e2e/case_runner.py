@@ -1,7 +1,21 @@
+"""Execution engine for the tests/tests.yaml case registry.
+
+Loads the registry, builds in-memory Sourcegraph instances from
+fixture state files (FakeSourcegraphClient), and runs cases through
+the real CLI code paths: full command runs for state cases, and
+in-process argument-parser replays for replay-style cases.
+
+Consumed by tests/run.py (local checks and randomized invariants) and
+by tests/e2e/test_local_cases.py (unittest discovery entrypoint).
+"""
+
 from __future__ import annotations
 
+import contextlib
+import io
 import json
-import unittest
+import shlex
+import sys
 from collections.abc import Iterator, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -9,11 +23,14 @@ from pathlib import Path
 from typing import Any, NotRequired, TypedDict, cast
 
 import src_py_lib as src
+import yaml
 
 from src_auth_perms_sync import cli
 from src_auth_perms_sync.shared import types as shared_types
 
 FIXTURES_DIR = Path(__file__).with_name("fixtures")
+E2E_TESTS_PATH = Path(__file__).resolve().parents[1] / "tests.yaml"
+DEFAULT_CASE_MODES = ["local"]
 SITE_CONFIG = json.dumps(
     {
         "permissions.userMapping": {"enabled": True, "bindID": "username"},
@@ -57,6 +74,7 @@ class FixtureRepo(TypedDict):
     name: str
     externalServiceID: int
     explicitPermissionsUsers: list[str]
+    createdAt: NotRequired[str]  # default: 2026-01-01T00:00:00Z
 
 
 class FixtureState(TypedDict):
@@ -68,17 +86,22 @@ class FixtureState(TypedDict):
     pendingBindIDs: list[str]
 
 
-class FixtureSetOptions(TypedDict, total=False):
-    full: bool
-    users: list[str]
-    usersWithoutExplicitPerms: bool
-    createdAfter: str
-
-
 class FixtureCase(TypedDict):
+    """One entry under `cases:` in tests.yaml. See that file for docs."""
+
     description: str
-    set: FixtureSetOptions
+    modes: NotRequired[list[str]]  # local, live, performance (default: [local])
+    cliCommand: NotRequired[str]  # CLI arguments; --maps-path is appended for set
+    importConfig: NotRequired[dict[str, Any]]  # Python-import-mode Config fields
     expectedMutations: NotRequired[int]
+    # When set, the command must fail, every listed substring must appear in
+    # the failure text, and the instance state must be left unchanged.
+    expectedErrors: NotRequired[list[str]]
+    # Either of these makes the case replay-style: assert exit code and
+    # output substrings instead of instance state. Locally, replay cases run
+    # the real argument parser in-process and need no fixture files.
+    expectedExitCode: NotRequired[int]
+    expectedOutput: NotRequired[list[str]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -102,15 +125,34 @@ class FixtureRunResult:
     expected_state: FixtureState
     actual_state: FixtureState
     command_failure: str | None = None
+    expected_errors: tuple[str, ...] = ()
+    runner: str = "cli"  # "cli" (parsed argv) or "import" (programmatic Config)
 
     @property
     def failure(self) -> str | None:
+        if self.expected_errors:
+            return self._expected_error_failure()
         if self.command_failure is not None:
             return self.command_failure
         if self.expected_state != self.actual_state:
             return "actual state did not match after.json"
         if self.expected_mutations is not None and self.expected_mutations != self.actual_mutations:
             return f"expected {self.expected_mutations} mutation(s), got {self.actual_mutations}"
+        return None
+
+    def _expected_error_failure(self) -> str | None:
+        if self.command_failure is None:
+            return "expected the command to fail validation, but it succeeded"
+        missing = [
+            expected for expected in self.expected_errors if expected not in self.command_failure
+        ]
+        if missing:
+            return (
+                f"command failure did not contain expected error(s) {missing}; "
+                f"got: {self.command_failure}"
+            )
+        if self.expected_state != self.actual_state:
+            return "state changed during a run that was expected to fail validation"
         return None
 
     @property
@@ -182,6 +224,15 @@ class FakeSourcegraphClient:
             return {"node": self._graphql_user_by_id(variable_values["id"])}
         if "query SiteUsers" in query:
             return {"site": {"users": self._site_users(variable_values)}}
+        if "query UserExplicitRepoExistsBatch" in query:
+            batch_data: dict[str, Any] = {}
+            index = 0
+            while f"user{index}" in variable_values:
+                batch_data[f"user{index}"] = self._user_explicit_repo_exists(
+                    variable_values[f"user{index}"]
+                )
+                index += 1
+            return batch_data
         if "query UserExplicitRepoExists" in query:
             return {"node": self._user_explicit_repo_exists(variable_values["id"])}
         if "query UserExplicitReposBatch" in query:
@@ -221,7 +272,9 @@ class FakeSourcegraphClient:
         if path == ("externalServices",):
             return iter(self._graphql_external_services())
         if path == ("repositories",):
-            return iter(self._repositories_for_external_service(variable_values["esID"]))
+            if "esID" in variable_values:
+                return iter(self._repositories_for_external_service(variable_values["esID"]))
+            return iter(self._repository_candidates(variable_values))
         if path == ("node", "permissionsInfo", "repositories"):
             return iter(self._explicit_repository_nodes_for_user(variable_values["id"]))
         raise AssertionError(f"Unhandled fixture connection path: {path}")
@@ -336,6 +389,41 @@ class FakeSourcegraphClient:
             if username in self._permissions_by_repository_id[repository["id"]]
         ]
 
+    def _repository_candidates(self, variables: dict[str, object]) -> list[dict[str, Any]]:
+        """Serve the repository-candidate queries (by names, all, by created-at).
+
+        The created-at variant orders newest-first server-side and is filtered
+        client-side by the CLI, so no date filtering happens here.
+        """
+        repositories = self._repos
+        names_value = variables.get("names")
+        if isinstance(names_value, list):
+            wanted_names = set(cast("list[str]", names_value))
+            repositories = [
+                repository for repository in repositories if repository["name"] in wanted_names
+            ]
+        else:
+            # The created-at candidate query returns newest first, and the CLI
+            # stops streaming at the first repo older than the threshold.
+            repositories = sorted(
+                repositories,
+                key=lambda repository: repository.get("createdAt", "2026-01-01T00:00:00Z"),
+                reverse=True,
+            )
+        return [
+            {
+                "id": self._repository_graphql_id(repository["id"]),
+                "name": repository["name"],
+                "createdAt": repository.get("createdAt", "2026-01-01T00:00:00Z"),
+                "externalServices": {
+                    "nodes": [
+                        {"id": self._external_service_graphql_id(repository["externalServiceID"])}
+                    ]
+                },
+            }
+            for repository in repositories
+        ]
+
     def _site_users(self, variables: dict[str, object]) -> dict[str, Any]:
         created_at_filter = variables.get("createdAt")
         created_after: str | None = None
@@ -446,23 +534,162 @@ class FakeSourcegraphClient:
         return src.encode_sourcegraph_node_id("ExternalService", external_service_id)
 
 
-def fixture_case_dirs() -> list[Path]:
-    return sorted(path for path in FIXTURES_DIR.iterdir() if path.is_dir())
+def load_e2e_cases() -> dict[str, FixtureCase]:
+    """Load the case registry from tests.yaml, keyed by fixture dir name."""
+    raw = cast("dict[str, Any]", yaml.safe_load(E2E_TESTS_PATH.read_text(encoding="utf-8")))
+    return cast("dict[str, FixtureCase]", raw["cases"])
 
 
-def run_fixture_case(case_dir: Path) -> FixtureRunResult:
-    case = load_case(case_dir / "case.json")
+def case_modes(case: FixtureCase) -> list[str]:
+    return case.get("modes", DEFAULT_CASE_MODES)
+
+
+def case_runners(case: FixtureCase) -> list[str]:
+    """Return how a case runs in local mode: parsed argv and/or import API."""
+    runners: list[str] = []
+    if "cliCommand" in case:
+        runners.append("cli")
+    if "importConfig" in case:
+        runners.append("import")
+    return runners
+
+
+def case_cli_arguments(case: FixtureCase, case_name: str) -> list[str]:
+    """Return cliCommand as argv, appending the case's maps file for set commands."""
+    cli_command = case.get("cliCommand")
+    if cli_command is None:
+        raise ValueError(f"case {case_name!r} has no cliCommand")
+    argv = shlex.split(cli_command)
+    if argv and argv[0] == "set" and "--maps-path" not in argv:
+        argv += ["--maps-path", str(FIXTURES_DIR / case_name / "maps.yaml")]
+    return argv
+
+
+def is_replay_case(case: FixtureCase) -> bool:
+    """Replay-style cases assert exit code and output rather than state."""
+    return "expectedExitCode" in case or "expectedOutput" in case
+
+
+def expected_exit_code(case: FixtureCase) -> int:
+    return case.get("expectedExitCode", 1 if case.get("expectedErrors") else 0)
+
+
+def run_local_replay_case(case_name: str) -> str:
+    """Run one replay case through the real argument parser in-process.
+
+    Covers parse-level behavior: argument rejection (exit 2), --help (exit 0),
+    and config validation errors. Returns a failure detail, or "" on success.
+    """
+    case = load_e2e_cases()[case_name]
+    argv = case_cli_arguments(case, case_name)
+    # A bare invocation (empty cliCommand) must stay bare: appending
+    # credential flags would change the parse error under test.
+    if argv and "--help" not in argv and "-h" not in argv:
+        argv += [
+            "--src-endpoint",
+            "https://fixture.sourcegraph.test",
+            "--src-access-token",
+            "fixture-token",
+        ]
+    output_buffer = io.StringIO()
+    exit_code = 0
+    # argparse derives the usage `prog` from sys.argv[0]; pin it to the real
+    # entrypoint name so replay output matches what operators see.
+    original_argv0 = sys.argv[0]
+    sys.argv[0] = "src-auth-perms-sync"
+    try:
+        with contextlib.redirect_stdout(output_buffer), contextlib.redirect_stderr(output_buffer):
+            try:
+                cli.load_cli(argv)
+            except SystemExit as exception:
+                exit_code = exception.code if isinstance(exception.code, int) else 1
+    finally:
+        sys.argv[0] = original_argv0
+    output = output_buffer.getvalue()
+    expected_exit = expected_exit_code(case)
+    if exit_code != expected_exit:
+        return f"expected exit {expected_exit}, got {exit_code}; output: {output[-300:]!r}"
+    for substring in [*case.get("expectedOutput", []), *case.get("expectedErrors", [])]:
+        if substring not in output:
+            return f"output did not contain {substring!r}; output: {output[-300:]!r}"
+    return ""
+
+
+def required_case_files(case: FixtureCase) -> set[str]:
+    """Return which files a case's fixture directory must contain.
+
+    The directory itself is optional: a read-only non-set command needs no
+    files at all. before.json is needed wherever instance state is built
+    (local mode, and mutating live/performance runs); maps.yaml is needed by
+    set commands that do not pass their own --maps-path / maps_path.
+    Replay-style cases never get past argument parsing locally, so they need
+    no files.
+    """
+    files: set[str] = set()
+    if is_replay_case(case):
+        return files
+    modes = case_modes(case)
+    argv = shlex.split(case["cliCommand"]) if "cliCommand" in case else []
+    import_config = case.get("importConfig")
+    if "local" in modes:
+        files.add("before.json")
+    if ({"live", "performance"} & set(modes)) and "--apply" in argv:
+        files.add("before.json")
+    if argv[:1] == ["set"] and "--maps-path" not in argv:
+        files.add("maps.yaml")
+    if (
+        import_config is not None
+        and import_config.get("command") == "set"
+        and "maps_path" not in import_config
+    ):
+        files.add("maps.yaml")
+    return files
+
+
+def cli_input_for_case(
+    case: FixtureCase, case_name: str, endpoint: str, runner: str
+) -> cli.CliInput:
+    """Build the parsed command for one case, via argv or the import API."""
+    if runner == "cli":
+        argv = case_cli_arguments(case, case_name)
+        argv += ["--src-endpoint", endpoint, "--src-access-token", "fixture-token"]
+        return cli.load_cli(argv)
+    import_config = case.get("importConfig")
+    if import_config is None:
+        raise ValueError(f"case {case_name!r} has no importConfig")
+    options = dict(import_config)
+    command_name = cast(cli.CommandName, options.pop("command"))
+    updates: dict[str, object] = {
+        name: tuple(cast("list[object]", value)) if isinstance(value, list) else value
+        for name, value in options.items()
+    }
+    if command_name == "set" and "maps_path" not in updates:
+        updates["maps_path"] = FIXTURES_DIR / case_name / "maps.yaml"
+    config = cli.Config(
+        src_endpoint=endpoint,
+        src_access_token="fixture-token",
+    ).model_copy(update=updates)
+    return cli.CliInput(command_name=command_name, config=config)
+
+
+def run_fixture_case(case_name: str, runner: str = "cli") -> FixtureRunResult:
+    case = load_e2e_cases()[case_name]
+    case_dir = FIXTURES_DIR / case_name
     before_state = load_state(case_dir / "before.json")
-    expected_state = FakeSourcegraphClient(load_state(case_dir / "after.json")).export_state()
+    # after.json is optional: cases that must not change anything (no-op and
+    # expected-validation-error cases) compare against the before state.
+    after_path = case_dir / "after.json"
+    expected_source = after_path if after_path.is_file() else case_dir / "before.json"
+    expected_state = FakeSourcegraphClient(load_state(expected_source)).export_state()
     client = FakeSourcegraphClient(before_state)
     command_failure: str | None = None
 
     try:
-        config = config_for_case(case, case_dir / "maps.yaml", client.endpoint)
-        command = cli.resolve_command("set", config)
-        with ThreadPoolExecutor(max_workers=config.parallelism) as worker_pool:
+        cli_input = cli_input_for_case(case, case_name, client.endpoint, runner)
+        command = cli.resolve_command(cli_input.command_name, cli_input.config)
+        with ThreadPoolExecutor(max_workers=cli_input.config.parallelism) as worker_pool:
             cli.run_command(
-                config,
+                cli_input.config,
                 command,
                 cast(src.SourcegraphClient, client),
                 worker_pool,
@@ -474,7 +701,7 @@ def run_fixture_case(case_dir: Path) -> FixtureRunResult:
 
     actual_state = client.export_state()
     return FixtureRunResult(
-        name=case_dir.name,
+        name=case_name,
         description=case["description"],
         before_counts=state_counts(before_state),
         expected_counts=state_counts(expected_state),
@@ -486,6 +713,8 @@ def run_fixture_case(case_dir: Path) -> FixtureRunResult:
         expected_state=expected_state,
         actual_state=actual_state,
         command_failure=command_failure,
+        expected_errors=tuple(case.get("expectedErrors", [])),
+        runner=runner,
     )
 
 
@@ -516,44 +745,5 @@ def repo_permission_users_by_id(state: FixtureState) -> dict[int, tuple[str, ...
     }
 
 
-def config_for_case(case: FixtureCase, maps_path: Path, endpoint: str) -> cli.Config:
-    set_options = case["set"]
-    updates: dict[str, object] = {
-        "maps_path": maps_path,
-        "apply": True,
-        "no_backup": True,
-        "parallelism": 1,
-        "full": bool(set_options.get("full", False)),
-        "users": tuple(set_options.get("users", [])),
-        "users_without_explicit_perms": bool(set_options.get("usersWithoutExplicitPerms", False)),
-        "created_after": set_options.get("createdAfter"),
-    }
-    return cli.Config(
-        src_endpoint=endpoint,
-        src_access_token="fixture-token",
-    ).model_copy(update=updates)
-
-
-def load_case(path: Path) -> FixtureCase:
-    return cast(FixtureCase, json.loads(path.read_text(encoding="utf-8")))
-
-
 def load_state(path: Path) -> FixtureState:
     return cast(FixtureState, json.loads(path.read_text(encoding="utf-8")))
-
-
-class PermissionFixtureCaseTests(unittest.TestCase):
-    maxDiff = None
-
-    def test_permission_fixture_cases(self) -> None:
-        for case_dir in fixture_case_dirs():
-            with self.subTest(case=case_dir.name):
-                result = run_fixture_case(case_dir)
-                self.assertIsNone(result.command_failure)
-                self.assertEqual(result.expected_state, result.actual_state)
-                if result.expected_mutations is not None:
-                    self.assertEqual(result.expected_mutations, result.actual_mutations)
-
-
-if __name__ == "__main__":
-    unittest.main(verbosity=2)

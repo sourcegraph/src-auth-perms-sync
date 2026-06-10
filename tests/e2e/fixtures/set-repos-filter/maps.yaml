@@ -1,0 +1,10 @@
+maps:
+  - name: Both users own test-repo-49971 and test-repo-49972
+    users:
+      usernames:
+        - test_user_09971
+        - test_user_09972
+    repos:
+      names:
+        - test-repo-49971
+        - test-repo-49972

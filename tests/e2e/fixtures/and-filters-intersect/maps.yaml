@@ -1,0 +1,11 @@
+maps:
+  - name: Engineering members on the allowlist get test-repo-49981
+    users:
+      authProvider:
+        configID: okta
+        samlGroup: engineering
+      emails:
+        - marc.leblanc+test09991-m.eks.m.ps.sgdev.org@sourcegraph.com
+    repos:
+      names:
+        - test-repo-49981

@@ -226,6 +226,46 @@ slower under the large explicit-perms state. This reinforces that the CLI needs
 better Sourcegraph bulk read and write APIs for very large explicit permission
 sets.
 
+## Concurrent-operator evidence (2026-06-10)
+
+Four `src-auth-perms-sync` processes ran full explicit-permissions captures
+concurrently against the 10k-user / 50k-repo test instance (each at
+`--parallelism 8`, `--explicit-permissions-batch-size 25`), while a fifth ran
+a small `set` command. Instance: single `pgsql-0` on an 8-core node.
+
+Observed during the concurrent captures:
+
+- `pgsql-0` CPU (`kubectl top`): 7,636–7,683 millicores of 8,000 (saturated).
+- `frontend` / `gitserver` CPU: 124–138m / 2–3m (idle bystanders).
+- `pg_stat_activity`: 29 active statements, all
+  `permsStore.ListUserPermissions`, **zero wait events** — pure CPU, no lock
+  contention.
+- `pg_stat_statements`: `permsStore.ListUserPermissions` at 24,026 calls,
+  27,635.6s total, 1,150ms mean.
+- Per-client capture throughput: 23 users/sec solo → 2–4 users/sec at 4-way
+  concurrency.
+- Aggregate throughput: 8–16 users/sec at 4-way — **below the 23 users/sec a
+  single client achieves alone** (negative scaling).
+- ALB (CloudWatch): no 5xx, no rejected connections — the edge and frontend
+  are not the bottleneck.
+- Collateral failure: the fifth client's queries exceeded the 60s read
+  timeout under this load; 5 retry attempts exhausted; its run failed with
+  exit 1.
+
+Implications for the engineering request:
+
+- A single per-user `permissionsInfo.repositories(source: API)` read costs
+  roughly 0.3–0.4s of Postgres CPU at this state size (1,150ms mean execution
+  under contention), so one operator at modest parallelism can saturate the
+  database by itself, and two concurrent operators degrade each other below
+  single-operator throughput.
+- Timeout/retry behavior amplifies the problem: once statements exceed the
+  client read timeout, retries re-run the same expensive queries, adding load
+  exactly when the database is saturated.
+- A bulk read API (one query returning explicit grants for many users or for
+  whole repos) would replace ~10,000 × ~1s statements per capture with a
+  single scan, and would also make concurrent operators viable.
+
 ## Sourcegraph engineering request
 
 `src-auth-perms-sync` needs to snapshot explicit API permissions for many

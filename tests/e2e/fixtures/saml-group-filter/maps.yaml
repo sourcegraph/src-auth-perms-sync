@@ -1,0 +1,9 @@
+maps:
+  - name: Okta lob1 members get Bitbucket repos
+    users:
+      authProvider:
+        configID: okta
+        samlGroup: lob1
+    repos:
+      codeHostConnection:
+        kind: BITBUCKETSERVER
