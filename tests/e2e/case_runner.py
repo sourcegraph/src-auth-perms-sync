@@ -686,10 +686,15 @@ def run_fixture_case(case_name: str, runner: str = "cli") -> FixtureRunResult:
 
     try:
         cli_input = cli_input_for_case(case, case_name, client.endpoint, runner)
-        command = cli.resolve_command(cli_input.command_name, cli_input.config)
-        with ThreadPoolExecutor(max_workers=cli_input.config.parallelism) as worker_pool:
+        # Local runs execute in-process against the in-memory fake, where
+        # client parallelism buys nothing and only adds scheduling
+        # nondeterminism — pin it to 1 regardless of the case's command
+        # line. Live/performance runs use the command line as written.
+        local_config = cli_input.config.model_copy(update={"parallelism": 1})
+        command = cli.resolve_command(cli_input.command_name, local_config)
+        with ThreadPoolExecutor(max_workers=local_config.parallelism) as worker_pool:
             cli.run_command(
-                cli_input.config,
+                local_config,
                 command,
                 cast(src.SourcegraphClient, client),
                 worker_pool,
