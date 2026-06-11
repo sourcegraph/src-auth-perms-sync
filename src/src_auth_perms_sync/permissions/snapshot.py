@@ -212,6 +212,14 @@ def capture_explicit_grants(
     that need the user-count statistic don't have to materialize the
     iterator twice or measure it themselves.
     """
+    if selected_repository_ids is not None and not selected_repository_ids:
+        # No repos selected (e.g. --repos-created-after matched nothing): no
+        # per-user permission lookup could contribute anything, so skip them.
+        # Still drain the users iterable — callers pass recording streams
+        # whose side effects feed later phases (mapping, SAML extraction).
+        log.info("No repositories selected — skipping the explicit-permissions lookups.")
+        return {}, sum(1 for _ in users)
+
     # Invert directly as each per-user fetch completes. Store only repo IDs
     # first, then hydrate each unique repo name once after all users complete.
     usernames_by_repository_id: dict[str, list[str]] = {}

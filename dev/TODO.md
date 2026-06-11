@@ -23,12 +23,22 @@
 - Use the stress-run evidence in
   [memory-efficiency.md](./memory-efficiency.md)
   to request Sourcegraph bulk explicit-permission read and write APIs.
+  New evidence 2026-06-10: the whole-instance apply (1,150 repo
+  overwrites x 10,002 bindIDs each at parallelism 16) crashed the test
+  instance's Postgres ("connection refused", "unexpected EOF"); the
+  client circuit breaker opened and the harness restored cleanly. That
+  stress cycle is now opt-in: `uv run tests/run.py --live "full cycle"`.
 - Add an explicit destructive/performance-test mode to the e2e runner so giant
   stress runs can skip or defer full restore cleanup when the goal is finding
   the server-side breaking point.
 - Revisit full snapshot capture once Sourcegraph exposes a bulk read path;
   replace aliased `User.permissionsInfo.repositories(source: API)` calls before
   raising concurrency further.
+- `get --repos <name>` still scans every user's explicit grants to find one
+  repo's holders (~400 s at 10k users). A repo-centric read
+  (`repository.permissionsInfo.users` + site-admin disambiguation, as the
+  test harness already does) would make it seconds — see the repo-centric
+  section below.
 
 ## Low priority: Repo-centric path, when users > repos, or for cross-checking
 

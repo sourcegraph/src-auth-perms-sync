@@ -29,6 +29,11 @@ from src_auth_perms_sync import cli
 from src_auth_perms_sync.shared import types as shared_types
 
 FIXTURES_DIR = Path(__file__).with_name("fixtures")
+
+# Maximum site-users page width the fake serves, regardless of the requested
+# limit. Small enough that fixtures with a handful of users span multiple
+# pages, so pagination handling is functionally tested without scale data.
+SITE_USERS_PAGE_CAP = 2
 E2E_TESTS_PATH = Path(__file__).resolve().parents[1] / "tests.yaml"
 DEFAULT_CASE_MODES = ["local"]
 SITE_CONFIG = json.dumps(
@@ -437,7 +442,13 @@ class FakeSourcegraphClient:
             if created_after is None or user["createdAt"] >= created_after
         ]
         offset = self._integer_variable(variables, "offset")
-        limit = self._integer_variable(variables, "limit")
+        # Serve pages no wider than SITE_USERS_PAGE_CAP regardless of the
+        # requested limit, mimicking a server-side nodes(limit:) cap. This
+        # makes every local fixture with >2 users exercise multi-page
+        # candidate selection (offset stepping, dedupe, the sequential
+        # paging branch). The 2026-06-10 first-page-only truncation bug is
+        # invisible to local tests without this.
+        limit = min(self._integer_variable(variables, "limit"), SITE_USERS_PAGE_CAP)
         nodes = [
             {
                 "id": self._user_graphql_id(user["id"]),

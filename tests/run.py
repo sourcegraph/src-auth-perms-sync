@@ -107,6 +107,14 @@ query TestRepositoryUsersReadBack($name: String!, $first: Int!, $after: String) 
 }
 """
 
+SET_REPOSITORY_PERMISSIONS_MUTATION = """
+mutation TestSetRepositoryPermissions($repository: ID!, $userPermissions: [UserPermissionInput!]!) {
+  setRepositoryPermissionsForUsers(repository: $repository, userPermissions: $userPermissions) {
+    alwaysNil
+  }
+}
+"""
+
 EXPLICIT_API_PERMISSION_REASON = "Explicit API"
 SITE_ADMIN_PERMISSION_REASON = "Site Admin"
 
@@ -748,6 +756,16 @@ class TestSuite:
         """
         if not self.arguments.test_filter:
             return True
+        return self.explicitly_selected(*names)
+
+    def explicitly_selected(self, *names: str) -> bool:
+        """Return whether a filter token names one of `names`.
+
+        Unlike `test_selected`, returns False when no filter was given —
+        for checks that must be opt-in (instance-wide stress runs).
+        """
+        if not self.arguments.test_filter:
+            return False
         return any(
             token.lower() in name.lower() for token in self.arguments.test_filter for name in names
         )
@@ -1333,11 +1351,14 @@ class TestSuite:
         """Seed the case's before-state, run it with --apply, verify, restore.
 
         Every involved repo — fixture state repos, exact rule names, and any
-        declared `live.involvedRepos` — is captured, seeded, verified, and
-        restored. Involved repos absent from after.json are canaries: they
-        are seeded to their before-state (empty when undeclared) and must
-        read back unchanged, which catches selectors matching wider than the
-        case intends.
+        declared `live.involvedRepos` — is read, seeded, verified, and
+        restored, all SCOPED to those repos via direct GraphQL (seconds),
+        never through the product's restore command (which performs a full
+        instance capture: minutes at 10k users, and whole-instance restore
+        semantics that clobber concurrently-running cases). Involved repos
+        absent from after.json are canaries: they are seeded to their
+        before-state (empty when undeclared) and must read back unchanged,
+        which catches selectors matching wider than the case intends.
         """
         from tests.e2e.case_runner import case_cli_arguments
 
@@ -1407,78 +1428,91 @@ class TestSuite:
             name: after_grants.get(name, before_grants.get(name, set())) for name in involved_names
         }
 
-        with tempfile.TemporaryDirectory(prefix=f"src-auth-perms-sync-live-{case_name}-") as tmp:
-            seed_path = Path(tmp) / "seed-before.json"
-            cleanup_path = Path(tmp) / "cleanup.json"
-            write_state_snapshot(
-                seed_path,
-                self.endpoint,
+        try:
+            seeded = self.set_repository_states(
+                f"{label} [seed before-state]",
+                level,
                 {
-                    name: (repository_ids[name], sorted(before_grants.get(name, set())))
+                    name: (repository_ids[name], before_grants.get(name, set()))
                     for name in involved_names
                 },
             )
-            write_state_snapshot(
-                cleanup_path,
-                self.endpoint,
-                {
-                    name: (repository_ids[name], sorted(original_state[name][1]))
-                    for name in involved_names
-                },
+            if not seeded:
+                return
+            self.check_repository_states(
+                f"{label} [seed verified]",
+                level,
+                {name: before_grants.get(name, set()) for name in involved_names},
             )
-            try:
-                self.run_cli_case(
-                    CliCase(
-                        f"{label} [seed before-state]",
-                        restore_arguments(seed_path),
-                        0,
-                        must_contain_one_of=RESTORE_SUCCESS_MARKERS,
-                    ),
-                    environment,
-                    level=level,
-                )
-                self.check_repository_states(
-                    f"{label} [seed verified]",
-                    level,
-                    {name: before_grants.get(name, set()) for name in involved_names},
-                )
 
-                main_case = CliCase(
-                    label,
-                    tuple(case_cli_arguments(cast("Any", case), case_name)),
-                    1 if expected_errors else 0,
-                    expected_errors,
-                )
-                if run_main_case is not None:
-                    result = run_main_case(main_case)
-                else:
-                    result = self.run_cli_case(main_case, environment, level=level)
-                if expected_mutations is not None:
-                    actual_mutations = mutations_succeeded_from_log(result.log_path) or 0
-                    self.record(
-                        f"{label} [mutation count]",
-                        level,
-                        actual_mutations == expected_mutations,
-                        0.0,
-                        f"expected {expected_mutations}, got {actual_mutations}",
-                    )
-                self.check_repository_states(f"{label} [state verified]", level, expected_after)
-            finally:
-                self.run_cli_case(
-                    CliCase(
-                        f"{label} [restore original state]",
-                        restore_arguments(cleanup_path),
-                        0,
-                        must_contain_one_of=RESTORE_SUCCESS_MARKERS,
-                    ),
-                    environment,
-                    level=level,
-                )
-                self.check_repository_states(
-                    f"{label} [restore verified]",
+            main_case = CliCase(
+                label,
+                tuple(case_cli_arguments(cast("Any", case), case_name)),
+                1 if expected_errors else 0,
+                expected_errors,
+            )
+            if run_main_case is not None:
+                result = run_main_case(main_case)
+            else:
+                result = self.run_cli_case(main_case, environment, level=level)
+            if expected_mutations is not None:
+                actual_mutations = mutations_succeeded_from_log(result.log_path) or 0
+                self.record(
+                    f"{label} [mutation count]",
                     level,
-                    {name: state[1] for name, state in original_state.items()},
+                    actual_mutations == expected_mutations,
+                    0.0,
+                    f"expected {expected_mutations}, got {actual_mutations}",
                 )
+            self.check_repository_states(f"{label} [state verified]", level, expected_after)
+        finally:
+            self.set_repository_states(
+                f"{label} [restore original state]",
+                level,
+                original_state,
+            )
+            self.check_repository_states(
+                f"{label} [restore verified]",
+                level,
+                {name: state[1] for name, state in original_state.items()},
+            )
+
+    def set_repository_states(
+        self, name: str, level: str, target_grants: dict[str, tuple[int, set[str]]]
+    ) -> bool:
+        """Directly overwrite involved repos' explicit users via GraphQL.
+
+        Scoped replacement for seeding/restoring through the product's
+        `restore` command, which always performs a full instance capture
+        (~minutes at 10k users) even for a two-repo snapshot. Writing the
+        involved repos directly keeps live functional cases scoped to
+        seconds, and keeps concurrent cases from clobbering each other's
+        repos. Returns True when every repo was written.
+        """
+        started = time.monotonic()
+        failures: list[str] = []
+        for repository_name, (database_id, usernames) in sorted(target_grants.items()):
+            try:
+                self.graphql(
+                    SET_REPOSITORY_PERMISSIONS_MUTATION,
+                    {
+                        "repository": encode_repository_node_id(database_id),
+                        "userPermissions": [
+                            {"bindID": username, "permission": "READ"}
+                            for username in sorted(usernames)
+                        ],
+                    },
+                )
+            except Exception as exception:
+                failures.append(f"{repository_name}: {exception}")
+        self.record(
+            name,
+            level,
+            not failures,
+            time.monotonic() - started,
+            "; ".join(failures) if failures else f"{len(target_grants)} repo(s) written",
+        )
+        return not failures
 
     def check_repository_states(
         self, name: str, level: str, expected_grants: dict[str, set[str]]
@@ -1508,7 +1542,11 @@ class TestSuite:
         # The baseline get is a prerequisite for both cycles, so it runs when
         # any of them is selected.
         want_user_cycle = self.test_selected("live: set --users apply", "user cycle")
-        want_full_cycle = self.test_selected("live: set --full", "full cycle")
+        # The full cycle applies the ROOT maps.yaml to the whole instance
+        # (10k users x ~1,150 repos) — an instance-wide stress run that has
+        # crashed the test instance's Postgres. Opt-in only:
+        #   uv run tests/run.py --live "full cycle"
+        want_full_cycle = self.explicitly_selected("live: set --full", "full cycle")
         want_baseline = (
             self.test_selected("live: get user baseline", "baseline")
             or want_user_cycle
@@ -2365,14 +2403,9 @@ def run_property_checks(seed: int, iterations: int) -> list[PropertyCheckOutcome
 
 
 # ---------------------------------------------------------------------------
-# Live fixture-case helpers: identity translation, seed/cleanup snapshots
+# Live fixture-case helpers: identity translation, fixture-state loading
 # ---------------------------------------------------------------------------
 
-RESTORE_SUCCESS_MARKERS = (
-    "VALIDATION OK",
-    "Restore done",
-    "Nothing to restore",
-)
 EXACT_REPOSITORY_SELECTOR_FIELDS = {"names"}
 
 
@@ -2425,49 +2458,6 @@ def fixture_maps_repo_scope(
     return (rule_repository_names, "")
 
 
-def write_state_snapshot(
-    path: Path, endpoint: str, grants: dict[str, tuple[int, list[str]]]
-) -> None:
-    """Write a restore-compatible snapshot file describing exact repo states."""
-    repos = {
-        str(repository_id): {"name": repository_name, "users": usernames}
-        for repository_name, (repository_id, usernames) in sorted(grants.items())
-    }
-    users_with_grants = {username for _, usernames in grants.values() for username in usernames}
-    snapshot: dict[str, Any] = {
-        "schema_version": 5,
-        "captured_at": datetime.datetime.now(datetime.UTC).isoformat(timespec="seconds"),
-        "endpoint": endpoint,
-        "bindID_mode": "USERNAME",
-        "config_file": None,
-        "config_sha256": None,
-        "pending_bindIDs": [],
-        "stats": {
-            "total_users_scanned": len(users_with_grants),
-            "users_with_explicit_grants": len(users_with_grants),
-            "repos_with_explicit_grants": sum(1 for _, usernames in grants.values() if usernames),
-            "total_grants": sum(len(usernames) for _, usernames in grants.values()),
-        },
-        "repos": repos,
-    }
-    path.write_text(json.dumps(snapshot, indent=2) + "\n", encoding="utf-8")
-
-
-def restore_arguments(snapshot_path: Path) -> tuple[str, ...]:
-    # Parallelism 8: the dominant cost of seed/cleanup restores is the full
-    # explicit-permissions capture (10k users in batches), which serializes
-    # painfully at parallelism 1; the mutation counts here are tiny.
-    return (
-        "restore",
-        "--restore-path",
-        str(snapshot_path),
-        "--apply",
-        "--no-backup",
-        "--parallelism",
-        "8",
-    )
-
-
 def decode_repository_node_id(graphql_id: str) -> int:
     """Decode a base64 GraphQL Repository node ID to its integer database ID."""
     decoded = base64.b64decode(graphql_id, validate=True).decode()
@@ -2475,6 +2465,11 @@ def decode_repository_node_id(graphql_id: str) -> int:
     if kind != "Repository":
         raise ValueError(f"not a Repository node ID: {decoded!r}")
     return int(database_id)
+
+
+def encode_repository_node_id(database_id: int) -> str:
+    """Encode an integer database ID as a base64 GraphQL Repository node ID."""
+    return base64.b64encode(f"Repository:{database_id}".encode()).decode()
 
 
 def mutations_succeeded_from_log(log_path: Path | None) -> int | None:

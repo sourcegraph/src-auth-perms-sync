@@ -56,17 +56,35 @@ files (e.g. `test_user_09991`, `test-repo-49981`), and exact selectors only
   resulting state against `after.json`. Replay-style cases
   (`expectedExitCode`/`expectedOutput`) assert parser behavior instead and
   need no files.
-- **live** — runs `cliCommand` against the `.env` test instance. Read-only
-  commands assert exit code and output. Mutating `set --apply` commands run
-  the full cycle: seed the `before.json` state onto the involved repos, run,
-  verify the result with an independent GraphQL read-back, then restore the
-  original state. Cases may declare `live.involvedRepos` (extra repos to
-  capture/seed/restore; the ones absent from `after.json` are canaries that
-  must come back unchanged — this is how widened regex selectors get caught)
-  and `live.usersWithoutOtherGrants` (preflight: named users must hold no
-  grants outside the involved repos).
-- **performance** — same as live, but timed and measured (traces, RSS
-  sampling, TSV row).
+- **live** — FUNCTIONAL tier: fast, scoped checks against the `.env` test
+  instance; the whole tier should take minutes. Read-only commands assert
+  exit code and output. Mutating `set --apply` commands run the full cycle:
+  seed the `before.json` state onto the involved repos, run, verify the
+  result with an independent GraphQL read-back, then restore the original
+  state. Seeding and restoring write the involved repos directly via
+  GraphQL — never through the product's `restore` command, whose full
+  instance capture takes minutes at 10k users and whose whole-instance
+  semantics clobber concurrent runs. Cases may declare `live.involvedRepos`
+  (extra repos to read/seed/restore; the ones absent from `after.json` are
+  canaries that must come back unchanged — this is how widened regex
+  selectors get caught) and `live.usersWithoutOtherGrants` (preflight:
+  named users must hold no grants outside the involved repos). Cases whose
+  main command intrinsically scans the whole instance (full captures,
+  candidate scans over all users/repos) belong in **performance**, not
+  live.
+- **performance** — SCALE tier: same workflow as live, but timed and
+  measured (traces, RSS sampling, TSV row), and the place for cases whose
+  commands walk all 10k users / 50k repos. Run deliberately, not
+  pre-commit. The legacy whole-instance stress cycle (`set --full` with the
+  root maps.yaml — 10k users x ~1,150 repos, known to crash the test
+  instance's Postgres) is opt-in only: `uv run tests/run.py --live "full
+  cycle"`.
+
+Functional coverage of scale-only code paths (pagination, batch stepping,
+dedupe) does NOT require scale data: the local fake serves site-user pages
+of at most 2 (`SITE_USERS_PAGE_CAP` in `e2e/case_runner.py`), so a fixture
+with 4 users already spans 2 pages — that is what catches selection
+truncation bugs locally in milliseconds.
 
 ## PyPI install smoke (`--install`)
 

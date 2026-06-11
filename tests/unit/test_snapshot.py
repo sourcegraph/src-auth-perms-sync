@@ -135,6 +135,32 @@ class SnapshotTests(unittest.TestCase):
         self.assertTrue(pending_counts)
         self.assertLessEqual(max(pending_counts), 4)
 
+    def test_capture_explicit_grants_skips_scan_when_no_repositories_selected(self) -> None:
+        users: list[permission_snapshot.SnapshotUser] = [
+            {"id": "user-1", "username": "test_user_09991"},
+        ]
+
+        def must_not_be_called(*arguments: object, **keywords: object) -> dict[str, list[str]]:
+            raise AssertionError("no user lookup may run when no repos are selected")
+
+        with patch.object(
+            permission_snapshot.permissions_sourcegraph,
+            "list_users_explicit_repo_ids",
+            side_effect=must_not_be_called,
+        ):
+            repos, scanned_user_count = permission_snapshot.capture_explicit_grants(
+                cast(src.SourcegraphClient, object()),
+                users,
+                parallelism=1,
+                explicit_permissions_batch_size=25,
+                selected_repository_ids=set(),
+            )
+
+        self.assertEqual({}, repos)
+        # The users iterable must still be drained: callers pass recording
+        # streams whose side effects feed later phases.
+        self.assertEqual(1, scanned_user_count)
+
     def test_capture_explicit_grants_aborts_when_circuit_breaker_opens(self) -> None:
         users: list[permission_snapshot.SnapshotUser] = [
             {"id": f"user-{index}", "username": f"user-{index}"} for index in range(60)

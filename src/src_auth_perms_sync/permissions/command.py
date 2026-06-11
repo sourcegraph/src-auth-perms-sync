@@ -1344,6 +1344,15 @@ def _apply_additive_permissions(
         mutations.failed,
         mutations.canceled,
     )
+    # Structured counts, mirroring the full-set and restore command events so
+    # every apply path reports mutations_succeeded in the run log.
+    src.info(
+        "additive_apply_done",
+        mutations_succeeded=mutations.succeeded,
+        mutations_skipped=mutations.skipped,
+        mutations_failed=mutations.failed,
+        mutations_canceled=mutations.canceled,
+    )
     return mutations
 
 

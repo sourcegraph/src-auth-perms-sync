@@ -354,24 +354,21 @@ cases:
   set-users-without-explicit-perms:
     description: >-
       --users-without-explicit-perms additively grants mapped repos only to
-      users who currently hold no explicit grants anywhere. Live, the
-      preflight asserts the named users hold no grants outside the involved
-      repos, which makes the selection deterministic. Also pins
+      users who currently hold no explicit grants anywhere. The candidate
+      selection scans every site user by design, so the real-instance run
+      lives in the performance tier; the local fixture spans multiple
+      site-user pages (page cap 2), which is what catches selection
+      truncation bugs like the 2026-06-10 first-page-only one. Also pins
       --explicit-permissions-batch-size by forcing the smallest batch.
     modes:
       - local
-      - live
       - performance
     live:
       usersWithoutOtherGrants:
         - test_user_09961
         - test_user_09962
-    # Deliberately --parallelism 1: keeps live coverage of the SEQUENTIAL
-    # candidate-selection code path, where the 2026-06-10 first-page-only
-    # truncation bug lived. Every other case uses the CLI default so the
-    # suite exercises what production runs actually use.
     cliCommand: >-
-      set --users-without-explicit-perms --apply --no-backup --parallelism 1
+      set --users-without-explicit-perms --apply --no-backup
       --explicit-permissions-batch-size 1
     expectedMutations: 2
 
@@ -689,9 +686,12 @@ cases:
       - Selected 0 user(s) for get output.
 
   get-repos-filter:
-    description: get scoped to one repo by exact name.
+    description: >-
+      get scoped to one repo by exact name. The snapshot still scans every
+      user's explicit grants to find the repo's holders (measured ~400 s at
+      10k users), so it runs in the performance tier.
     modes:
-      - live
+      - performance
     cliCommand: get --repos test-repo-49981
     expectedExitCode: 0
     expectedOutput:
@@ -753,9 +753,10 @@ cases:
   set-full-sync-saml-orgs-dry-run:
     description: >-
       Combined permission + organization sync dispatch, full mode, dry run
-      only.
+      only. The dry-run before-capture scans every user (measured ~395 s),
+      so it runs in the performance tier.
     modes:
-      - live
+      - performance
     cliCommand: set --full --sync-saml-orgs
     expectedExitCode: 0
     expectedOutput:
@@ -775,9 +776,10 @@ cases:
   set-repos-sync-saml-orgs-dry-run:
     description: >-
       Combined permission + organization sync dispatch, repo-scoped, dry run
-      only.
+      only. The dry-run before-capture scans every user even for one repo
+      (measured ~400 s), so it runs in the performance tier.
     modes:
-      - live
+      - performance
     cliCommand: set --repos test-repo-49981 --sync-saml-orgs
     expectedExitCode: 0
     expectedOutput:
@@ -786,9 +788,11 @@ cases:
   set-users-without-perms-sync-saml-orgs-dry-run:
     description: >-
       Combined permission + organization sync dispatch,
-      users-without-explicit-perms mode, dry run only.
+      users-without-explicit-perms mode, dry run only. The unfiltered
+      candidate selection scans every site user, so it runs in the
+      performance tier.
     modes:
-      - live
+      - performance
     cliCommand: set --users-without-explicit-perms --sync-saml-orgs
     expectedExitCode: 0
     expectedOutput:
