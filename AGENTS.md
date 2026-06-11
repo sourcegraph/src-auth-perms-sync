@@ -1,5 +1,10 @@
 # AGENTS.md
 
+## Reference materials
+
+- GraphQL schema and database migrations (changes to SQL schema) are available in
+  <https://github.com/sourcegraph/artifacts>
+
 ## Linting
 
 ```bash

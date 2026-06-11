@@ -1,0 +1,8 @@
+maps:
+  - name: The temporary user owns test-repo-49911
+    users:
+      usernames:
+        - perms_sync_temp_user_01
+    repos:
+      names:
+        - test-repo-49911

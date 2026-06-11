@@ -27,7 +27,7 @@
       "createdAt": "2026-01-01T00:00:00Z",
       "emails": [
         {
-          "email": "marc.leblanc+test09991-m.eks.m.ps.sgdev.org@sourcegraph.com",
+          "email": "test_user_09991@perms-sync.test",
           "verified": true
         }
       ],
@@ -40,7 +40,7 @@
       "createdAt": "2026-02-01T00:00:00Z",
       "emails": [
         {
-          "email": "marc.leblanc+test09992-m.eks.m.ps.sgdev.org@sourcegraph.com",
+          "email": "test_user_09992@perms-sync.test",
           "verified": true
         }
       ],
@@ -53,7 +53,7 @@
       "createdAt": "2026-03-01T00:00:00Z",
       "emails": [
         {
-          "email": "marc.leblanc+test09993-m.eks.m.ps.sgdev.org@sourcegraph.com",
+          "email": "test_user_09993@perms-sync.test",
           "verified": true
         }
       ],

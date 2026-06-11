@@ -86,6 +86,34 @@ of at most 2 (`SITE_USERS_PAGE_CAP` in `e2e/case_runner.py`), so a fixture
 with 4 users already spans 2 pages — that is what catches selection
 truncation bugs locally in milliseconds.
 
+## Instance state: setup.py / setup.yaml
+
+[setup.py](./setup.py) converges the test instance to the desired state in
+[setup.yaml](./setup.yaml) — run it BEFORE `run.py --live`:
+
+```bash
+uv run tests/setup.py            # report drift, change nothing
+uv run tests/setup.py --apply    # converge the instance
+```
+
+It verifies site config, synthetic user/repo counts, rewrites any legacy
+real-looking addresses to `{username}@perms-sync.test`, fabricates SAML
+external accounts (group claims for `samlGroups` live cases, written via
+SQL on the pgsql pod and verified back through the product's own GraphQL
+parser), deletes orphaned explicit grants on deleted repos, and clears
+pending permissions. GraphQL is used for instance-level reads; bulk state
+goes through `kubectl exec` + psql because it is orders of magnitude
+faster. Everything it touches is synthetic (`test_user_*`); it never
+creates or deletes users itself.
+
+Live cases declare their identity preconditions in tests.yaml:
+`live.requiredSamlGroups` (preflight: fabricated accounts must match, with
+a pointer to setup.py on drift) and `live.temporaryUsers` (the harness
+creates the named users fresh via `createUser` — `created_at` = now — and
+hard-deletes them afterwards; `{today}` in a cliCommand resolves to the
+run's UTC date, which makes positive `--created-after` selection
+deterministic against the long-pre-existing synthetic users).
+
 ## PyPI install smoke (`--install`)
 
 `uv run tests/run.py --install` pip-installs the **published** package into a

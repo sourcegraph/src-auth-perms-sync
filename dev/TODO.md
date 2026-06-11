@@ -1,5 +1,21 @@
 # TODO
 
+## Medium priority: extend SAML-group live coverage to org sync
+
+tests/setup.py now fabricates SAML accounts with synthetic groups
+(`perms-sync-test-eng` / `perms-sync-test-sales`, see tests/setup.yaml).
+saml-group-live covers permission mapping; add a seeded
+`sync-saml-orgs --apply` live case that maps those groups to a throwaway
+org and asserts membership is added AND removed (today's
+sync-saml-orgs-apply only covers the single real Okta user, add-only).
+
+## Decide: pendingBindIDs / usersWithPendingPermissions
+
+The CLI cannot create pending permissions (it validates users exist), but
+snapshots record `pending_bindIDs` and setup.py clears leftovers. Decide
+whether "grant before first login" is a customer need; if not, consider
+dropping the snapshot field. See the thread discussion 2026-06-11.
+
 ## High priority: Remote trigger on demand
 
 - Sourcegraph webhook for new user coming in v7.4.0
@@ -21,7 +37,7 @@
 ## High priority: Reduce worst-case full-permission sync load
 
 - Use the stress-run evidence in
-  [memory-efficiency.md](./memory-efficiency.md)
+  [engineering-requests.md](./engineering-requests.md)
   to request Sourcegraph bulk explicit-permission read and write APIs.
   New evidence 2026-06-10: the whole-instance apply (1,150 repo
   overwrites x 10,002 bindIDs each at parallelism 16) crashed the test

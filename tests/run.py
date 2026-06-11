@@ -1036,6 +1036,41 @@ class TestSuite:
                 return names
             after_cursor = cast("str | None", page_info.get("endCursor"))
 
+    def read_back_saml_groups(self, username: str) -> list[str] | None:
+        """Return a user's sorted SAML group claims, or None if user/account missing.
+
+        Reads the same `externalAccounts.accountData` surface the product
+        parses; used to verify the fabricated accounts from tests/setup.py.
+        """
+        data = self.graphql(
+            "query TestSamlGroups($username: String!) { user(username: $username) {"
+            "  externalAccounts(first: 50) { nodes { serviceType accountData } } } }",
+            {"username": username},
+        )
+        user = cast("dict[str, Any] | None", data.get("user"))
+        if user is None:
+            return None
+        for account in cast("list[dict[str, Any]]", user["externalAccounts"]["nodes"]):
+            if account["serviceType"] != "saml":
+                continue
+            account_data = cast("object", account.get("accountData"))
+            if isinstance(account_data, str):
+                account_data = cast("object", json.loads(account_data))
+            if not isinstance(account_data, dict):
+                return []
+            attributes = cast("dict[str, Any]", account_data)
+            groups_attribute = cast(
+                "dict[str, Any]",
+                cast("dict[str, Any]", attributes.get("Values") or {}).get("groups") or {},
+            )
+            group_values = cast("list[object]", groups_attribute.get("Values") or [])
+            return sorted(
+                cast(str, cast("dict[str, Any]", value)["Value"])
+                for value in group_values
+                if isinstance(value, dict) and "Value" in cast("dict[str, Any]", value)
+            )
+        return None
+
     def read_back_repository_explicit_users(
         self, repository_name: str
     ) -> tuple[int, set[str]] | None:
@@ -1157,10 +1192,41 @@ class TestSuite:
             return
         self.record("live prerequisites", "live", True, 0.0)
 
+        self.check_live_hygiene()
         if self.test_selected("wheel install smoke"):
             self.run_wheel_install_smoke()
         self.run_live_fixture_cases(environment)
         self.run_live_permission_cycles(environment)
+        self.check_live_hygiene()
+
+    def check_live_hygiene(self) -> None:
+        """Cheap small-state guard: no pending bindIDs should ever persist.
+
+        Deep hygiene (grant-table counts, orphan cleanup, SAML fixtures,
+        synthetic emails) is `uv run tests/setup.py`'s job before the run.
+        """
+        if not self.test_selected("live hygiene"):
+            return
+        started = time.monotonic()
+        try:
+            pending = cast(
+                "list[str]",
+                self.graphql("query TestPending { usersWithPendingPermissions }", {})[
+                    "usersWithPendingPermissions"
+                ],
+            )
+        except Exception as exception:
+            self.record("live hygiene: pending bindIDs", "live", False, 0.0, str(exception))
+            return
+        self.record(
+            "live hygiene: pending bindIDs",
+            "live",
+            not pending,
+            time.monotonic() - started,
+            "none"
+            if not pending
+            else f"leftover pending bindIDs: {pending[:5]} — run `uv run tests/setup.py --apply`",
+        )
 
     def run_wheel_install_smoke(self) -> None:
         log.info("\n--- Live: wheel build + pip install smoke ---")
@@ -1422,13 +1488,41 @@ class TestSuite:
                 )
                 return
 
+        # Preflight: SAML cases need the fabricated accounts from
+        # tests/setup.py (setup.yaml samlAccounts). Verify groups through
+        # the same GraphQL surface the product reads.
+        required_saml_groups = cast(
+            "dict[str, list[str]]", live_settings.get("requiredSamlGroups") or {}
+        )
+        for username, expected_groups in required_saml_groups.items():
+            actual_groups = self.read_back_saml_groups(username)
+            if actual_groups != sorted(expected_groups):
+                self.record(
+                    label,
+                    level,
+                    False,
+                    0.0,
+                    f"SAML fixture drift for {username}: expected {sorted(expected_groups)}, "
+                    f"found {actual_groups}; run `uv run tests/setup.py --apply`",
+                )
+                return
+
         # Repos in scope but absent from after.json must come back exactly as
         # seeded — these are the canaries that detect widened selectors.
         expected_after = {
             name: after_grants.get(name, before_grants.get(name, set())) for name in involved_names
         }
 
+        temporary_usernames = cast("list[str]", live_settings.get("temporaryUsers") or [])
+        created_temporary_user_ids: dict[str, str] = {}
         try:
+            for username in temporary_usernames:
+                user_id = self.create_temporary_user(username)
+                if user_id is None:
+                    self.record(label, level, False, 0.0, f"could not create temp user {username}")
+                    return
+                created_temporary_user_ids[username] = user_id
+
             seeded = self.set_repository_states(
                 f"{label} [seed before-state]",
                 level,
@@ -1445,9 +1539,14 @@ class TestSuite:
                 {name: before_grants.get(name, set()) for name in involved_names},
             )
 
+            today = datetime.datetime.now(datetime.UTC).date().isoformat()
+            main_arguments = tuple(
+                token.replace("{user}", self.test_user).replace("{today}", today)
+                for token in case_cli_arguments(cast("Any", case), case_name)
+            )
             main_case = CliCase(
                 label,
-                tuple(case_cli_arguments(cast("Any", case), case_name)),
+                main_arguments,
                 1 if expected_errors else 0,
                 expected_errors,
             )
@@ -1475,6 +1574,39 @@ class TestSuite:
                 f"{label} [restore verified]",
                 level,
                 {name: state[1] for name, state in original_state.items()},
+            )
+            for username, user_id in created_temporary_user_ids.items():
+                self.delete_temporary_user(label, level, username, user_id)
+
+    def create_temporary_user(self, username: str) -> str | None:
+        """Create a throwaway user (created_at = now) for created-after cases."""
+        try:
+            data = self.graphql(
+                "mutation TestCreateUser($username: String!) {"
+                "  createUser(username: $username) { user { id } } }",
+                {"username": username},
+            )
+            return cast(str, data["createUser"]["user"]["id"])
+        except Exception as exception:
+            log.error("createUser %s failed: %s", username, exception)
+            return None
+
+    def delete_temporary_user(self, label: str, level: str, username: str, user_id: str) -> None:
+        """Hard-delete a temp user (also cascades its permission rows)."""
+        try:
+            self.graphql(
+                "mutation TestDeleteUser($user: ID!) {"
+                "  deleteUser(user: $user, hard: true) { alwaysNil } }",
+                {"user": user_id},
+            )
+            self.record(f"{label} [temp user removed]", level, True, 0.0, username)
+        except Exception as exception:
+            self.record(
+                f"{label} [temp user removed]",
+                level,
+                False,
+                0.0,
+                f"hard-delete of {username} failed: {exception}",
             )
 
     def set_repository_states(

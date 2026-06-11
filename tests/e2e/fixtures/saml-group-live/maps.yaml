@@ -1,0 +1,10 @@
+maps:
+  - name: perms-sync-test-eng members own the SAML test repos
+    users:
+      authProvider:
+        configID: okta
+        samlGroup: perms-sync-test-eng
+    repos:
+      names:
+        - test-repo-49991
+        - test-repo-49992

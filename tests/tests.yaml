@@ -335,6 +335,49 @@ cases:
     cliCommand: set --full --apply --no-backup
     expectedMutations: 2
 
+  saml-group-live:
+    description: >-
+      authProvider samlGroup filter against the FABRICATED SAML accounts
+      that tests/setup.py provisions (setup.yaml samlAccounts): eng-group
+      members gain the mapped repos; the sales-only and no-group users are
+      canaries proving the selector does not widen. The local fixture
+      mirrors the instance state exactly, so local and live assert the
+      same behavior.
+    modes:
+      - local
+      - live
+    live:
+      requiredSamlGroups:
+        test_user_09991:
+          - perms-sync-test-eng
+        test_user_09992:
+          - perms-sync-test-eng
+          - perms-sync-test-sales
+        test_user_09993:
+          - perms-sync-test-sales
+        test_user_09994: []
+      involvedRepos:
+        - test-repo-49993
+    cliCommand: set --full --apply --no-backup
+    expectedMutations: 2
+
+  set-created-after-temp-user:
+    description: >-
+      POSITIVE created-after selection on the real instance: the harness
+      creates a fresh temporary user (created today), so
+      --created-after {today} selects exactly that user out of 10k
+      pre-existing ones; the mapped grant lands and the canary repo stays
+      empty. The temp user is hard-deleted afterwards.
+    modes:
+      - live
+    live:
+      temporaryUsers:
+        - perms_sync_temp_user_01
+      involvedRepos:
+        - test-repo-49912
+    cliCommand: set --created-after {today} --apply --no-backup
+    expectedMutations: 1
+
   set-users-created-after:
     description: >-
       createdAfter mode additively grants mapped repos to users created
@@ -428,7 +471,7 @@ cases:
       - local
     cliCommand: >-
       set --users
-      marc.leblanc+test09991-m.eks.m.ps.sgdev.org@sourcegraph.com,test_user_09993
+      test_user_09991@perms-sync.test,test_user_09993
       --apply --no-backup
     expectedMutations: 4
 

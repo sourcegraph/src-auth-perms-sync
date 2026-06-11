@@ -27,7 +27,7 @@
       "createdAt": "2026-01-01T00:00:00Z",
       "emails": [
         {
-          "email": "marc.leblanc+test09951-m.eks.m.ps.sgdev.org@sourcegraph.com",
+          "email": "test_user_09951@perms-sync.test",
           "verified": true
         }
       ],

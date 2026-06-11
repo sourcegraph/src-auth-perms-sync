@@ -49,12 +49,16 @@ class LocalCaseTests(unittest.TestCase):
                     path = FIXTURES_DIR / case_name / file_name
                     self.assertTrue(path.is_file(), f"case requires {path}")
                 cli_command = case.get("cliCommand", "")
-                if "{user}" in cli_command:
-                    self.assertNotIn(
-                        "local",
-                        case_modes(case),
-                        "{user} resolves to the live --user; local mode cannot use it",
-                    )
+                for placeholder, meaning in (
+                    ("{user}", "the live --user"),
+                    ("{today}", "the run date (UTC)"),
+                ):
+                    if placeholder in cli_command:
+                        self.assertNotIn(
+                            "local",
+                            case_modes(case),
+                            f"{placeholder} resolves to {meaning}; local mode cannot use it",
+                        )
                 argv = shlex.split(cli_command)
                 if argv[:1] == ["restore"] and {"live", "performance"} & set(case_modes(case)):
                     self.assertNotIn(

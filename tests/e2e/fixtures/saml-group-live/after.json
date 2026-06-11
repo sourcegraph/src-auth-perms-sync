@@ -11,8 +11,8 @@
     },
     {
       "serviceType": "saml",
-      "serviceID": "http://www.okta.com/test123",
-      "clientID": "https://sourcegraph.test/.auth/saml/metadata",
+      "serviceID": "http://www.okta.com/exk12oznaq73Mq18t698",
+      "clientID": "https://m.eks.m.ps.sgdev.org/.auth/saml/metadata",
       "displayName": "Okta",
       "isBuiltin": false,
       "configID": "okta"
@@ -25,13 +25,6 @@
       "displayName": "GitHub",
       "url": "https://github.com/",
       "config": "{}"
-    },
-    {
-      "id": 2,
-      "kind": "BITBUCKETSERVER",
-      "displayName": "Bitbucket LOB1",
-      "url": "https://bitbucket.test/",
-      "config": "{\"username\": \"LOB1-SA1\"}"
     }
   ],
   "users": [
@@ -49,17 +42,14 @@
       "externalAccounts": [
         {
           "serviceType": "saml",
-          "serviceID": "http://www.okta.com/test123",
-          "clientID": "https://sourcegraph.test/.auth/saml/metadata",
+          "serviceID": "http://www.okta.com/exk12oznaq73Mq18t698",
+          "clientID": "https://m.eks.m.ps.sgdev.org/.auth/saml/metadata",
           "accountData": {
             "Values": {
               "groups": {
                 "Values": [
                   {
-                    "Value": "engineering"
-                  },
-                  {
-                    "Value": "lob1"
+                    "Value": "perms-sync-test-eng"
                   }
                 ]
               }
@@ -82,14 +72,17 @@
       "externalAccounts": [
         {
           "serviceType": "saml",
-          "serviceID": "http://www.okta.com/test123",
-          "clientID": "https://sourcegraph.test/.auth/saml/metadata",
+          "serviceID": "http://www.okta.com/exk12oznaq73Mq18t698",
+          "clientID": "https://m.eks.m.ps.sgdev.org/.auth/saml/metadata",
           "accountData": {
             "Values": {
               "groups": {
                 "Values": [
                   {
-                    "Value": "engineering"
+                    "Value": "perms-sync-test-eng"
+                  },
+                  {
+                    "Value": "perms-sync-test-sales"
                   }
                 ]
               }
@@ -101,7 +94,7 @@
     {
       "id": 3,
       "username": "test_user_09993",
-      "builtinAuth": true,
+      "builtinAuth": false,
       "createdAt": "2026-01-01T00:00:00Z",
       "emails": [
         {
@@ -109,33 +102,79 @@
           "verified": true
         }
       ],
-      "externalAccounts": []
+      "externalAccounts": [
+        {
+          "serviceType": "saml",
+          "serviceID": "http://www.okta.com/exk12oznaq73Mq18t698",
+          "clientID": "https://m.eks.m.ps.sgdev.org/.auth/saml/metadata",
+          "accountData": {
+            "Values": {
+              "groups": {
+                "Values": [
+                  {
+                    "Value": "perms-sync-test-sales"
+                  }
+                ]
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "username": "test_user_09994",
+      "builtinAuth": false,
+      "createdAt": "2026-01-01T00:00:00Z",
+      "emails": [
+        {
+          "email": "test_user_09994@perms-sync.test",
+          "verified": true
+        }
+      ],
+      "externalAccounts": [
+        {
+          "serviceType": "saml",
+          "serviceID": "http://www.okta.com/exk12oznaq73Mq18t698",
+          "clientID": "https://m.eks.m.ps.sgdev.org/.auth/saml/metadata",
+          "accountData": {
+            "Values": {
+              "groups": {
+                "Values": []
+              }
+            }
+          }
+        }
+      ]
     }
   ],
   "repos": [
     {
       "id": 101,
-      "name": "test-repo-49981",
+      "name": "test-repo-49991",
       "externalServiceID": 1,
-      "explicitPermissionsUsers": []
-    },
-    {
-      "id": 201,
-      "name": "test-repo-49982",
-      "externalServiceID": 2,
       "explicitPermissionsUsers": [
         "test_user_09991",
         "test_user_09992"
-      ]
+      ],
+      "createdAt": "2026-01-01T00:00:00Z"
     },
     {
-      "id": 202,
-      "name": "test-repo-49983",
-      "externalServiceID": 2,
+      "id": 102,
+      "name": "test-repo-49992",
+      "externalServiceID": 1,
       "explicitPermissionsUsers": [
         "test_user_09991",
         "test_user_09992"
-      ]
+      ],
+      "createdAt": "2026-01-01T00:00:00Z"
+    },
+    {
+      "id": 103,
+      "name": "test-repo-49993",
+      "externalServiceID": 1,
+      "explicitPermissionsUsers": [],
+      "createdAt": "2026-01-01T00:00:00Z"
     }
   ],
   "pendingBindIDs": []

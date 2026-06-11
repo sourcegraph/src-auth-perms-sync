@@ -5,7 +5,7 @@ maps:
         configID: okta
         samlGroup: engineering
       emails:
-        - marc.leblanc+test09991-m.eks.m.ps.sgdev.org@sourcegraph.com
+        - test_user_09991@perms-sync.test
     repos:
       names:
         - test-repo-49981
