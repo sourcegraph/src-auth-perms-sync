@@ -50,10 +50,13 @@ files (e.g. `test_user_09991`, `test-repo-49981`), and exact selectors only
 
 ## What each mode does with a case
 
-- **local** — runs the case's `cliCommand` through the real argument parser
-  (and `importConfig` through the Python import API, when present) against an
-  in-memory instance built from `before.json`, then asserts the full
-  resulting state against `after.json`. Replay-style cases
+- **local** — runs every state case TWICE against an in-memory instance
+  built from `before.json`: once with `cliCommand` through the real
+  argument parser, and once through the Python import API with a Config
+  derived from the same command line — both must produce the exact
+  `after.json` state, proving CLI/import parity for every behavior. An
+  explicit `importConfig` overrides the derived one (to pin specific
+  kwargs spellings). Replay-style cases
   (`expectedExitCode`/`expectedOutput`) assert parser behavior instead and
   need no files.
 - **live** — FUNCTIONAL tier: fast, scoped checks against the `.env` test

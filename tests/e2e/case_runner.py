@@ -556,11 +556,21 @@ def case_modes(case: FixtureCase) -> list[str]:
 
 
 def case_runners(case: FixtureCase) -> list[str]:
-    """Return how a case runs in local mode: parsed argv and/or import API."""
+    """Return how a case runs in local mode: parsed argv and/or import API.
+
+    Every state case with a cliCommand runs BOTH ways: once through the
+    real argument parser, and once through the Python import API with a
+    Config derived from the same command line — proving each behavior for
+    CLI consumers and library consumers alike. An explicit importConfig
+    overrides the derived one (for testing specific kwargs spellings).
+    Replay cases assert parser behavior, which has no import equivalent.
+    """
+    if is_replay_case(case):
+        return ["cli"] if "cliCommand" in case else []
     runners: list[str] = []
     if "cliCommand" in case:
-        runners.append("cli")
-    if "importConfig" in case:
+        runners += ["cli", "import"]
+    elif "importConfig" in case:
         runners.append("import")
     return runners
 
@@ -657,6 +667,27 @@ def required_case_files(case: FixtureCase) -> set[str]:
     return files
 
 
+def derived_import_input(case: FixtureCase, case_name: str, endpoint: str) -> cli.CliInput:
+    """Build the import-API equivalent of a case's command line.
+
+    Parses the cliCommand, then reconstructs the Config the way a library
+    consumer would: keyword construction plus model_copy of the fields
+    that differ from defaults. Asserting the same expected state through
+    both entrypoints proves CLI and import parity for every case.
+    """
+    argv = case_cli_arguments(case, case_name)
+    argv += ["--src-endpoint", endpoint, "--src-access-token", "fixture-token"]
+    parsed = cli.load_cli(argv)
+    defaults = cli.Config(src_endpoint=endpoint, src_access_token="fixture-token")
+    updates = {
+        name: getattr(parsed.config, name)
+        for name in type(parsed.config).model_fields
+        if getattr(parsed.config, name) != getattr(defaults, name)
+    }
+    config = defaults.model_copy(update=updates)
+    return cli.CliInput(command_name=parsed.command_name, config=config)
+
+
 def cli_input_for_case(
     case: FixtureCase, case_name: str, endpoint: str, runner: str
 ) -> cli.CliInput:
@@ -667,7 +698,7 @@ def cli_input_for_case(
         return cli.load_cli(argv)
     import_config = case.get("importConfig")
     if import_config is None:
-        raise ValueError(f"case {case_name!r} has no importConfig")
+        return derived_import_input(case, case_name, endpoint)
     options = dict(import_config)
     command_name = cast(cli.CommandName, options.pop("command"))
     updates: dict[str, object] = {
