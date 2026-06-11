@@ -12,9 +12,10 @@ sync-saml-orgs-apply only covers the single real Okta user, add-only).
 ## Decide: pendingBindIDs / usersWithPendingPermissions
 
 The CLI cannot create pending permissions (it validates users exist), but
-snapshots record `pending_bindIDs` and setup.py clears leftovers. Decide
-whether "grant before first login" is a customer need; if not, consider
-dropping the snapshot field. See the thread discussion 2026-06-11.
+snapshots record `pending_bindIDs`, and setup.py / the live hygiene check
+report (never delete) any that appear. Decide whether "grant before first
+login" is a customer need; if not, consider dropping the snapshot field.
+See the thread discussion 2026-06-11.
 
 ## High priority: Remote trigger on demand
 

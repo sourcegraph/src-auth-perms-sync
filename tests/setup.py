@@ -172,36 +172,35 @@ class Setup:
     def check_emails(self) -> None:
         users_config = self.config["users"]
         template = str(users_config["emailTemplate"])
-        legacy = str(users_config["legacyEmailPattern"])
-        stale = int(
-            self.sql_value(
-                "SELECT count(*) FROM user_emails ue JOIN users u ON u.id = ue.user_id "
-                f"WHERE u.username ~ '{users_config['usernamePattern']}' "
-                "AND u.deleted_at IS NULL AND ue.deleted_at IS NULL "
-                f"AND ue.email LIKE '{legacy}';"
-            )
-        )
-        if stale == 0:
-            self.record("emails", True, "no legacy addresses on live synthetic users")
-            return
-        if not self.apply:
-            self.record(
-                "emails", False, f"{stale} legacy address(es) to rewrite (run with --apply)"
-            )
-            return
         suffix = template.replace("{username}", "")
         if (
             not SAFE_NAME_PATTERN.match(suffix.lstrip("@"))
             or template[: len("{username}")] != "{username}"
         ):
             raise RuntimeError(f"emailTemplate must be '{{username}}@<domain>': {template!r}")
+        drift_condition = (
+            "u.id = ue.user_id "
+            f"AND u.username ~ '{users_config['usernamePattern']}' "
+            "AND u.deleted_at IS NULL AND ue.deleted_at IS NULL "
+            f"AND ue.email <> u.username || '{suffix}'"
+        )
+        stale = int(
+            self.sql_value(
+                f"SELECT count(*) FROM user_emails ue JOIN users u ON {drift_condition};"
+            )
+        )
+        if stale == 0:
+            self.record("emails", True, f"all live synthetic users match {template}")
+            return
+        if not self.apply:
+            self.record(
+                "emails", False, f"{stale} address(es) to rewrite to {template} (run with --apply)"
+            )
+            return
         updated = self.sql_value(
             "WITH updated AS ("
-            "  UPDATE user_emails ue SET email = u.username || '" + suffix + "' "
-            "  FROM users u "
-            f" WHERE u.id = ue.user_id AND u.username ~ '{users_config['usernamePattern']}' "
-            "   AND u.deleted_at IS NULL AND ue.deleted_at IS NULL "
-            f"  AND ue.email LIKE '{legacy}' RETURNING 1"
+            f"  UPDATE user_emails ue SET email = u.username || '{suffix}' "
+            f"  FROM users u WHERE {drift_condition} RETURNING 1"
             ") SELECT count(*) FROM updated;"
         )
         self.record("emails", True, f"rewrote {updated} address(es) to {template}")
@@ -352,21 +351,25 @@ class Setup:
             detail += f"; leftovers from an unfinished run? top: {top}"
         self.record("live-grants", live_grants <= threshold, detail)
 
+        # Report-only: nothing in this test suite creates pending
+        # permissions, so any rows here have an UNKNOWN origin — setup must
+        # not silently destroy them. Investigate, then clear deliberately
+        # (an empty setRepositoryPermissionsForUsers on the affected repo
+        # removes its pending rows).
         pending = cast(
             "list[str]",
             cast("dict[str, Any]", self.client.graphql(PENDING_PERMISSIONS_QUERY))[
                 "usersWithPendingPermissions"
             ],
         )
-        if pending and self.apply:
-            self.sql("DELETE FROM pending_repo_permissions;")
-            self.record("pending-permissions", True, f"cleared {len(pending)} pending bindID(s)")
-        else:
-            self.record(
-                "pending-permissions",
-                not pending,
-                "none" if not pending else f"{len(pending)} pending bindID(s) (--apply clears)",
-            )
+        self.record(
+            "pending-permissions",
+            not pending,
+            "none"
+            if not pending
+            else f"{len(pending)} pending bindID(s) of unknown origin: {pending[:5]} — "
+            "investigate before clearing (setup never deletes these)",
+        )
 
     def run(self) -> int:
         self.check_site_config()

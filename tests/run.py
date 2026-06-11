@@ -1225,7 +1225,9 @@ class TestSuite:
             time.monotonic() - started,
             "none"
             if not pending
-            else f"leftover pending bindIDs: {pending[:5]} — run `uv run tests/setup.py --apply`",
+            else f"pending bindIDs of unknown origin: {pending[:5]} — investigate "
+            "before clearing (an empty setRepositoryPermissionsForUsers on the "
+            "affected repo removes its pending rows)",
         )
 
     def run_wheel_install_smoke(self) -> None:

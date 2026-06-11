@@ -96,12 +96,15 @@ uv run tests/setup.py            # report drift, change nothing
 uv run tests/setup.py --apply    # converge the instance
 ```
 
-It verifies site config, synthetic user/repo counts, rewrites any legacy
-real-looking addresses to `{username}@perms-sync.test`, fabricates SAML
-external accounts (group claims for `samlGroups` live cases, written via
-SQL on the pgsql pod and verified back through the product's own GraphQL
-parser), deletes orphaned explicit grants on deleted repos, and clears
-pending permissions. GraphQL is used for instance-level reads; bulk state
+It verifies site config, synthetic user/repo counts, rewrites any synthetic
+user's email that drifted from `{username}@perms-sync.test`, fabricates
+SAML external accounts (group claims for `samlGroups` live cases, written
+via SQL on the pgsql pod and verified back through the product's own
+GraphQL parser), and deletes orphaned explicit grants attached to
+soft-deleted repos (unreachable rows — the only state it ever removes).
+Pending permissions and grants on live repos are REPORTED, never deleted:
+our suite doesn't create them, so their origin is unknown and removal is
+a human decision. GraphQL is used for instance-level reads; bulk state
 goes through `kubectl exec` + psql because it is orders of magnitude
 faster. Everything it touches is synthetic (`test_user_*`); it never
 creates or deletes users itself.

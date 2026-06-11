@@ -1,0 +1,51 @@
+# Desired state of the test Sourcegraph instance, applied by tests/setup.py
+# BEFORE tests/run.py runs. Everything here is synthetic: the test_user_*
+# accounts get no human usage, so setup may freely rewrite them.
+#
+#   uv run tests/setup.py            # report drift (no changes)
+#   uv run tests/setup.py --apply    # converge the instance to this file
+
+kubectl:
+  namespace: m
+  pod: pgsql-0
+  databaseUser: sg
+  database: sg
+  tenantID: 1
+
+users:
+  # Synthetic users are pre-provisioned in bulk; setup verifies the count
+  # and pattern but does not mass-create them.
+  usernamePattern: "^test_user_[0-9]{5}$"
+  count: 10000
+  # Synthetic users must not carry real-looking addresses. setup --apply
+  # rewrites any live synthetic user's email that differs from this.
+  emailTemplate: "{username}@perms-sync.test"
+
+repos:
+  namePattern: "^test-repo-[0-9]{5}$"
+  count: 50000
+
+# Fabricated SAML external accounts (account_data is a minimal gosaml2
+# SAMLValues blob the product parses for group claims). service_id and
+# client_id are discovered from the instance's live SAML auth provider, so
+# the fabricated rows always match what mapping rules resolve against.
+# Group names are deliberately synthetic so they can never collide with
+# real Okta groups.
+samlAccounts:
+  test_user_09991:
+    - perms-sync-test-eng
+  test_user_09992:
+    - perms-sync-test-eng
+    - perms-sync-test-sales
+  test_user_09993:
+    - perms-sync-test-sales
+  # SAML account with no test groups: canary for samlGroups selectors.
+  test_user_09994: []
+
+permissionsHygiene:
+  # Explicit API grants on LIVE repos beyond this count are leftovers from
+  # crashed or unfinished runs; setup reports them (per repo) and fails.
+  # Grants attached to soft-deleted repos are pure orphans: --apply deletes
+  # them. Pending permissions should always be empty between runs: --apply
+  # clears them.
+  maxExplicitGrants: 50
