@@ -326,12 +326,12 @@ class Config(src.SourcegraphClientConfig, src.LoggingConfig, src.OpenTelemetryCo
         help_group="Performance",
     )
     http_timeout_seconds: float = src.config_field(
-        default=60.0,
+        default=300.0,
         env_var="SRC_AUTH_PERMS_SYNC_HTTP_TIMEOUT_SECONDS",
         cli_flag="--http-timeout-seconds",
         metavar="SECONDS",
         gt=0,
-        help="HTTP read timeout per request in seconds (default: 60)",
+        help="HTTP read timeout per request in seconds (default: 300)",
         help_group="Performance",
     )
     sample_interval: float = src.config_field(

@@ -135,6 +135,133 @@ class SnapshotTests(unittest.TestCase):
         self.assertTrue(pending_counts)
         self.assertLessEqual(max(pending_counts), 4)
 
+    def test_capture_explicit_grants_skips_scan_when_no_repositories_selected(self) -> None:
+        users: list[permission_snapshot.SnapshotUser] = [
+            {"id": "user-1", "username": "test_user_09991"},
+        ]
+
+        def must_not_be_called(*arguments: object, **keywords: object) -> dict[str, list[str]]:
+            raise AssertionError("no user lookup may run when no repos are selected")
+
+        with patch.object(
+            permission_snapshot.permissions_sourcegraph,
+            "list_users_explicit_repo_ids",
+            side_effect=must_not_be_called,
+        ):
+            repos, scanned_user_count = permission_snapshot.capture_explicit_grants(
+                cast(src.SourcegraphClient, object()),
+                users,
+                parallelism=1,
+                explicit_permissions_batch_size=25,
+                selected_repository_ids=set(),
+            )
+
+        self.assertEqual({}, repos)
+        # The users iterable must still be drained: callers pass recording
+        # streams whose side effects feed later phases.
+        self.assertEqual(1, scanned_user_count)
+
+    def test_capture_explicit_grants_aborts_when_circuit_breaker_opens(self) -> None:
+        users: list[permission_snapshot.SnapshotUser] = [
+            {"id": f"user-{index}", "username": f"user-{index}"} for index in range(60)
+        ]
+        lookup_attempts: list[str] = []
+
+        def failing_batch_lookup(
+            _client: src.SourcegraphClient,
+            user_ids: Sequence[str],
+            *,
+            batch_size: int,
+        ) -> dict[str, list[str]]:
+            raise src.GraphQLError("HTTP request timed out")
+
+        def failing_user_lookup(_client: src.SourcegraphClient, user_id: str) -> list[str]:
+            lookup_attempts.append(user_id)
+            raise src.GraphQLError("HTTP request timed out")
+
+        with (
+            patch.object(
+                permission_snapshot.permissions_sourcegraph,
+                "list_users_explicit_repo_ids",
+                side_effect=failing_batch_lookup,
+            ),
+            patch.object(
+                permission_snapshot.permissions_sourcegraph,
+                "list_user_explicit_repo_ids",
+                side_effect=failing_user_lookup,
+            ),
+            self.assertRaisesRegex(RuntimeError, "circuit breaker"),
+        ):
+            permission_snapshot.capture_explicit_grants(
+                cast(src.SourcegraphClient, object()),
+                users,
+                parallelism=1,
+                explicit_permissions_batch_size=1,
+                expected_user_count=len(users),
+            )
+
+        # The breaker must stop the capture early instead of grinding
+        # through every user's lookup + retries.
+        self.assertLess(len(lookup_attempts), len(users))
+
+    def test_capture_user_scoped_grants_tolerates_isolated_failures(self) -> None:
+        users: list[permission_snapshot.SnapshotUser] = [
+            {"id": "user-1", "username": "test_user_09991"},
+            {"id": "user-2", "username": "test_user_09992"},
+        ]
+
+        def user_lookup(
+            _client: src.SourcegraphClient, user_id: str
+        ) -> list[permission_types.Repository]:
+            if user_id == "user-1":
+                raise src.GraphQLError("transient failure")
+            return [{"id": src.encode_repository_id(1), "name": "test-repo-49981"}]
+
+        with patch.object(
+            permission_snapshot.permissions_sourcegraph,
+            "list_user_explicit_repos",
+            side_effect=user_lookup,
+        ):
+            scoped_users = permission_snapshot.capture_user_scoped_explicit_grants(
+                cast(src.SourcegraphClient, object()),
+                users,
+                parallelism=1,
+            )
+
+        self.assertEqual([], scoped_users["test_user_09991"]["repos"])
+        self.assertEqual(
+            ["test-repo-49981"],
+            [repo["name"] for repo in scoped_users["test_user_09992"]["repos"]],
+        )
+
+    def test_capture_user_scoped_grants_aborts_when_circuit_breaker_opens(self) -> None:
+        users: list[permission_snapshot.SnapshotUser] = [
+            {"id": f"user-{index}", "username": f"user-{index}"} for index in range(60)
+        ]
+        lookup_attempts: list[str] = []
+
+        def failing_user_lookup(
+            _client: src.SourcegraphClient, user_id: str
+        ) -> list[permission_types.Repository]:
+            lookup_attempts.append(user_id)
+            raise src.GraphQLError("HTTP request timed out")
+
+        with (
+            patch.object(
+                permission_snapshot.permissions_sourcegraph,
+                "list_user_explicit_repos",
+                side_effect=failing_user_lookup,
+            ),
+            self.assertRaisesRegex(RuntimeError, "circuit breaker"),
+        ):
+            permission_snapshot.capture_user_scoped_explicit_grants(
+                cast(src.SourcegraphClient, object()),
+                users,
+                parallelism=1,
+            )
+
+        self.assertLess(len(lookup_attempts), len(users))
+
     def test_list_users_explicit_repos_batches_aliases_and_follows_pages(self) -> None:
         repo_one: permission_types.Repository = {
             "id": src.encode_repository_id(1),

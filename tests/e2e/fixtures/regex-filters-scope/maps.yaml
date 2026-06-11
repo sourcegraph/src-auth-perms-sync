@@ -1,0 +1,8 @@
+maps:
+  - name: Email-regex-matched users get test-repo-49981 and test-repo-49982
+    users:
+      emailRegexes:
+        - '^test_user_0999[12]@perms-sync\.test$'
+    repos:
+      nameRegexes:
+        - '^test-repo-4998[12]$'

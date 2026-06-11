@@ -1,0 +1,71 @@
+{
+  "endpoint": "https://fixture.sourcegraph.test",
+  "authProviders": [
+    {
+      "serviceType": "builtin",
+      "serviceID": "",
+      "clientID": "",
+      "displayName": "Builtin username/password",
+      "isBuiltin": true,
+      "configID": ""
+    }
+  ],
+  "externalServices": [
+    {
+      "id": 1,
+      "kind": "GITHUB",
+      "displayName": "GitHub",
+      "url": "https://github.com/",
+      "config": "{}"
+    }
+  ],
+  "users": [
+    {
+      "id": 1,
+      "username": "test_user_09971",
+      "builtinAuth": true,
+      "createdAt": "2026-01-01T00:00:00Z",
+      "emails": [
+        {
+          "email": "test_user_09971@perms-sync.test",
+          "verified": true
+        }
+      ],
+      "externalAccounts": []
+    },
+    {
+      "id": 2,
+      "username": "test_user_09972",
+      "builtinAuth": true,
+      "createdAt": "2026-01-02T00:00:00Z",
+      "emails": [
+        {
+          "email": "test_user_09972@perms-sync.test",
+          "verified": true
+        }
+      ],
+      "externalAccounts": []
+    }
+  ],
+  "repos": [
+    {
+      "id": 101,
+      "name": "test-repo-49971",
+      "externalServiceID": 1,
+      "explicitPermissionsUsers": [
+        "test_user_09974"
+      ],
+      "createdAt": "2026-01-01T00:00:00Z"
+    },
+    {
+      "id": 102,
+      "name": "test-repo-49972",
+      "externalServiceID": 1,
+      "explicitPermissionsUsers": [
+        "test_user_09974"
+      ],
+      "createdAt": "2026-01-01T00:00:00Z"
+    }
+  ],
+  "pendingBindIDs": []
+}

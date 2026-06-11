@@ -300,24 +300,40 @@ def list_site_user_candidates_without_explicit_repos(
         return SiteUserCandidateSelection(candidates=[], explicit_user_count=0)
 
     if len(first_page) >= total_count or parallelism <= 1:
-        _log_user_candidate_load_progress(len(first_page), total_count, started)
+        # Sequential path: still page through ALL candidates. If the server
+        # caps `nodes(limit:)` below our requested page size, use the
+        # observed first-page width so offset steps do not skip rows.
+        sequential_pages: list[tuple[int, list[shared_types.SiteUserCandidate]]] = [(0, first_page)]
+        observed_page_size = len(first_page)
+        for offset in range(observed_page_size, total_count, observed_page_size):
+            nodes, _ = _site_user_candidate_page(
+                client,
+                created_filter,
+                offset=offset,
+                page_size=SITE_USER_CANDIDATE_PAGE_SIZE,
+            )
+            sequential_pages.append((offset, nodes))
+        sequential_candidates = _dedupe_site_user_candidate_pages(sequential_pages)
+        _log_user_candidate_load_progress(len(sequential_candidates), total_count, started)
         log.info(
             "Checking %d active user candidate(s)%s for existing explicit repo permissions "
             "in batches of %d ...",
-            len(first_page),
+            len(sequential_candidates),
             created_filter_label,
             batch_size,
         )
         explicit_user_ids = user_ids_with_explicit_repos(
             client,
-            [candidate["id"] for candidate in first_page],
+            [candidate["id"] for candidate in sequential_candidates],
             batch_size=batch_size,
             parallelism=parallelism,
             worker_pool=worker_pool,
         )
         return SiteUserCandidateSelection(
             candidates=[
-                candidate for candidate in first_page if candidate["id"] not in explicit_user_ids
+                candidate
+                for candidate in sequential_candidates
+                if candidate["id"] not in explicit_user_ids
             ],
             explicit_user_count=len(explicit_user_ids),
         )

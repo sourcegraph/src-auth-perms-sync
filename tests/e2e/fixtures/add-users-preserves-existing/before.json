@@ -22,41 +22,60 @@
   "users": [
     {
       "id": 1,
-      "username": "alice",
+      "username": "test_user_09991",
       "builtinAuth": true,
       "createdAt": "2026-01-01T00:00:00Z",
-      "emails": [{ "email": "alice@example.com", "verified": true }],
+      "emails": [
+        {
+          "email": "test_user_09991@perms-sync.test",
+          "verified": true
+        }
+      ],
       "externalAccounts": []
     },
     {
       "id": 2,
-      "username": "bob",
+      "username": "test_user_09992",
       "builtinAuth": true,
       "createdAt": "2026-01-02T00:00:00Z",
-      "emails": [{ "email": "bob@example.com", "verified": true }],
+      "emails": [
+        {
+          "email": "test_user_09992@perms-sync.test",
+          "verified": true
+        }
+      ],
       "externalAccounts": []
     },
     {
       "id": 3,
-      "username": "carol",
+      "username": "test_user_09993",
       "builtinAuth": true,
       "createdAt": "2026-01-03T00:00:00Z",
-      "emails": [{ "email": "carol@example.com", "verified": true }],
+      "emails": [
+        {
+          "email": "test_user_09993@perms-sync.test",
+          "verified": true
+        }
+      ],
       "externalAccounts": []
     }
   ],
   "repos": [
     {
       "id": 101,
-      "name": "github.com/acme/app",
+      "name": "test-repo-49981",
       "externalServiceID": 1,
-      "explicitPermissionsUsers": ["alice"]
+      "explicitPermissionsUsers": [
+        "test_user_09991"
+      ]
     },
     {
       "id": 102,
-      "name": "github.com/acme/lib",
+      "name": "test-repo-49982",
       "externalServiceID": 1,
-      "explicitPermissionsUsers": ["carol"]
+      "explicitPermissionsUsers": [
+        "test_user_09993"
+      ]
     }
   ],
   "pendingBindIDs": []

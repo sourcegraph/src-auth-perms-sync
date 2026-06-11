@@ -1,0 +1,42 @@
+{
+  "endpoint": "https://fixture.sourcegraph.test",
+  "authProviders": [
+    {
+      "serviceType": "builtin",
+      "serviceID": "",
+      "clientID": "",
+      "displayName": "Builtin username/password",
+      "isBuiltin": true,
+      "configID": ""
+    }
+  ],
+  "externalServices": [
+    {
+      "id": 1,
+      "kind": "GITHUB",
+      "displayName": "GitHub",
+      "url": "https://github.com/",
+      "config": "{}"
+    }
+  ],
+  "users": [],
+  "repos": [
+    {
+      "id": 111,
+      "name": "test-repo-49911",
+      "externalServiceID": 1,
+      "explicitPermissionsUsers": [
+        "perms_sync_temp_user_01"
+      ],
+      "createdAt": "2026-01-01T00:00:00Z"
+    },
+    {
+      "id": 112,
+      "name": "test-repo-49912",
+      "externalServiceID": 1,
+      "explicitPermissionsUsers": [],
+      "createdAt": "2026-01-01T00:00:00Z"
+    }
+  ],
+  "pendingBindIDs": []
+}

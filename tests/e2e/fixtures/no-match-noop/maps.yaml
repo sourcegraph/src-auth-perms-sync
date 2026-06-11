@@ -1,0 +1,8 @@
+maps:
+  - name: No user matches this rule
+    users:
+      usernames:
+        - username_doesnt_exist_01
+    repos:
+      names:
+        - test-repo-49981

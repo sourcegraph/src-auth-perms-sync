@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "captured_at": "2026-06-01T00:00:00+00:00",
+  "endpoint": "https://fixture.sourcegraph.test",
+  "bindID_mode": "USERNAME",
+  "config_file": null,
+  "config_sha256": null,
+  "pending_bindIDs": [],
+  "stats": {
+    "total_users_scanned": 0,
+    "users_with_explicit_grants": 0,
+    "repos_with_explicit_grants": 0,
+    "total_grants": 0
+  },
+  "repos": {
+    "101": {
+      "name": "test-repo-49981",
+      "users": []
+    }
+  }
+}

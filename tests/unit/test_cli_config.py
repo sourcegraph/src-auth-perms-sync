@@ -559,7 +559,7 @@ class CliConfigTests(unittest.TestCase):
         self.assertEqual(25, fields["explicit_permissions_batch_size"])
         self.assertEqual(False, fields["fetch_sg_traces"])
         self.assertEqual(False, fields["open_telemetry"])
-        self.assertEqual(60.0, fields["http_timeout_seconds"])
+        self.assertEqual(300.0, fields["http_timeout_seconds"])
 
     def test_run_fields_omit_irrelevant_false_flags(self) -> None:
         configuration = make_config()

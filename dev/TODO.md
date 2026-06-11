@@ -1,5 +1,22 @@
 # TODO
 
+## Medium priority: extend SAML-group live coverage to org sync
+
+tests/setup.py now fabricates SAML accounts with synthetic groups
+(`perms-sync-test-eng` / `perms-sync-test-sales`, see tests/setup.yaml).
+saml-group-live covers permission mapping; add a seeded
+`sync-saml-orgs --apply` live case that maps those groups to a throwaway
+org and asserts membership is added AND removed (today's
+sync-saml-orgs-apply only covers the single real Okta user, add-only).
+
+## Decide: pendingBindIDs / usersWithPendingPermissions
+
+The CLI cannot create pending permissions (it validates users exist), but
+snapshots record `pending_bindIDs`, and setup.py / the live hygiene check
+report (never delete) any that appear. Decide whether "grant before first
+login" is a customer need; if not, consider dropping the snapshot field.
+See the thread discussion 2026-06-11.
+
 ## High priority: Remote trigger on demand
 
 - Sourcegraph webhook for new user coming in v7.4.0
@@ -21,14 +38,24 @@
 ## High priority: Reduce worst-case full-permission sync load
 
 - Use the stress-run evidence in
-  [memory-efficiency.md](./memory-efficiency.md)
+  [engineering-requests.md](./engineering-requests.md)
   to request Sourcegraph bulk explicit-permission read and write APIs.
+  New evidence 2026-06-10: the whole-instance apply (1,150 repo
+  overwrites x 10,002 bindIDs each at parallelism 16) crashed the test
+  instance's Postgres ("connection refused", "unexpected EOF"); the
+  client circuit breaker opened and the harness restored cleanly. That
+  stress cycle is now opt-in: `uv run tests/run.py --live "full cycle"`.
 - Add an explicit destructive/performance-test mode to the e2e runner so giant
   stress runs can skip or defer full restore cleanup when the goal is finding
   the server-side breaking point.
 - Revisit full snapshot capture once Sourcegraph exposes a bulk read path;
   replace aliased `User.permissionsInfo.repositories(source: API)` calls before
   raising concurrency further.
+- `get --repos <name>` still scans every user's explicit grants to find one
+  repo's holders (~400 s at 10k users). A repo-centric read
+  (`repository.permissionsInfo.users` + site-admin disambiguation, as the
+  test harness already does) would make it seconds — see the repo-centric
+  section below.
 
 ## Low priority: Repo-centric path, when users > repos, or for cross-checking
 

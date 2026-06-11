@@ -1,7 +1,0 @@
-{
-  "description": "Full set mode unions users across rules, overwrites mapped repos, and leaves unmapped repos alone.",
-  "set": {
-    "full": true
-  },
-  "expectedMutations": 2
-}

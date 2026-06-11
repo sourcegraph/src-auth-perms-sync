@@ -1,0 +1,11 @@
+maps:
+  - name: All three users may read both repos
+    users:
+      usernames:
+        - test_user_09991
+        - test_user_09992
+        - test_user_09993
+    repos:
+      names:
+        - test-repo-49981
+        - test-repo-49982

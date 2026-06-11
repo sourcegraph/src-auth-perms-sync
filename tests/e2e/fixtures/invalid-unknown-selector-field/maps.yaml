@@ -1,0 +1,8 @@
+maps:
+  - name: Typo in users selector
+    users:
+      userNames:
+        - test_user_09991
+    repos:
+      names:
+        - test-repo-49981

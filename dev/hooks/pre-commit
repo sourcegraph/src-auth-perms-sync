@@ -19,10 +19,6 @@ run git diff --cached --check
 run git diff --cached --stat
 run git diff --stat
 
-run uv run ruff check .
-run uv run ruff format . --check
-run uv run pyright
-run uv run python -m unittest discover -s tests
-run uv run src-auth-perms-sync --help
+run uv run tests/run.py --local
 
 printf '\nPre-commit quality checks passed.\n'

@@ -1,0 +1,11 @@
+maps:
+  - name: Engineering members on the allowlist get test-repo-49981
+    users:
+      authProvider:
+        configID: okta
+        samlGroup: engineering
+      emails:
+        - test_user_09991@perms-sync.test
+    repos:
+      names:
+        - test-repo-49981

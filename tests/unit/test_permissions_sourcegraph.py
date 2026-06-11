@@ -239,6 +239,42 @@ class PermissionsSourcegraphTests(unittest.TestCase):
             self.assertNotIn("first", call)
             self.assertFalse(any(variable_name.startswith("after") for variable_name in call))
 
+    def test_candidates_without_explicit_repos_pages_past_first_page_sequentially(self) -> None:
+        # Regression: with parallelism=1 and more users than one page, the
+        # selection used to silently consider ONLY the first page (1000
+        # users) — every later user was excluded from candidates.
+        site_users = _SiteUsersClient(total_count=2500)
+        explicit_repos = _ExplicitReposClient({"user-1500"})
+
+        class _CombinedClient:
+            def graphql(
+                self,
+                query: str,
+                variables: src.JSONDict | None = None,
+                *,
+                follow_pages: bool = True,
+            ) -> src.JSONDict:
+                if "query SiteUsers" in query:
+                    return site_users.graphql(query, variables, follow_pages=follow_pages)
+                if "query UserExplicitRepoExistsBatch" in query:
+                    return explicit_repos.graphql(query, variables, follow_pages=follow_pages)
+                raise AssertionError(f"unexpected query: {query[:80]}")
+
+        selection = permissions_sourcegraph.list_site_user_candidates_without_explicit_repos(
+            cast(src.SourcegraphClient, _CombinedClient()),
+            None,
+            batch_size=1000,
+            parallelism=1,
+        )
+
+        self.assertEqual(selection.explicit_user_count, 1)
+        self.assertEqual(len(selection.candidates), 2499)
+        candidate_ids = {candidate["id"] for candidate in selection.candidates}
+        self.assertIn("user-2499", candidate_ids)
+        self.assertNotIn("user-1500", candidate_ids)
+        _, offsets = _site_users_call_page_args(site_users.calls)
+        self.assertEqual(sorted(offsets), [0, 1000, 2000])
+
     def test_candidates_without_explicit_repos_pipelines_checks_after_first_page(self) -> None:
         client = _PipelinedCandidateClient()
 
