@@ -67,36 +67,38 @@
 # `{user}` in a cliCommand resolves to the configured --user on the test
 # instance (live/performance modes only).
 #
-# Each case carries two comments sizing its work:
+# Each case carries two comment maps sizing its work:
 #
-# `# Affects:` — net state change between before.json and after.json:
-#   users  distinct users whose explicit grants change
-#   repos  repos whose explicit or pending grant lists change
-#   perms  grant additions + removals (user-repo pairs, incl. pending bindIDs)
+# affects: — net state change between before.json and after.json:
+#   users:   distinct users whose explicit grants change
+#   repos:   repos whose explicit or pending grant lists change
+#   perms:   grant additions + removals (user-repo pairs, incl. pending
+#            bindIDs)
 # Rejections, expected errors, dry runs, no-ops, and read-only gets affect
-# nothing (users=0 repos=0 perms=0). Overwrite mutations that resend an
-# identical list count in expectedMutations but not here.
+# nothing. Overwrite mutations that resend an identical list count in
+# expectedMutations but not here.
 #
-# `# Cost:` — reads + writes driving runtime, and the complexity class:
-#   users=     user-metadata records fetched (paged, fast)
-#   repos=     repo records fetched (paged, fast)
-#   permScans= per-user explicit-grant reads — the DOMINANT cost: the
-#              server materializes every accessible repo per probe
-#              (~25 users/s; permScans=all ≈ 400 s live)
-#   writes     GraphQL permission mutations (= expectedMutations)
+# cost: — the reads + writes driving runtime:
+#   bigO:    complexity class. U = user count, R = repo count,
+#            U·scan = per-user explicit-grant scan (the ~400 s tier)
+#   reads:   users:     user-metadata records fetched (paged, fast)
+#            repos:     repo records fetched (paged, fast)
+#            permScans: per-user explicit-grant reads — the DOMINANT
+#                       cost: the server materializes every accessible
+#                       repo per probe (~25 users/s; all ≈ 400 s live)
+#   writes:  GraphQL permission mutations (= expectedMutations)
+#   note:    what bounds or skips the work
 # `all` means a full-instance scan: 10,000 users / 50,000 repos on the
 # live instance (tests/setup.yaml); locally it is the fixture's tiny
 # counts, so every local run is sub-second regardless of class.
-# Complexity: U = user count, R = repo count, U·scan = per-user
-# explicit-grant scan (the ~400 s tier). Live harness seeding/verify/
-# restore overhead is excluded.
+# Live harness seeding/verify/restore overhead is excluded.
 
 cases:
 
   # ── Local parse replays: argument validation, in-process, no files (fastest) ──
   reject-bare-invocation:
-    # Affects: users=0 repos=0 perms=0
-    # Cost: O(1) — parse-only, no instance reads or writes
+    # affects: {users: 0, repos: 0, perms: 0}
+    # cost: {bigO: O(1), note: parse-only — no instance reads or writes}
     description: A bare invocation without a command prints usage and exits 2.
     modes:
       - local
@@ -106,8 +108,8 @@ cases:
       - "the following arguments are required: COMMAND"
 
   reject-unknown-command:
-    # Affects: users=0 repos=0 perms=0
-    # Cost: O(1) — parse-only, no instance reads or writes
+    # affects: {users: 0, repos: 0, perms: 0}
+    # cost: {bigO: O(1), note: parse-only — no instance reads or writes}
     description: An unknown subcommand is rejected with the valid choices.
     modes:
       - local
@@ -117,8 +119,8 @@ cases:
       - "invalid choice: 'bogus'"
 
   reject-two-commands:
-    # Affects: users=0 repos=0 perms=0
-    # Cost: O(1) — parse-only, no instance reads or writes
+    # affects: {users: 0, repos: 0, perms: 0}
+    # cost: {bigO: O(1), note: parse-only — no instance reads or writes}
     description: Two subcommands in one invocation are rejected.
     modes:
       - local
@@ -128,8 +130,8 @@ cases:
       - unrecognized arguments
 
   reject-get-apply:
-    # Affects: users=0 repos=0 perms=0
-    # Cost: O(1) — parse-only, no instance reads or writes
+    # affects: {users: 0, repos: 0, perms: 0}
+    # cost: {bigO: O(1), note: parse-only — no instance reads or writes}
     description: get is read-only; --apply is rejected.
     modes:
       - local
@@ -139,8 +141,8 @@ cases:
       - unrecognized arguments
 
   reject-get-full:
-    # Affects: users=0 repos=0 perms=0
-    # Cost: O(1) — parse-only, no instance reads or writes
+    # affects: {users: 0, repos: 0, perms: 0}
+    # cost: {bigO: O(1), note: parse-only — no instance reads or writes}
     description: --full requires the set command.
     modes:
       - local
@@ -150,8 +152,8 @@ cases:
       - unrecognized arguments
 
   reject-malformed-date:
-    # Affects: users=0 repos=0 perms=0
-    # Cost: O(1) — parse-only, no instance reads or writes
+    # affects: {users: 0, repos: 0, perms: 0}
+    # cost: {bigO: O(1), note: parse-only — no instance reads or writes}
     description: dates must match YYYY-MM-DD before any network call.
     modes:
       - local
@@ -161,8 +163,8 @@ cases:
       - string_pattern_mismatch
 
   reject-user-filter-conflict:
-    # Affects: users=0 repos=0 perms=0
-    # Cost: O(1) — parse-only, no instance reads or writes
+    # affects: {users: 0, repos: 0, perms: 0}
+    # cost: {bigO: O(1), note: parse-only — no instance reads or writes}
     description: user filters are mutually exclusive.
     modes:
       - local
@@ -172,8 +174,8 @@ cases:
       - choose only one of --users
 
   reject-user-and-repo-filters:
-    # Affects: users=0 repos=0 perms=0
-    # Cost: O(1) — parse-only, no instance reads or writes
+    # affects: {users: 0, repos: 0, perms: 0}
+    # cost: {bigO: O(1), note: parse-only — no instance reads or writes}
     description: user filters and repo filters cannot be combined.
     modes:
       - local
@@ -183,8 +185,8 @@ cases:
       - choose either user filters or repo filters
 
   reject-repo-filter-conflict:
-    # Affects: users=0 repos=0 perms=0
-    # Cost: O(1) — parse-only, no instance reads or writes
+    # affects: {users: 0, repos: 0, perms: 0}
+    # cost: {bigO: O(1), note: parse-only — no instance reads or writes}
     description: repo filters are mutually exclusive.
     modes:
       - local
@@ -194,8 +196,8 @@ cases:
       - choose only one of --repos
 
   reject-repos-created-after-malformed:
-    # Affects: users=0 repos=0 perms=0
-    # Cost: O(1) — parse-only, no instance reads or writes
+    # affects: {users: 0, repos: 0, perms: 0}
+    # cost: {bigO: O(1), note: parse-only — no instance reads or writes}
     description: repo creation dates must match YYYY-MM-DD at parse time.
     modes:
       - local
@@ -205,8 +207,8 @@ cases:
       - string_pattern_mismatch
 
   reject-get-removed-repositories-created-after:
-    # Affects: users=0 repos=0 perms=0
-    # Cost: O(1) — parse-only, no instance reads or writes
+    # affects: {users: 0, repos: 0, perms: 0}
+    # cost: {bigO: O(1), note: parse-only — no instance reads or writes}
     description: >-
       The removed --repositories-created-after spelling stays removed; the
       flag is --repos-created-after.
@@ -218,8 +220,8 @@ cases:
       - "unrecognized arguments: --repositories-created-after"
 
   reject-verbosity-conflict:
-    # Affects: users=0 repos=0 perms=0
-    # Cost: O(1) — parse-only, no instance reads or writes
+    # affects: {users: 0, repos: 0, perms: 0}
+    # cost: {bigO: O(1), note: parse-only — no instance reads or writes}
     description: the --verbose and --quiet log-level aliases are mutually exclusive.
     modes:
       - local
@@ -229,8 +231,8 @@ cases:
       - choose only one of --verbose/-v, --quiet/-q, or --silent/-s
 
   reject-bare-set:
-    # Affects: users=0 repos=0 perms=0
-    # Cost: O(1) — parse-only, no instance reads or writes
+    # affects: {users: 0, repos: 0, perms: 0}
+    # cost: {bigO: O(1), note: parse-only — no instance reads or writes}
     description: set requires an explicit mode flag.
     modes:
       - local
@@ -240,8 +242,8 @@ cases:
       - set requires one of --full
 
   reject-set-full-and-users:
-    # Affects: users=0 repos=0 perms=0
-    # Cost: O(1) — parse-only, no instance reads or writes
+    # affects: {users: 0, repos: 0, perms: 0}
+    # cost: {bigO: O(1), note: parse-only — no instance reads or writes}
     description: set modes are mutually exclusive.
     modes:
       - local
@@ -251,8 +253,8 @@ cases:
       - choose at most one
 
   reject-set-user-filter-conflict:
-    # Affects: users=0 repos=0 perms=0
-    # Cost: O(1) — parse-only, no instance reads or writes
+    # affects: {users: 0, repos: 0, perms: 0}
+    # cost: {bigO: O(1), note: parse-only — no instance reads or writes}
     description: set user filters are mutually exclusive.
     modes:
       - local
@@ -262,8 +264,8 @@ cases:
       - choose only one of --users
 
   reject-set-full-and-created-after:
-    # Affects: users=0 repos=0 perms=0
-    # Cost: O(1) — parse-only, no instance reads or writes
+    # affects: {users: 0, repos: 0, perms: 0}
+    # cost: {bigO: O(1), note: parse-only — no instance reads or writes}
     description: full overwrite cannot be combined with the additive date filter.
     modes:
       - local
@@ -273,8 +275,8 @@ cases:
       - "--full cannot be combined with --created-after"
 
   reject-set-restore-path:
-    # Affects: users=0 repos=0 perms=0
-    # Cost: O(1) — parse-only, no instance reads or writes
+    # affects: {users: 0, repos: 0, perms: 0}
+    # cost: {bigO: O(1), note: parse-only — no instance reads or writes}
     description: "--restore-path belongs to restore; set does not accept it."
     modes:
       - local
@@ -284,8 +286,8 @@ cases:
       - "unrecognized arguments: --restore-path"
 
   reject-bare-restore:
-    # Affects: users=0 repos=0 perms=0
-    # Cost: O(1) — parse-only, no instance reads or writes
+    # affects: {users: 0, repos: 0, perms: 0}
+    # cost: {bigO: O(1), note: parse-only — no instance reads or writes}
     description: restore requires a snapshot path.
     modes:
       - local
@@ -295,8 +297,8 @@ cases:
       - restore requires --restore-path
 
   reject-restore-with-users:
-    # Affects: users=0 repos=0 perms=0
-    # Cost: O(1) — parse-only, no instance reads or writes
+    # affects: {users: 0, repos: 0, perms: 0}
+    # cost: {bigO: O(1), note: parse-only — no instance reads or writes}
     description: restore does not take user filters.
     modes:
       - local
@@ -306,8 +308,8 @@ cases:
       - unrecognized arguments
 
   reject-restore-repos:
-    # Affects: users=0 repos=0 perms=0
-    # Cost: O(1) — parse-only, no instance reads or writes
+    # affects: {users: 0, repos: 0, perms: 0}
+    # cost: {bigO: O(1), note: parse-only — no instance reads or writes}
     description: restore does not take repo filters.
     modes:
       - local
@@ -317,8 +319,8 @@ cases:
       - "unrecognized arguments: --repos"
 
   reject-restore-sync-saml-orgs:
-    # Affects: users=0 repos=0 perms=0
-    # Cost: O(1) — parse-only, no instance reads or writes
+    # affects: {users: 0, repos: 0, perms: 0}
+    # cost: {bigO: O(1), note: parse-only — no instance reads or writes}
     description: "--sync-saml-orgs belongs to set; restore does not accept it."
     modes:
       - local
@@ -328,8 +330,8 @@ cases:
       - "unrecognized arguments: --sync-saml-orgs"
 
   reject-sync-saml-orgs-created-after:
-    # Affects: users=0 repos=0 perms=0
-    # Cost: O(1) — parse-only, no instance reads or writes
+    # affects: {users: 0, repos: 0, perms: 0}
+    # cost: {bigO: O(1), note: parse-only — no instance reads or writes}
     description: sync-saml-orgs does not take user filters.
     modes:
       - local
@@ -339,8 +341,8 @@ cases:
       - unrecognized arguments
 
   reject-sync-saml-orgs-users:
-    # Affects: users=0 repos=0 perms=0
-    # Cost: O(1) — parse-only, no instance reads or writes
+    # affects: {users: 0, repos: 0, perms: 0}
+    # cost: {bigO: O(1), note: parse-only — no instance reads or writes}
     description: sync-saml-orgs does not take a user list.
     modes:
       - local
@@ -350,8 +352,8 @@ cases:
       - "unrecognized arguments: --users"
 
   reject-sync-saml-orgs-full:
-    # Affects: users=0 repos=0 perms=0
-    # Cost: O(1) — parse-only, no instance reads or writes
+    # affects: {users: 0, repos: 0, perms: 0}
+    # cost: {bigO: O(1), note: parse-only — no instance reads or writes}
     description: "--full belongs to set; sync-saml-orgs does not accept it."
     modes:
       - local
@@ -361,8 +363,8 @@ cases:
       - "unrecognized arguments: --full"
 
   reject-sync-saml-orgs-restore-path:
-    # Affects: users=0 repos=0 perms=0
-    # Cost: O(1) — parse-only, no instance reads or writes
+    # affects: {users: 0, repos: 0, perms: 0}
+    # cost: {bigO: O(1), note: parse-only — no instance reads or writes}
     description: "--restore-path belongs to restore; sync-saml-orgs does not accept it."
     modes:
       - local
@@ -373,8 +375,11 @@ cases:
 
   # ── Local state cases: full CLI runs against an in-memory instance ──
   and-filters-intersect:
-    # Affects: users=1 repos=1 perms=1
-    # Cost: reads users=all repos=all permScans=0; writes=1 mutation → O(U+R)
+    # affects: {users: 1, repos: 1, perms: 1}
+    # cost:
+    #   bigO:   O(U+R)
+    #   reads:  {users: all, repos: all, permScans: 0}
+    #   writes: 1 mutation
     description: >-
       Multiple user filters AND together: both users are in the SAML group,
       but only test_user_09991 matches the email filter.
@@ -388,8 +393,11 @@ cases:
     expectedMutations: 1
 
   regex-filters-scope:
-    # Affects: users=2 repos=2 perms=4
-    # Cost: reads users=all repos=all permScans=0; writes=2 mutations → O(U+R)
+    # affects: {users: 2, repos: 2, perms: 4}
+    # cost:
+    #   bigO:   O(U+R)
+    #   reads:  {users: all, repos: all, permScans: 0}
+    #   writes: 2 mutations
     description: >-
       Email and repo-name regex filters scope grants to matching users and
       repos only. Live, the declared involvedRepos cover the full closed
@@ -419,8 +427,11 @@ cases:
     expectedMutations: 2
 
   saml-group-filter:
-    # Affects: users=1 repos=2 perms=2
-    # Cost: reads users=all repos=all permScans=0; writes=2 mutations → O(U+R)
+    # affects: {users: 1, repos: 2, perms: 2}
+    # cost:
+    #   bigO:   O(U+R)
+    #   reads:  {users: all, repos: all, permScans: 0}
+    #   writes: 2 mutations
     description: >-
       authProvider samlGroup filter grants Bitbucket repos only to users whose
       SAML assertion includes the group.
@@ -434,8 +445,11 @@ cases:
     expectedMutations: 2
 
   saml-group-live:
-    # Affects: users=2 repos=2 perms=4
-    # Cost: reads users=all repos=all permScans=0; writes=2 mutations → O(U+R)
+    # affects: {users: 2, repos: 2, perms: 4}
+    # cost:
+    #   bigO:   O(U+R)
+    #   reads:  {users: all, repos: all, permScans: 0}
+    #   writes: 2 mutations
     description: >-
       authProvider samlGroup filter against the FABRICATED SAML accounts
       that tests/setup.py provisions (setup.yaml samlAccounts): eng-group
@@ -466,8 +480,12 @@ cases:
     expectedMutations: 2
 
   set-created-after-temp-user:
-    # Affects: users=1 repos=1 perms=1
-    # Cost: reads users=1 (server-side date filter) repos=all permScans=1; writes=1 mutation → O(R)
+    # affects: {users: 1, repos: 1, perms: 1}
+    # cost:
+    #   bigO:   O(R)
+    #   reads:  {users: 1, repos: all, permScans: 1}
+    #   writes: 1 mutation
+    #   note:   server-side date filter selects only the temp user
     description: >-
       POSITIVE created-after selection on the real instance: the harness
       creates a fresh temporary user (created today), so
@@ -489,8 +507,12 @@ cases:
     expectedMutations: 1
 
   set-users-created-after:
-    # Affects: users=2 repos=2 perms=4
-    # Cost: reads users=selected (server-side date filter) repos=all permScans=selected; writes=4 mutations → O(R)
+    # affects: {users: 2, repos: 2, perms: 4}
+    # cost:
+    #   bigO:   O(R)
+    #   reads:  {users: selected, repos: all, permScans: selected}
+    #   writes: 4 mutations
+    #   note:   server-side date filter
     description: >-
       createdAfter mode additively grants mapped repos to users created
       on/after the date, preserving existing grants.
@@ -505,8 +527,12 @@ cases:
     expectedMutations: 4
 
   set-users-without-explicit-perms:
-    # Affects: users=1 repos=2 perms=2
-    # Cost: reads users=all (candidates + hydration) repos=all permScans=rule-matched only; writes=2 mutations → O(U+R)
+    # affects: {users: 1, repos: 2, perms: 2}
+    # cost:
+    #   bigO:   O(U+R)
+    #   reads:  {users: all, repos: all, permScans: rule-matched}
+    #   writes: 2 mutations
+    #   note:   candidates + hydration for all users; perm probes only for rule-matched
     description: >-
       --users-without-explicit-perms additively grants mapped repos only to
       users who currently hold no explicit grants anywhere. The local
@@ -527,8 +553,12 @@ cases:
     expectedMutations: 2
 
   set-users-without-explicit-perms-default-batch:
-    # Affects: users=1 repos=2 perms=2
-    # Cost: reads users=all (candidates + hydration) repos=all permScans=rule-matched only; writes=2 mutations → O(U+R)
+    # affects: {users: 1, repos: 2, perms: 2}
+    # cost:
+    #   bigO:   O(U+R)
+    #   reads:  {users: all, repos: all, permScans: rule-matched}
+    #   writes: 2 mutations
+    #   note:   candidates + hydration for all users; perm probes only for rule-matched
     description: >-
       Performance-tier twin of set-users-without-explicit-perms at default
       --parallelism and --explicit-permissions-batch-size, so the measured
@@ -549,8 +579,12 @@ cases:
     expectedMutations: 2
 
   set-repos-without-explicit-perms:
-    # Affects: users=2 repos=1 perms=2
-    # Cost: reads users=all repos=all permScans=all (forced before-snapshot); writes=1 mutation → O(U·scan + R)
+    # affects: {users: 2, repos: 1, perms: 2}
+    # cost:
+    #   bigO:   O(U·scan + R)
+    #   reads:  {users: all, repos: all, permScans: all}
+    #   writes: 1 mutation
+    #   note:   mode forces the full before-snapshot
     description: >-
       --repos-without-explicit-perms overwrites only repos that currently
       have no explicit grants. Runs in the performance tier on the instance
@@ -566,8 +600,12 @@ cases:
     expectedMutations: 1
 
   set-repos-created-after:
-    # Affects: users=2 repos=1 perms=2
-    # Cost: reads users=all repos=date-matched (createdAt-ordered scan stops at threshold) permScans=0; writes=1 mutation → O(U)
+    # affects: {users: 2, repos: 1, perms: 2}
+    # cost:
+    #   bigO:   O(U)
+    #   reads:  {users: all, repos: date-matched, permScans: 0}
+    #   writes: 1 mutation
+    #   note:   createdAt-ordered repo scan stops at the threshold
     description: >-
       --repos-created-after scopes the overwrite to repos created on/after
       the date.
@@ -581,8 +619,12 @@ cases:
     expectedMutations: 1
 
   full-overwrite-dry-run:
-    # Affects: users=0 repos=0 perms=0
-    # Cost: reads users=all repos=all permScans=all (dry run forces before-capture); writes none → O(U·scan + R)
+    # affects: {users: 0, repos: 0, perms: 0}
+    # cost:
+    #   bigO:   O(U·scan + R)
+    #   reads:  {users: all, repos: all, permScans: all}
+    #   writes: none
+    #   note:   dry run forces the before-capture
     description: >-
       set without --apply plans the full overwrite but makes zero mutations
       and leaves state untouched — the dry-run default never mutates.
@@ -595,8 +637,8 @@ cases:
     expectedMutations: 0
 
   empty-maps-noop:
-    # Affects: users=0 repos=0 perms=0
-    # Cost: no rules → exits before any instance scan (apply + --no-backup skips snapshots) → O(1)
+    # affects: {users: 0, repos: 0, perms: 0}
+    # cost: {bigO: O(1), note: no rules → exits before any instance scan}
     description: >-
       An empty maps list is a no-op, not an error: zero mutations, existing
       grants untouched.
@@ -610,8 +652,11 @@ cases:
     expectedMutations: 0
 
   match-provider-and-host-fields:
-    # Affects: users=2 repos=2 perms=4
-    # Cost: reads users=all repos=all permScans=0; writes=2 mutations → O(U+R)
+    # affects: {users: 2, repos: 2, perms: 4}
+    # cost:
+    #   bigO:   O(U+R)
+    #   reads:  {users: all, repos: all, permScans: 0}
+    #   writes: 2 mutations
     description: >-
       Users matched by authProvider type/serviceID/clientID/displayName
       (without configID or samlGroup) and repos matched by codeHostConnection
@@ -626,8 +671,11 @@ cases:
     expectedMutations: 2
 
   add-users-by-email-and-list:
-    # Affects: users=2 repos=2 perms=4
-    # Cost: reads users=2 (exact lookups) repos=all permScans=2; writes=4 mutations → O(R)
+    # affects: {users: 2, repos: 2, perms: 4}
+    # cost:
+    #   bigO:   O(R)
+    #   reads:  {users: 2, repos: all, permScans: 2}
+    #   writes: 4 mutations
     description: >-
       --users accepts a comma-delimited mix of an email address and a
       username; only the two selected users gain grants, additively.
@@ -643,8 +691,12 @@ cases:
     expectedMutations: 4
 
   restore-dry-run-noop:
-    # Affects: users=0 repos=0 perms=0
-    # Cost: reads users=all permScans=all (current-state capture); writes none → O(U·scan)
+    # affects: {users: 0, repos: 0, perms: 0}
+    # cost:
+    #   bigO:   O(U·scan)
+    #   reads:  {users: all, permScans: all}
+    #   writes: none
+    #   note:   current-state capture scans every user
     description: >-
       restore without --apply plans against a snapshot that differs from
       current state but makes zero mutations.
@@ -657,8 +709,12 @@ cases:
     expectedMutations: 0
 
   restore-applies-snapshot:
-    # Affects: users=2 repos=1 perms=2
-    # Cost: reads users=all permScans=all (current-state capture); writes=1 mutation → O(U·scan)
+    # affects: {users: 2, repos: 1, perms: 2}
+    # cost:
+    #   bigO:   O(U·scan)
+    #   reads:  {users: all, permScans: all}
+    #   writes: 1 mutation
+    #   note:   current-state capture scans every user
     description: >-
       restore --apply overwrites the repo that differs from the snapshot and
       skips the repo that already matches.
@@ -672,8 +728,11 @@ cases:
     expectedMutations: 1
 
   restore-restores-pending:
-    # Affects: users=0 repos=2 perms=2 (both perms are pending bindID grants)
-    # Cost: reads users=all permScans=all + pending listing; writes=2 mutations → O(U·scan)
+    # affects: {users: 0, repos: 2, perms: 2}  (both perms are pending bindID grants)
+    # cost:
+    #   bigO:   O(U·scan)
+    #   reads:  {users: all, permScans: all + pending listing}
+    #   writes: 2 mutations
     description: >-
       restore --apply recreates the snapshot's pending grants (bindIDs that
       never resolved to a user) and wipes pending grants the snapshot does
@@ -688,8 +747,12 @@ cases:
     expectedMutations: 2
 
   full-overwrite-preserves-pending:
-    # Affects: users=2 repos=1 perms=2
-    # Cost: reads users=all repos=all permScans=0 (pending listing only); writes=1 mutation → O(U+R)
+    # affects: {users: 2, repos: 1, perms: 2}
+    # cost:
+    #   bigO:   O(U+R)
+    #   reads:  {users: all, repos: all, permScans: 0}
+    #   writes: 1 mutation
+    #   note:   pending listing only
     description: >-
       A full-overwrite apply (without backup, so the pending state is
       fetched live) resends each mapped repo's pending bindIDs and leaves
@@ -705,8 +768,12 @@ cases:
     expectedMutations: 1
 
   full-overwrite-with-backup:
-    # Affects: users=2 repos=1 perms=2
-    # Cost: reads users=all repos=all permScans=2×all (before + after snapshots); writes=1 mutation → O(U·scan + R)
+    # affects: {users: 2, repos: 1, perms: 2}
+    # cost:
+    #   bigO:   O(U·scan + R)
+    #   reads:  {users: all, repos: all, permScans: 2×all}
+    #   writes: 1 mutation
+    #   note:   before + after snapshots
     description: >-
       The default backup path (no --no-backup) captures before/after
       snapshots (including a pending grant on the mutated repo, which must
@@ -720,8 +787,8 @@ cases:
     expectedMutations: 1
 
   get-user-grants:
-    # Affects: users=0 repos=0 perms=0
-    # Cost: reads users=1 permScans=1; writes none → O(1)
+    # affects: {users: 0, repos: 0, perms: 0}
+    # cost: {bigO: O(1), reads: {users: 1, permScans: 1}}
     description: >-
       get scoped to one user captures that user's explicit grants and never
       mutates the instance.
@@ -735,8 +802,8 @@ cases:
 
   # ── Local + live: expected-error cases, replayed read-only on the instance ──
   invalid-bad-regex:
-    # Affects: users=0 repos=0 perms=0
-    # Cost: maps validation fails before any instance read → O(1)
+    # affects: {users: 0, repos: 0, perms: 0}
+    # cost: {bigO: O(1), note: maps validation fails before any instance read}
     description: >-
       An invalid Python regex in a filter is rejected by structural validation
       before any mutation.
@@ -751,8 +818,8 @@ cases:
       - is not a valid Python regex
 
   invalid-missing-repos-section:
-    # Affects: users=0 repos=0 perms=0
-    # Cost: maps validation fails before any instance read → O(1)
+    # affects: {users: 0, repos: 0, perms: 0}
+    # cost: {bigO: O(1), note: maps validation fails before any instance read}
     description: >-
       A rule without a repos section is rejected by structural validation
       before any mutation.
@@ -767,8 +834,8 @@ cases:
       - "`repos:` section is missing"
 
   invalid-unknown-selector-field:
-    # Affects: users=0 repos=0 perms=0
-    # Cost: maps validation fails before any instance read → O(1)
+    # affects: {users: 0, repos: 0, perms: 0}
+    # cost: {bigO: O(1), note: maps validation fails before any instance read}
     description: >-
       A typo'd selector field is rejected by structural validation before any
       mutation.
@@ -783,8 +850,8 @@ cases:
       - unknown users field 'userNames'
 
   invalid-set-created-after-date:
-    # Affects: users=0 repos=0 perms=0
-    # Cost: date validation fails before any instance read → O(1)
+    # affects: {users: 0, repos: 0, perms: 0}
+    # cost: {bigO: O(1), note: date validation fails before any instance read}
     description: >-
       An impossible calendar date passes the YYYY-MM-DD shape check but set
       rejects it post-parse, before any mutation.
@@ -799,8 +866,8 @@ cases:
       - "--created-after must use YYYY-MM-DD"
 
   invalid-set-repos-created-after-date:
-    # Affects: users=0 repos=0 perms=0
-    # Cost: date validation fails before any instance read → O(1)
+    # affects: {users: 0, repos: 0, perms: 0}
+    # cost: {bigO: O(1), note: date validation fails before any instance read}
     description: >-
       An impossible calendar date passes the YYYY-MM-DD shape check but the
       repo-scoped set rejects it post-parse, before any mutation.
@@ -815,8 +882,8 @@ cases:
       - "--repos-created-after must use YYYY-MM-DD"
 
   invalid-set-unknown-user:
-    # Affects: users=0 repos=0 perms=0
-    # Cost: reads ≤2 user lookups, fails before any scan → O(1)
+    # affects: {users: 0, repos: 0, perms: 0}
+    # cost: {bigO: O(1), reads: ≤2 user lookups, note: fails before any scan}
     description: >-
       A --users value naming no Sourcegraph user fails before any mutation.
     modes:
@@ -831,8 +898,8 @@ cases:
       - "No Sourcegraph user found for 'username_doesnt_exist_01'"
 
   invalid-set-unknown-repo:
-    # Affects: users=0 repos=0 perms=0
-    # Cost: reads 1 repo-name lookup, fails before the user scan → O(1)
+    # affects: {users: 0, repos: 0, perms: 0}
+    # cost: {bigO: O(1), reads: 1 repo-name lookup, note: fails before the user scan}
     description: >-
       A --repos value naming no Sourcegraph repo fails before any mutation.
     modes:
@@ -847,8 +914,8 @@ cases:
       - "No Sourcegraph repo found for: repo-doesnt-exist-49999"
 
   invalid-restore-wrong-schema-version:
-    # Affects: users=0 repos=0 perms=0
-    # Cost: reads the snapshot file only, no instance reads → O(1)
+    # affects: {users: 0, repos: 0, perms: 0}
+    # cost: {bigO: O(1), note: reads the snapshot file only — no instance reads}
     description: >-
       A snapshot with an unsupported schema_version is refused without
       changing any state.
@@ -862,8 +929,8 @@ cases:
       - "snapshot schema_version is 1, expected"
 
   restore-missing-file:
-    # Affects: users=0 repos=0 perms=0
-    # Cost: file-existence check only, no instance reads → O(1)
+    # affects: {users: 0, repos: 0, perms: 0}
+    # cost: {bigO: O(1), note: file-existence check only — no instance reads}
     description: >-
       restore with a snapshot path that does not exist fails without changing
       any state.
@@ -879,8 +946,11 @@ cases:
 
   # ── Local + live: mutating cases, seeded and restored on the instance ──
   no-match-noop:
-    # Affects: users=0 repos=0 perms=0
-    # Cost: reads users=all repos=all permScans=0; writes none → O(U+R)
+    # affects: {users: 0, repos: 0, perms: 0}
+    # cost:
+    #   bigO:   O(U+R)
+    #   reads:  {users: all, repos: all, permScans: 0}
+    #   writes: none
     description: >-
       A rule matching no users produces zero mutations and leaves existing
       grants untouched.
@@ -895,8 +965,11 @@ cases:
     expectedMutations: 0
 
   set-repos-filter:
-    # Affects: users=3 repos=1 perms=3
-    # Cost: reads users=all repos=1 (exact name) permScans=0; writes=1 mutation → O(U)
+    # affects: {users: 3, repos: 1, perms: 3}
+    # cost:
+    #   bigO:   O(U)
+    #   reads:  {users: all, repos: 1, permScans: 0}
+    #   writes: 1 mutation
     description: >-
       --repos scopes the full overwrite to the listed repos; other mapped
       repos keep their existing grants. Also pins --src-log-level DEBUG:
@@ -915,8 +988,11 @@ cases:
     expectedMutations: 1
 
   add-users-preserves-existing:
-    # Affects: users=1 repos=2 perms=2
-    # Cost: reads users=1 repos=all permScans=1; writes=2 mutations → O(R)
+    # affects: {users: 1, repos: 2, perms: 2}
+    # cost:
+    #   bigO:   O(R)
+    #   reads:  {users: 1, repos: all, permScans: 1}
+    #   writes: 2 mutations
     description: >-
       Additive --users mode grants mapped repos to one user without dropping
       existing repo users.
@@ -932,8 +1008,11 @@ cases:
     expectedMutations: 2
 
   full-overwrite-removes-stale-grant:
-    # Affects: users=2 repos=1 perms=2
-    # Cost: reads users=all repos=all permScans=0; writes=1 mutation → O(U+R)
+    # affects: {users: 2, repos: 1, perms: 2}
+    # cost:
+    #   bigO:   O(U+R)
+    #   reads:  {users: all, repos: all, permScans: 0}
+    #   writes: 1 mutation
     description: >-
       Full set mode overwrites a mapped repo's explicit users, removing grants
       that no rule justifies.
@@ -949,8 +1028,8 @@ cases:
 
   # ── Live only: real-instance validation and organization sync ──
   invalid-created-after-date:
-    # Affects: users=0 repos=0 perms=0
-    # Cost: date validation fails before any instance read → O(1)
+    # affects: {users: 0, repos: 0, perms: 0}
+    # cost: {bigO: O(1), note: date validation fails before any instance read}
     description: >-
       An impossible calendar date passes the YYYY-MM-DD shape check but is
       rejected by date validation.
@@ -963,8 +1042,8 @@ cases:
       - "--created-after must use YYYY-MM-DD"
 
   invalid-missing-maps-file:
-    # Affects: users=0 repos=0 perms=0
-    # Cost: maps-file existence check only, no instance reads → O(1)
+    # affects: {users: 0, repos: 0, perms: 0}
+    # cost: {bigO: O(1), note: maps-file existence check only — no instance reads}
     description: >-
       A maps path that does not exist is rejected with a pointer to the
       command that creates the default maps file. Also pins the --quiet
@@ -980,8 +1059,8 @@ cases:
       - set input file does not exist
 
   get-created-after-future:
-    # Affects: users=0 repos=0 perms=0
-    # Cost: reads users=0 (server-side date filter) permScans=0 → O(1)
+    # affects: {users: 0, repos: 0, perms: 0}
+    # cost: {bigO: O(1), reads: {users: 0, permScans: 0}, note: server-side date filter selects nobody}
     description: >-
       A far-future --created-after selects no users on the real instance.
     modes:
@@ -992,8 +1071,8 @@ cases:
       - Selected 0 user(s) for get output.
 
   get-user-created-after-future:
-    # Affects: users=0 repos=0 perms=0
-    # Cost: reads 1 user lookup, filtered out by date; permScans=0 → O(1)
+    # affects: {users: 0, repos: 0, perms: 0}
+    # cost: {bigO: O(1), reads: {users: 1 lookup, permScans: 0}, note: the user is filtered out by date}
     description: >-
       --users combined with a far-future --created-after filters the named
       user out of the selection.
@@ -1005,8 +1084,8 @@ cases:
       - no user metadata selected
 
   get-users-without-perms-created-after-future:
-    # Affects: users=0 repos=0 perms=0
-    # Cost: reads users=0 (filtered candidate query) permScans=0 → O(1)
+    # affects: {users: 0, repos: 0, perms: 0}
+    # cost: {bigO: O(1), reads: {users: 0, permScans: 0}, note: filtered candidate query selects nobody}
     description: >-
       --users-without-explicit-perms combined with a far-future
       --created-after selects no users.
@@ -1018,8 +1097,12 @@ cases:
       - Selected 0 user(s) for get output.
 
   get-repos-filter:
-    # Affects: users=0 repos=0 perms=0
-    # Cost: reads users=all repos=1 permScans=all (~400 s at 10k users); writes none → O(U·scan)
+    # affects: {users: 0, repos: 0, perms: 0}
+    # cost:
+    #   bigO:   O(U·scan)
+    #   reads:  {users: all, repos: 1, permScans: all}
+    #   writes: none
+    #   note:   ~400 s at 10k users
     description: >-
       get scoped to one repo by exact name. The snapshot still scans every
       user's explicit grants to find the repo's holders (measured ~400 s at
@@ -1032,8 +1115,12 @@ cases:
       - Selected 1 repo(s) by exact name.
 
   get-repos-created-after-future:
-    # Affects: users=0 repos=0 perms=0
-    # Cost: reads users=all (metadata only) repos≈1 page permScans=0 (empty repo selection skips probes) → O(U)
+    # affects: {users: 0, repos: 0, perms: 0}
+    # cost:
+    #   bigO:   O(U)
+    #   reads:  {users: all, repos: ~1 page, permScans: 0}
+    #   writes: none
+    #   note:   empty repo selection skips the perm probes
     description: >-
       A far-future --repos-created-after selects no repos. Also pins the
       --verbose alias: DEBUG verbosity must not hide the INFO summary.
@@ -1045,8 +1132,8 @@ cases:
       - Selected 0 Sourcegraph repo(s) created on or after 2099-01-01.
 
   set-users-created-after-noop:
-    # Affects: users=0 repos=0 perms=0
-    # Cost: reads users=0 (server-side date filter, exits before the repo scan); writes none → O(1)
+    # affects: {users: 0, repos: 0, perms: 0}
+    # cost: {bigO: O(1), reads: {users: 0}, note: server-side date filter selects nobody — exits before the repo scan}
     description: >-
       A far-future --created-after selects no users on the real instance:
       zero mutations, seeded state untouched.
@@ -1061,8 +1148,11 @@ cases:
     expectedMutations: 0
 
   set-repos-created-after-noop:
-    # Affects: users=0 repos=0 perms=0
-    # Cost: reads users=all (metadata only) repos≈1 page permScans=0; writes none → O(U)
+    # affects: {users: 0, repos: 0, perms: 0}
+    # cost:
+    #   bigO:   O(U)
+    #   reads:  {users: all, repos: ~1 page, permScans: 0}
+    #   writes: none
     description: >-
       A far-future --repos-created-after selects no repos on the real
       instance: zero mutations, seeded state untouched.
@@ -1077,8 +1167,12 @@ cases:
     expectedMutations: 0
 
   sync-saml-orgs-dry-run:
-    # Affects: users=0 repos=0 perms=0
-    # Cost: reads users=all (SAML account data) + org member pages; writes none → O(U)
+    # affects: {users: 0, repos: 0, perms: 0}
+    # cost:
+    #   bigO:   O(U)
+    #   reads:  {users: all, orgMembers: all}
+    #   writes: none
+    #   note:   streams every user's SAML account data
     description: >-
       Standalone organization sync dry run. Also pins the explicit
       --env-file flag against its default value.
@@ -1090,8 +1184,12 @@ cases:
       - Dry run complete
 
   set-users-sync-saml-orgs-dry-run:
-    # Affects: users=0 repos=0 perms=0
-    # Cost: reads users=1 (perm phase) + all (org phase) permScans=1; writes none → O(U)
+    # affects: {users: 0, repos: 0, perms: 0}
+    # cost:
+    #   bigO:   O(U)
+    #   reads:  {users: 1 + all, permScans: 1}
+    #   writes: none
+    #   note:   org phase streams all users
     description: >-
       Combined permission + organization sync dispatch, user-scoped, dry run
       only.
@@ -1103,8 +1201,12 @@ cases:
       - Dry run complete
 
   set-full-sync-saml-orgs-dry-run:
-    # Affects: users=0 repos=0 perms=0
-    # Cost: reads users=all repos=all permScans=all (~395 s); org phase reuses the streamed users; writes none → O(U·scan + R)
+    # affects: {users: 0, repos: 0, perms: 0}
+    # cost:
+    #   bigO:   O(U·scan + R)
+    #   reads:  {users: all, repos: all, permScans: all}
+    #   writes: none
+    #   note:   ~395 s; org phase reuses the streamed users
     description: >-
       Combined permission + organization sync dispatch, full mode, dry run
       only. The dry-run before-capture scans every user (measured ~395 s),
@@ -1117,8 +1219,12 @@ cases:
       - Dry run complete
 
   set-created-after-sync-saml-orgs-dry-run:
-    # Affects: users=0 repos=0 perms=0
-    # Cost: reads users=0 (perm phase) + all (org phase); writes none → O(U)
+    # affects: {users: 0, repos: 0, perms: 0}
+    # cost:
+    #   bigO:   O(U)
+    #   reads:  {users: 0 + all}
+    #   writes: none
+    #   note:   perm phase selects nobody; org phase streams all users
     description: >-
       Combined permission + organization sync dispatch, created-after mode
       (far-future date selects no users), dry run only.
@@ -1130,8 +1236,12 @@ cases:
       - Dry run complete
 
   set-repos-sync-saml-orgs-dry-run:
-    # Affects: users=0 repos=0 perms=0
-    # Cost: reads users=2×all (perm + org phases) repos=1 permScans=all (~400 s); writes none → O(U·scan)
+    # affects: {users: 0, repos: 0, perms: 0}
+    # cost:
+    #   bigO:   O(U·scan)
+    #   reads:  {users: 2×all, repos: 1, permScans: all}
+    #   writes: none
+    #   note:   ~400 s; perm and org phases each stream all users
     description: >-
       Combined permission + organization sync dispatch, repo-scoped, dry run
       only. The dry-run before-capture scans every user even for one repo
@@ -1144,8 +1254,12 @@ cases:
       - Dry run complete
 
   set-users-without-perms-sync-saml-orgs-dry-run:
-    # Affects: users=0 repos=0 perms=0
-    # Cost: reads users=2×all (hydration + org stream) repos=all permScans=rule-matched only; writes none → O(U+R)
+    # affects: {users: 0, repos: 0, perms: 0}
+    # cost:
+    #   bigO:   O(U+R)
+    #   reads:  {users: 2×all, repos: all, permScans: rule-matched}
+    #   writes: none
+    #   note:   hydration + org stream each cover all users
     description: >-
       Combined permission + organization sync dispatch,
       users-without-explicit-perms mode, dry run only. The unfiltered
@@ -1159,8 +1273,12 @@ cases:
       - Dry run complete
 
   set-repos-created-after-sync-saml-orgs-dry-run:
-    # Affects: users=0 repos=0 perms=0
-    # Cost: reads users=0 (perm phase) + all (org phase) repos≈1 page; writes none → O(U)
+    # affects: {users: 0, repos: 0, perms: 0}
+    # cost:
+    #   bigO:   O(U)
+    #   reads:  {users: 0 + all, repos: ~1 page}
+    #   writes: none
+    #   note:   perm phase selects nobody; org phase streams all users
     description: >-
       Combined permission + organization sync dispatch, repos-created-after
       mode (far-future date selects no repos), dry run only.
@@ -1172,8 +1290,11 @@ cases:
       - Dry run complete
 
   sync-saml-orgs-apply:
-    # Affects: users=0 repos=0 perms=0 (converges org memberships only; no repo perms)
-    # Cost: reads users=all (SAML account data) + org member pages; writes org-membership mutations (convergent, usually few) → O(U)
+    # affects: {users: 0, repos: 0, perms: 0}  (converges org memberships only; no repo perms)
+    # cost:
+    #   bigO:   O(U)
+    #   reads:  {users: all, orgMembers: all}
+    #   writes: org-membership mutations (convergent — usually few)
     description: >-
       Org membership sync converges to SAML group data and validates its own
       outcome; it is safe to re-run.
@@ -1186,8 +1307,11 @@ cases:
 
   # ── Live + performance: timed, measured runs (slowest) ──
   full-overwrite-unions:
-    # Affects: users=3 repos=2 perms=5
-    # Cost: reads users=all repos=all permScans=0; writes=2 mutations → O(U+R)
+    # affects: {users: 3, repos: 2, perms: 5}
+    # cost:
+    #   bigO:   O(U+R)
+    #   reads:  {users: all, repos: all, permScans: 0}
+    #   writes: 2 mutations
     description: >-
       Full set mode unions users across rules, overwrites mapped repos, and
       leaves unmapped repos alone. Pending bindIDs ride along: one on a
@@ -1206,8 +1330,8 @@ cases:
     expectedMutations: 2
 
   get-user-baseline:
-    # Affects: users=0 repos=0 perms=0
-    # Cost: reads users=1 permScans=1; writes none → O(1)
+    # affects: {users: 0, repos: 0, perms: 0}
+    # cost: {bigO: O(1), reads: {users: 1, permScans: 1}}
     description: Timed read-only baseline of one user's explicit grants.
     modes:
       - performance
@@ -1215,8 +1339,12 @@ cases:
     expectedExitCode: 0
 
   get-full-snapshot:
-    # Affects: users=0 repos=0 perms=0
-    # Cost: reads users=all permScans=all (~400 s at 10k users); writes none → O(U·scan)
+    # affects: {users: 0, repos: 0, perms: 0}
+    # cost:
+    #   bigO:   O(U·scan)
+    #   reads:  {users: all, permScans: all}
+    #   writes: none
+    #   note:   ~400 s at 10k users
     description: >-
       Bare get captures the full instance snapshot. Locally it proves get
       never mutates; on the instance it is the timed full 10k-user capture,
@@ -1229,8 +1357,11 @@ cases:
     expectedMutations: 0
 
   get-repos-without-explicit-perms:
-    # Affects: users=0 repos=0 perms=0
-    # Cost: reads users=all repos=all permScans=all; writes none → O(U·scan + R)
+    # affects: {users: 0, repos: 0, perms: 0}
+    # cost:
+    #   bigO:   O(U·scan + R)
+    #   reads:  {users: all, repos: all, permScans: all}
+    #   writes: none
     description: >-
       get --repos-without-explicit-perms scopes the snapshot to repos with
       no explicit grants. Requires the full before-snapshot, so on the
@@ -1244,8 +1375,12 @@ cases:
     expectedMutations: 0
 
   set-repos-without-perms-sync-saml-orgs-dry-run:
-    # Affects: users=0 repos=0 perms=0
-    # Cost: reads users=2×all (perm + org phases) repos=all permScans=all; writes none → O(U·scan + R)
+    # affects: {users: 0, repos: 0, perms: 0}
+    # cost:
+    #   bigO:   O(U·scan + R)
+    #   reads:  {users: 2×all, repos: all, permScans: all}
+    #   writes: none
+    #   note:   perm and org phases each stream all users
     description: >-
       Combined permission + organization sync dispatch,
       repos-without-explicit-perms mode, dry run only. Needs the full
