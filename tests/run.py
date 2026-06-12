@@ -75,6 +75,9 @@ FIXTURES_DIR = ROOT / "tests" / "e2e" / "fixtures"
 TEST_LOGS_DIR = ROOT / "logs"
 LOG_PATH_PATTERN = re.compile(r"Writing log events to (.+?/log\.json)\.")
 STRUCTURED_EVENT_LINE_PATTERN = re.compile(r"^[.]*event=\S+\s*$")
+# Leading "YYYY-MM-DD HH:MM:SS,mmm" timestamp on relayed subprocess lines;
+# logged as just "HH:MM:SS" (the date is in the log file name).
+SUBPROCESS_TIMESTAMP_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2} (\d{2}:\d{2}:\d{2}),\d{3} ")
 READ_BACK_PAGE_SIZE = 100
 FULL_APPLY_READ_BACK_USER_SAMPLE = 5
 DEFAULT_PROPERTY_ITERATIONS = 25
@@ -230,6 +233,22 @@ class PackageNoiseFilter(logging.Filter):
         return True
 
 
+class FileLogFormatter(logging.Formatter):
+    """Time-of-day prefix only — the date is in the log file name.
+
+    Command output lines pass through verbatim: the subprocess already
+    timestamps its own lines, so run.py's prefix would just repeat it.
+    """
+
+    def __init__(self) -> None:
+        super().__init__("%(asctime)s [%(levelname)s] %(name)s %(message)s", datefmt="%H:%M:%S")
+
+    def format(self, record: logging.LogRecord) -> str:
+        if record.name == command_output_log.name:
+            return record.getMessage()
+        return super().format(record)
+
+
 def configure_logging(log_file: Path, quiet: bool = False) -> None:
     """Send output to the console and the log file.
 
@@ -249,7 +268,7 @@ def configure_logging(log_file: Path, quiet: bool = False) -> None:
     root.addHandler(console_handler)
 
     file_handler = logging.FileHandler(log_file, encoding="utf-8")
-    file_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(name)s %(message)s"))
+    file_handler.setFormatter(FileLogFormatter())
     file_handler.addFilter(PackageNoiseFilter(for_console=False))
     root.addHandler(file_handler)
 
@@ -882,7 +901,9 @@ class TestSuite:
             # carry no information once rendered; keep them in the captured
             # output for assertions, but not in our logs.
             if not STRUCTURED_EVENT_LINE_PATTERN.match(line):
-                command_output_log.info("%s", line.rstrip("\n"))
+                command_output_log.info(
+                    "%s", SUBPROCESS_TIMESTAMP_PATTERN.sub(r"\1 ", line.rstrip("\n"))
+                )
         return_code = process.wait()
         sampler.stop()
         return CommandExecution(
