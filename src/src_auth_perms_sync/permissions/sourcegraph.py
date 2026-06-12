@@ -956,3 +956,61 @@ def list_pending_bind_ids(client: src.SourcegraphClient) -> list[str]:
     """Return explicit-grant bindIDs pending a real User match."""
     data = cast(dict[str, Any], client.graphql(queries.QUERY_PENDING_BINDIDS))
     return cast(list[str], data["usersWithPendingPermissions"])
+
+
+def list_pending_user_repos(
+    client: src.SourcegraphClient,
+    bind_id: str,
+) -> list[permission_types.Repository]:
+    """Return the repos a pending bindID has explicit-API grants on.
+
+    `authorizedUserRepositories` falls back to the pending-permissions
+    store when the bindID matches no existing user, so this works for
+    bindIDs that have never signed in.
+    """
+    repositories: list[permission_types.Repository] = []
+    for node in client.stream_connection_nodes(
+        queries.QUERY_PENDING_USER_REPOS,
+        {"bindID": bind_id},
+        connection_path=("authorizedUserRepositories",),
+        page_size=shared_sourcegraph.DEFAULT_PAGE_SIZE,
+    ):
+        repository_id = node.get("id")
+        repository_name = node.get("name")
+        if isinstance(repository_id, str) and isinstance(repository_name, str):
+            repositories.append({"id": repository_id, "name": repository_name})
+    return repositories
+
+
+def list_pending_users_with_repos(
+    client: src.SourcegraphClient,
+) -> dict[str, list[permission_types.Repository]]:
+    """Return every pending bindID with the repos it is pending on.
+
+    Any lookup failure propagates: a snapshot silently missing pending
+    grants could later drive a restore that deletes them.
+
+    A bindID can stop being pending mid-capture (the user signs up and
+    Sourcegraph promotes the rows to real grants); for an existing user
+    `authorizedUserRepositories` returns their real authorized repos,
+    which must not be recorded as pending. A re-check after the per-bindID
+    fetches drops those bindIDs.
+    """
+    pending_users: dict[str, list[permission_types.Repository]] = {}
+    for bind_id in sorted(list_pending_bind_ids(client)):
+        pending_users[bind_id] = sorted(
+            list_pending_user_repos(client, bind_id),
+            key=lambda repository: repository["name"],
+        )
+    if not pending_users:
+        return pending_users
+
+    still_pending = set(list_pending_bind_ids(client))
+    for bind_id in sorted(set(pending_users) - still_pending):
+        log.warning(
+            "Pending bindID %s resolved to a real user mid-capture; "
+            "excluding it from the snapshot's pending grants.",
+            bind_id,
+        )
+        del pending_users[bind_id]
+    return pending_users

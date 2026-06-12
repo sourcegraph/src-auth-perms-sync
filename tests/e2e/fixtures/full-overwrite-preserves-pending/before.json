@@ -32,6 +32,19 @@
         }
       ],
       "externalAccounts": []
+    },
+    {
+      "id": 2,
+      "username": "test_user_09992",
+      "builtinAuth": true,
+      "createdAt": "2026-01-02T00:00:00Z",
+      "emails": [
+        {
+          "email": "test_user_09992@perms-sync.test",
+          "verified": true
+        }
+      ],
+      "externalAccounts": []
     }
   ],
   "repos": [
@@ -40,7 +53,21 @@
       "name": "test-repo-49981",
       "externalServiceID": 1,
       "explicitPermissionsUsers": [
-        "test_user_09991"
+        "test_user_09992"
+      ],
+      "pendingBindIDs": [
+        "pending_user_19991@perms-sync.test"
+      ]
+    },
+    {
+      "id": 102,
+      "name": "test-repo-49982",
+      "externalServiceID": 1,
+      "explicitPermissionsUsers": [
+        "test_user_09992"
+      ],
+      "pendingBindIDs": [
+        "pending_user_19992@perms-sync.test"
       ]
     }
   ]

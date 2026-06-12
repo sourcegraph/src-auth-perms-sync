@@ -1,13 +1,5 @@
 # TODO
 
-## Decide: pendingBindIDs / usersWithPendingPermissions
-
-The CLI cannot create pending permissions (it validates users exist), but
-snapshots record `pending_bindIDs`, and setup.py / the live hygiene check
-report (never delete) any that appear. Decide whether "grant before first
-login" is a customer need; if not, consider dropping the snapshot field.
-See the thread discussion 2026-06-11.
-
 ## High priority: Remote trigger on demand
 
 - Sourcegraph webhook for new user coming in v7.4.0

@@ -578,37 +578,66 @@ def _capture_restore_snapshot_state(
 
 
 def plan_full_restore(snapshot_state: RestoreSnapshotState) -> RestorePlan:
-    """Build only the per-repo overwrite plans needed to match the snapshot."""
-    target_repos = snapshot_state.target_snapshot["repos"]
-    current_repos = snapshot_state.current_snapshot["repos"]
+    """Build only the per-repo overwrite plans needed to match the snapshot.
+
+    Each overwrite carries the target's real usernames PLUS the target's
+    pending bindIDs for that repo: `setRepositoryPermissionsForUsers`
+    replaces both kinds in one transaction, and unresolved bindIDs become
+    pending rows again — restoring pending grants exactly as captured.
+    """
+    target_snapshot = snapshot_state.target_snapshot
+    current_snapshot = snapshot_state.current_snapshot
+    target_repos = target_snapshot["repos"]
+    current_repos = current_snapshot["repos"]
+    target_pending = permission_snapshot.pending_bind_ids_by_repository_id(
+        target_snapshot["pending_users"]
+    )
+    current_pending = permission_snapshot.pending_bind_ids_by_repository_id(
+        current_snapshot["pending_users"]
+    )
+    pending_repository_names = {
+        **permission_snapshot.pending_repository_names_by_id(current_snapshot["pending_users"]),
+        **permission_snapshot.pending_repository_names_by_id(target_snapshot["pending_users"]),
+    }
+
+    def repository_name(repo_id: str) -> str:
+        for repos in (target_repos, current_repos):
+            repo_snapshot = repos.get(repo_id)
+            if repo_snapshot is not None:
+                return repo_snapshot["name"]
+        return pending_repository_names[repo_id]
+
     overwrites: list[permission_types.RepositoryUsernameOverwrite] = []
     skipped_repo_count = 0
-    for repo_id, repo_snapshot in target_repos.items():
-        target_usernames = repo_snapshot["users"]
+    planned_repo_ids = (
+        set(target_repos) | set(current_repos) | set(target_pending) | set(current_pending)
+    )
+    extra_repo_ids = planned_repo_ids - set(target_repos) - set(target_pending)
+    for repo_id in sorted(planned_repo_ids, key=repository_name):
+        target_repo = target_repos.get(repo_id)
+        target_usernames = list(target_repo["users"]) if target_repo else []
         current_repo = current_repos.get(repo_id)
         current_usernames = current_repo["users"] if current_repo else []
-        if current_usernames == target_usernames or sorted(current_usernames) == target_usernames:
+        target_pending_bind_ids = target_pending.get(repo_id, [])
+        usernames_match = (
+            current_usernames == target_usernames or sorted(current_usernames) == target_usernames
+        )
+        if usernames_match and current_pending.get(repo_id, []) == target_pending_bind_ids:
             skipped_repo_count += 1
             continue
+        pending_bind_ids = [
+            bind_id for bind_id in target_pending_bind_ids if bind_id not in target_usernames
+        ]
         overwrites.append(
             permission_types.RepositoryUsernameOverwrite(
                 repository_id=repo_id,
-                repository_name=repo_snapshot["name"],
-                usernames=tuple(target_usernames),
-            )
-        )
-    extra_repo_ids = set(current_repos) - set(target_repos)
-    for repo_id in sorted(extra_repo_ids):
-        overwrites.append(
-            permission_types.RepositoryUsernameOverwrite(
-                repository_id=repo_id,
-                repository_name=current_repos[repo_id]["name"],
-                usernames=(),
+                repository_name=repository_name(repo_id),
+                usernames=tuple(target_usernames) + tuple(pending_bind_ids),
             )
         )
     return RestorePlan(
         overwrites=overwrites,
-        snapshot_repo_count=len(target_repos),
+        snapshot_repo_count=len(set(target_repos) | set(target_pending)),
         extra_repo_count=len(extra_repo_ids),
         skipped_repo_count=skipped_repo_count,
     )

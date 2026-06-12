@@ -365,24 +365,61 @@ class Setup:
             detail += f"; leftovers from an unfinished run? top: {top}"
         self.record("live-grants", live_grants <= threshold, detail)
 
-        # Report-only: nothing in this test suite creates pending
-        # permissions, so any rows here have an UNKNOWN origin — setup must
-        # not silently destroy them. Investigate, then clear deliberately
-        # (an empty setRepositoryPermissionsForUsers on the affected repo
-        # removes its pending rows).
-        pending = cast(
+    def check_pending_permissions(self) -> None:
+        """Pending bindIDs (grants that never resolved to a user).
+
+        Live fixture cases seed pending bindIDs matching the synthetic
+        prefix and restore them away; leftovers mean an interrupted run and
+        --apply deletes exactly those rows. Anything else has an UNKNOWN
+        origin — setup must not silently destroy it. Investigate, then
+        clear deliberately (an empty setRepositoryPermissionsForUsers on
+        the affected repo removes its pending rows).
+        """
+        prefix = str(self.config["permissionsHygiene"]["syntheticPendingBindIDPrefix"])
+        if not SAFE_NAME_PATTERN.match(prefix):
+            raise RuntimeError(f"unsafe syntheticPendingBindIDPrefix: {prefix!r}")
+        pending = self.pending_bind_ids()
+        unknown = sorted(bind_id for bind_id in pending if not bind_id.startswith(prefix))
+        synthetic = sorted(bind_id for bind_id in pending if bind_id.startswith(prefix))
+        self.record(
+            "pending-permissions",
+            not unknown,
+            "none of unknown origin"
+            if not unknown
+            else f"{len(unknown)} pending bindID(s) of unknown origin: {unknown[:5]} — "
+            "investigate before clearing (setup never deletes these)",
+        )
+        if not synthetic:
+            return
+        if not self.apply:
+            self.record(
+                "pending-permissions-synthetic",
+                False,
+                f"{len(synthetic)} synthetic leftover(s) from an interrupted live "
+                f"run: {synthetic[:5]} (run with --apply)",
+            )
+            return
+        self.sql(
+            "DELETE FROM pending_repo_permissions "
+            f"WHERE service_type = 'sourcegraph' AND bind_id LIKE '{prefix}%';"
+        )
+        still_synthetic = sorted(
+            bind_id for bind_id in self.pending_bind_ids() if bind_id.startswith(prefix)
+        )
+        self.record(
+            "pending-permissions-synthetic",
+            not still_synthetic,
+            f"deleted {len(synthetic)} synthetic leftover(s): {synthetic[:5]}"
+            if not still_synthetic
+            else f"delete did not stick; still pending: {still_synthetic[:5]}",
+        )
+
+    def pending_bind_ids(self) -> list[str]:
+        return cast(
             "list[str]",
             cast("dict[str, Any]", self.client.graphql(PENDING_PERMISSIONS_QUERY))[
                 "usersWithPendingPermissions"
             ],
-        )
-        self.record(
-            "pending-permissions",
-            not pending,
-            "none"
-            if not pending
-            else f"{len(pending)} pending bindID(s) of unknown origin: {pending[:5]} — "
-            "investigate before clearing (setup never deletes these)",
         )
 
     def run(self) -> int:
@@ -391,6 +428,7 @@ class Setup:
         self.check_emails()
         self.check_saml_accounts()
         self.check_permissions_hygiene()
+        self.check_pending_permissions()
         failed = [outcome for outcome in self.outcomes if not outcome.ok]
         log.info(
             "Summary: %d ok, %d need attention.%s",

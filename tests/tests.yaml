@@ -565,10 +565,40 @@ cases:
       no_backup: true
     expectedMutations: 1
 
+  restore-restores-pending:
+    description: >-
+      restore --apply recreates the snapshot's pending grants (bindIDs that
+      never resolved to a user) and wipes pending grants the snapshot does
+      not contain.
+    modes:
+      - local
+    args:
+      command: restore
+      restore_path: tests/e2e/fixtures/restore-restores-pending/snapshot.json
+      apply: true
+      no_backup: true
+    expectedMutations: 2
+
+  full-overwrite-preserves-pending:
+    description: >-
+      A full-overwrite apply (without backup, so the pending state is
+      fetched live) resends each mapped repo's pending bindIDs and leaves
+      unmapped repos' pending grants alone — the script neither creates
+      nor loses pending permissions.
+    modes:
+      - local
+    args:
+      command: set
+      full: true
+      apply: true
+      no_backup: true
+    expectedMutations: 1
+
   full-overwrite-with-backup:
     description: >-
       The default backup path (no --no-backup) captures before/after
-      snapshots and validates the apply without changing the outcome.
+      snapshots (including a pending grant on the mutated repo, which must
+      survive) and validates the apply without changing the outcome.
     modes:
       - local
     args:
@@ -984,7 +1014,10 @@ cases:
   full-overwrite-unions:
     description: >-
       Full set mode unions users across rules, overwrites mapped repos, and
-      leaves unmapped repos alone.
+      leaves unmapped repos alone. Pending bindIDs ride along: one on a
+      mapped repo must survive its overwrite, one on an unmapped canary
+      must stay untouched — live runs seed, verify, and restore them
+      against the real instance.
     modes:
       - local
       - live

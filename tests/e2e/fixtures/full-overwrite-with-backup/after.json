@@ -68,8 +68,10 @@
       "explicitPermissionsUsers": [
         "test_user_09991",
         "test_user_09992"
+      ],
+      "pendingBindIDs": [
+        "pending_user_19991@perms-sync.test"
       ]
     }
-  ],
-  "pendingBindIDs": []
+  ]
 }
