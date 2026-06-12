@@ -97,6 +97,26 @@ def _mapping_context_with_rules(
     )
 
 
+def _users_matching_any_mapping_rule(
+    context: permission_types.MappingContext,
+    users: list[shared_types.User],
+) -> list[shared_types.User]:
+    """Return users matched by at least one mapping rule's user selector."""
+    return [
+        user
+        for user in users
+        if any(
+            permissions_mapping.user_matches_user_selector(
+                mapping_rule["users"],
+                user,
+                context.providers,
+                context.saml_groups_attribute_names,
+            )
+            for mapping_rule in context.mapping_rules
+        )
+    ]
+
+
 def _mapping_rules_matching_selected_users(
     context: permission_types.MappingContext,
     users: list[shared_types.User],
@@ -506,22 +526,17 @@ def _hydrate_site_user_candidates(
         return []
 
     log.info(
-        "Hydrating Sourcegraph metadata for %d selected user candidate(s) with parallelism=%d ...",
+        "Hydrating Sourcegraph metadata for %d selected user candidate(s) "
+        "in batches of %d with parallelism=%d ...",
         len(candidates),
+        permissions_sourcegraph.USER_HYDRATION_BATCH_SIZE,
         parallelism,
     )
-
-    def hydrate_user(candidate: shared_types.SiteUserCandidate) -> shared_types.User | None:
-        return permissions_sourcegraph.get_user_by_id(
-            client,
-            candidate["id"],
-            include_emails=include_emails,
-            include_account_data=include_account_data,
-        )
-
-    hydrated_users = run_context.parallel_map(
-        hydrate_user,
-        candidates,
+    hydrated_users = permissions_sourcegraph.get_users_by_ids(
+        client,
+        [candidate["id"] for candidate in candidates],
+        include_emails=include_emails,
+        include_account_data=include_account_data,
         parallelism=parallelism,
         worker_pool=worker_pool,
         progress_label="Hydrated selected Sourcegraph user metadata",
@@ -852,30 +867,54 @@ def cmd_set_additive_users_without_explicit_perms(
         include_user_account_data = permissions_mapping.mapping_rules_need_saml_account_data(
             mapping_rules
         )
-        candidate_selection = (
-            permissions_sourcegraph.list_site_user_candidates_without_explicit_repos(
-                client,
-                created_after_filter,
-                batch_size=explicit_permissions_batch_size,
-                parallelism=parallelism,
-                worker_pool=worker_pool,
-            )
+        # Match mapping rules BEFORE the explicit-permission check: the
+        # per-user `permissionsInfo.repositories(source: API, first: 1)`
+        # probe costs ~0.2-0.4s of server CPU per user regardless of
+        # batching (the resolver materializes every accessible repo before
+        # the LIMIT applies), while rule matching is local. Checking only
+        # rule-matched users keeps the expensive probes proportional to the
+        # maps.yaml scope instead of the whole instance.
+        candidates = permissions_sourcegraph.list_site_user_candidates(
+            client,
+            created_after_filter,
+            parallelism=parallelism,
+            worker_pool=worker_pool,
         )
-        candidates = candidate_selection.candidates
-        log.info(
-            "Selected %d active user candidate(s) without explicit repo permissions; "
-            "skipped %d with existing explicit permissions.",
-            len(candidates),
-            candidate_selection.explicit_user_count,
-        )
-
-        users = _hydrate_site_user_candidates(
+        all_users = _hydrate_site_user_candidates(
             client,
             candidates,
             include_emails=include_user_emails,
             include_account_data=include_user_account_data,
             parallelism=parallelism,
             worker_pool=worker_pool,
+        )
+        matched_users = _users_matching_any_mapping_rule(context, all_users)
+        log.info(
+            "%d / %d active user(s) match a mapping rule's user selector.",
+            len(matched_users),
+            len(all_users),
+        )
+        explicit_user_ids: set[str] = set()
+        if matched_users:
+            log.info(
+                "Checking %d matched user(s) for existing explicit repo permissions "
+                "in batches of %d ...",
+                len(matched_users),
+                explicit_permissions_batch_size,
+            )
+            explicit_user_ids = permissions_sourcegraph.user_ids_with_explicit_repos(
+                client,
+                [user["id"] for user in matched_users],
+                batch_size=explicit_permissions_batch_size,
+                parallelism=parallelism,
+                worker_pool=worker_pool,
+            )
+        users = [user for user in matched_users if user["id"] not in explicit_user_ids]
+        log.info(
+            "Selected %d matched user(s) without explicit repo permissions; "
+            "skipped %d with existing explicit permissions.",
+            len(users),
+            len(explicit_user_ids),
         )
         if not users:
             _run_additive_apply(

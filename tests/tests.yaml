@@ -421,14 +421,31 @@ cases:
   set-users-without-explicit-perms:
     description: >-
       --users-without-explicit-perms additively grants mapped repos only to
-      users who currently hold no explicit grants anywhere. The candidate
-      selection scans every site user by design, so the real-instance run
-      lives in the performance tier; the local fixture spans multiple
-      site-user pages (page cap 2), which is what catches selection
-      truncation bugs like the 2026-06-10 first-page-only one. Also pins
-      --explicit-permissions-batch-size by forcing the smallest batch.
+      users who currently hold no explicit grants anywhere. The local
+      fixture spans multiple site-user pages (page cap 2), which is what
+      catches selection truncation bugs like the 2026-06-10 first-page-only
+      one. Pins --explicit-permissions-batch-size to the smallest batch to
+      exercise the batching loop; the real-instance performance run lives in
+      set-users-without-explicit-perms-default-batch so the performance
+      tier measures the default configuration, not this degraded one.
     modes:
       - local
+    args:
+      command: set
+      users_without_explicit_perms: true
+      apply: true
+      no_backup: true
+      explicit_permissions_batch_size: 1
+    expectedMutations: 2
+
+  set-users-without-explicit-perms-default-batch:
+    description: >-
+      Performance-tier twin of set-users-without-explicit-perms at default
+      --parallelism and --explicit-permissions-batch-size, so the measured
+      timing reflects what customers run. Rule matching happens before the
+      expensive per-user explicit-permission probes, so this should stay
+      fast even on a 10k-user instance when the maps rules match few users.
+    modes:
       - performance
     live:
       usersWithoutOtherGrants:
@@ -439,7 +456,6 @@ cases:
       users_without_explicit_perms: true
       apply: true
       no_backup: true
-      explicit_permissions_batch_size: 1
     expectedMutations: 2
 
   set-repos-without-explicit-perms:
