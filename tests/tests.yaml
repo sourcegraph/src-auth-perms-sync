@@ -32,14 +32,20 @@
 #                                    usernames/emails, repos: names).
 #                       performance  same as live, but timed and measured
 #                                    (traces, RSS sampling, TSV row)
-#   cliCommand        CLI arguments to run, parsed by the real argument
-#                     parser. For set commands, --maps-path <case dir>/maps.yaml
-#                     is appended automatically when not supplied.
-#   importConfig      Optional. Also run the case through the Python import
-#                     API (cli.Config + cli.resolve_command + cli.run_command)
-#                     like a library consumer would. Keys are Config field
-#                     names plus `command`; maps_path defaults to the case
-#                     directory's maps.yaml for set commands.
+#   args              State cases: the command plus Config fields (`command`
+#                     plus snake_case field names; true = bare flag, lists =
+#                     comma-joined values). ONE mapping drives BOTH
+#                     entrypoints: locally the case runs twice — the
+#                     generated command line through the real argument
+#                     parser, and the same mapping through the Python import
+#                     API (cli.Config + resolve_command + run_command) —
+#                     and both must produce the identical expected state.
+#                     Flags come from the Config field metadata, never
+#                     guessed. maps_path defaults to the case directory's
+#                     maps.yaml for set commands.
+#   cliCommand        Replay cases only: raw CLI arguments for asserting
+#                     argv-level parser behavior (rejections, help, exit
+#                     codes), which has no import-API equivalent.
 #   expectedMutations Exact number of permission mutations the run must make.
 #   expectedErrors    The command must FAIL, every substring must appear in
 #                     the failure, and state must be unchanged.
@@ -298,7 +304,11 @@ cases:
       but only test_user_09991 matches the email filter.
     modes:
       - local
-    cliCommand: set --full --apply --no-backup
+    args:
+      command: set
+      full: true
+      apply: true
+      no_backup: true
     expectedMutations: 1
 
   regex-filters-scope:
@@ -311,7 +321,11 @@ cases:
       - local
       - live
       - performance
-    cliCommand: set --full --apply --no-backup
+    args:
+      command: set
+      full: true
+      apply: true
+      no_backup: true
     live:
       involvedRepos:
         - test-repo-49980
@@ -332,7 +346,11 @@ cases:
       SAML assertion includes the group.
     modes:
       - local
-    cliCommand: set --full --apply --no-backup
+    args:
+      command: set
+      full: true
+      apply: true
+      no_backup: true
     expectedMutations: 2
 
   saml-group-live:
@@ -358,7 +376,11 @@ cases:
         test_user_09994: []
       involvedRepos:
         - test-repo-49993
-    cliCommand: set --full --apply --no-backup
+    args:
+      command: set
+      full: true
+      apply: true
+      no_backup: true
     expectedMutations: 2
 
   set-created-after-temp-user:
@@ -375,7 +397,11 @@ cases:
         - perms_sync_temp_user_01
       involvedRepos:
         - test-repo-49912
-    cliCommand: set --created-after {today} --apply --no-backup
+    args:
+      command: set
+      created_after: "{today}"
+      apply: true
+      no_backup: true
     expectedMutations: 1
 
   set-users-created-after:
@@ -384,14 +410,12 @@ cases:
       on/after the date, preserving existing grants.
     modes:
       - local
-    cliCommand: >-
-      set --created-after 2026-02-01 --apply --no-backup
-
-    importConfig:
+    args:
       command: set
       created_after: "2026-02-01"
       apply: true
       no_backup: true
+
     expectedMutations: 4
 
   set-users-without-explicit-perms:
@@ -410,9 +434,12 @@ cases:
       usersWithoutOtherGrants:
         - test_user_09961
         - test_user_09962
-    cliCommand: >-
-      set --users-without-explicit-perms --apply --no-backup
-      --explicit-permissions-batch-size 1
+    args:
+      command: set
+      users_without_explicit_perms: true
+      apply: true
+      no_backup: true
+      explicit_permissions_batch_size: 1
     expectedMutations: 2
 
   set-repos-without-explicit-perms:
@@ -423,7 +450,11 @@ cases:
     modes:
       - local
       - performance
-    cliCommand: set --repos-without-explicit-perms --apply --no-backup
+    args:
+      command: set
+      repos_without_explicit_perms: true
+      apply: true
+      no_backup: true
     expectedMutations: 1
 
   set-repos-created-after:
@@ -432,7 +463,11 @@ cases:
       the date.
     modes:
       - local
-    cliCommand: set --repos-created-after 2026-02-01 --apply --no-backup
+    args:
+      command: set
+      repos_created_after: "2026-02-01"
+      apply: true
+      no_backup: true
     expectedMutations: 1
 
   full-overwrite-dry-run:
@@ -441,7 +476,10 @@ cases:
       and leaves state untouched — the dry-run default never mutates.
     modes:
       - local
-    cliCommand: set --full --no-backup
+    args:
+      command: set
+      full: true
+      no_backup: true
     expectedMutations: 0
 
   empty-maps-noop:
@@ -450,7 +488,11 @@ cases:
       grants untouched.
     modes:
       - local
-    cliCommand: set --full --apply --no-backup
+    args:
+      command: set
+      full: true
+      apply: true
+      no_backup: true
     expectedMutations: 0
 
   match-provider-and-host-fields:
@@ -460,7 +502,11 @@ cases:
       url/displayName/username get grants; the builtin-only user does not.
     modes:
       - local
-    cliCommand: set --full --apply --no-backup
+    args:
+      command: set
+      full: true
+      apply: true
+      no_backup: true
     expectedMutations: 2
 
   add-users-by-email-and-list:
@@ -469,10 +515,13 @@ cases:
       username; only the two selected users gain grants, additively.
     modes:
       - local
-    cliCommand: >-
-      set --users
-      test_user_09991@perms-sync.test,test_user_09993
-      --apply --no-backup
+    args:
+      command: set
+      users:
+        - test_user_09991@perms-sync.test
+        - test_user_09993
+      apply: true
+      no_backup: true
     expectedMutations: 4
 
   restore-dry-run-noop:
@@ -481,9 +530,10 @@ cases:
       current state but makes zero mutations.
     modes:
       - local
-    cliCommand: >-
-      restore --restore-path tests/e2e/fixtures/restore-dry-run-noop/snapshot.json
-      --no-backup
+    args:
+      command: restore
+      restore_path: tests/e2e/fixtures/restore-dry-run-noop/snapshot.json
+      no_backup: true
     expectedMutations: 0
 
   restore-applies-snapshot:
@@ -492,9 +542,11 @@ cases:
       skips the repo that already matches.
     modes:
       - local
-    cliCommand: >-
-      restore --restore-path tests/e2e/fixtures/restore-applies-snapshot/snapshot.json
-      --apply --no-backup
+    args:
+      command: restore
+      restore_path: tests/e2e/fixtures/restore-applies-snapshot/snapshot.json
+      apply: true
+      no_backup: true
     expectedMutations: 1
 
   full-overwrite-with-backup:
@@ -503,7 +555,10 @@ cases:
       snapshots and validates the apply without changing the outcome.
     modes:
       - local
-    cliCommand: set --full --apply
+    args:
+      command: set
+      full: true
+      apply: true
     expectedMutations: 1
 
   get-user-grants:
@@ -512,7 +567,10 @@ cases:
       mutates the instance.
     modes:
       - local
-    cliCommand: get --users test_user_09991
+    args:
+      command: get
+      users:
+        - test_user_09991
     expectedMutations: 0
 
   # ── Local + live: expected-error cases, replayed read-only on the instance ──
@@ -523,7 +581,9 @@ cases:
     modes:
       - local
       - live
-    cliCommand: set --full
+    args:
+      command: set
+      full: true
     expectedMutations: 0
     expectedErrors:
       - is not a valid Python regex
@@ -535,7 +595,9 @@ cases:
     modes:
       - local
       - live
-    cliCommand: set --full
+    args:
+      command: set
+      full: true
     expectedMutations: 0
     expectedErrors:
       - "`repos:` section is missing"
@@ -547,7 +609,9 @@ cases:
     modes:
       - local
       - live
-    cliCommand: set --full
+    args:
+      command: set
+      full: true
     expectedMutations: 0
     expectedErrors:
       - unknown users field 'userNames'
@@ -559,7 +623,9 @@ cases:
     modes:
       - local
       - live
-    cliCommand: set --created-after 2026-02-31
+    args:
+      command: set
+      created_after: "2026-02-31"
     expectedMutations: 0
     expectedErrors:
       - "--created-after must use YYYY-MM-DD"
@@ -571,7 +637,9 @@ cases:
     modes:
       - local
       - live
-    cliCommand: set --repos-created-after 2026-02-31
+    args:
+      command: set
+      repos_created_after: "2026-02-31"
     expectedMutations: 0
     expectedErrors:
       - "--repos-created-after must use YYYY-MM-DD"
@@ -582,7 +650,10 @@ cases:
     modes:
       - local
       - live
-    cliCommand: set --users username_doesnt_exist_01
+    args:
+      command: set
+      users:
+        - username_doesnt_exist_01
     expectedMutations: 0
     expectedErrors:
       - "No Sourcegraph user found for 'username_doesnt_exist_01'"
@@ -593,7 +664,10 @@ cases:
     modes:
       - local
       - live
-    cliCommand: set --repos repo-doesnt-exist-49999
+    args:
+      command: set
+      repos:
+        - repo-doesnt-exist-49999
     expectedMutations: 0
     expectedErrors:
       - "No Sourcegraph repo found for: repo-doesnt-exist-49999"
@@ -604,9 +678,9 @@ cases:
       changing any state.
     modes:
       - local
-    cliCommand: >-
-      restore --restore-path
-      tests/e2e/fixtures/invalid-restore-wrong-schema-version/snapshot.json
+    args:
+      command: restore
+      restore_path: tests/e2e/fixtures/invalid-restore-wrong-schema-version/snapshot.json
     expectedMutations: 0
     expectedErrors:
       - "snapshot schema_version is 1, expected"
@@ -618,7 +692,9 @@ cases:
     modes:
       - local
       - live
-    cliCommand: restore --restore-path definitely-missing-restore.json
+    args:
+      command: restore
+      restore_path: definitely-missing-restore.json
     expectedMutations: 0
     expectedErrors:
       - "restore snapshot file does not exist"
@@ -631,7 +707,11 @@ cases:
     modes:
       - local
       - live
-    cliCommand: set --full --apply --no-backup
+    args:
+      command: set
+      full: true
+      apply: true
+      no_backup: true
     expectedMutations: 0
 
   set-repos-filter:
@@ -643,9 +723,13 @@ cases:
       - local
       - live
       - performance
-    cliCommand: >-
-      set --repos test-repo-49971 --apply --no-backup
-      --src-log-level DEBUG
+    args:
+      command: set
+      repos:
+        - test-repo-49971
+      apply: true
+      no_backup: true
+      src_log_level: DEBUG
     expectedMutations: 1
 
   add-users-preserves-existing:
@@ -655,8 +739,7 @@ cases:
     modes:
       - local
       - live
-    cliCommand: set --users test_user_09992 --apply --no-backup
-    importConfig:
+    args:
       command: set
       users:
         - test_user_09992
@@ -671,7 +754,11 @@ cases:
     modes:
       - local
       - live
-    cliCommand: set --full --apply --no-backup
+    args:
+      command: set
+      full: true
+      apply: true
+      no_backup: true
     expectedMutations: 1
 
   # ── Live only: real-instance validation and organization sync ──
@@ -681,7 +768,9 @@ cases:
       rejected by date validation.
     modes:
       - live
-    cliCommand: get --created-after 2026-02-31
+    args:
+      command: get
+      created_after: "2026-02-31"
     expectedErrors:
       - "--created-after must use YYYY-MM-DD"
 
@@ -692,7 +781,11 @@ cases:
       alias: the error must reach the operator even at WARNING verbosity.
     modes:
       - live
-    cliCommand: set --full --maps-path definitely-missing-maps.yaml --quiet
+    args:
+      command: set
+      full: true
+      maps_path: definitely-missing-maps.yaml
+      quiet: true
     expectedErrors:
       - set input file does not exist
 
@@ -758,7 +851,11 @@ cases:
     modes:
       - live
       - performance
-    cliCommand: set --created-after 2099-01-01 --apply --no-backup
+    args:
+      command: set
+      created_after: "2099-01-01"
+      apply: true
+      no_backup: true
     expectedMutations: 0
 
   set-repos-created-after-noop:
@@ -768,7 +865,11 @@ cases:
     modes:
       - live
       - performance
-    cliCommand: set --repos-created-after 2099-01-01 --apply --no-backup
+    args:
+      command: set
+      repos_created_after: "2099-01-01"
+      apply: true
+      no_backup: true
     expectedMutations: 0
 
   sync-saml-orgs-dry-run:
@@ -872,8 +973,7 @@ cases:
       - local
       - live
       - performance
-    cliCommand: set --full --apply --no-backup
-    importConfig:
+    args:
       command: set
       full: true
       apply: true
@@ -895,7 +995,8 @@ cases:
     modes:
       - local
       - performance
-    cliCommand: get
+    args:
+      command: get
     expectedMutations: 0
 
   get-repos-without-explicit-perms:
@@ -906,7 +1007,9 @@ cases:
     modes:
       - local
       - performance
-    cliCommand: get --repos-without-explicit-perms
+    args:
+      command: get
+      repos_without_explicit_perms: true
     expectedMutations: 0
 
   set-repos-without-perms-sync-saml-orgs-dry-run:

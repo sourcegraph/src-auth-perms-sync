@@ -8,11 +8,12 @@ structurally validated, including the live/performance ones.
 
 from __future__ import annotations
 
-import shlex
 import unittest
 
+from src_auth_perms_sync import cli
 from tests.e2e.case_runner import (
     FIXTURES_DIR,
+    case_cli_arguments,
     case_modes,
     case_runners,
     is_replay_case,
@@ -38,9 +39,14 @@ class LocalCaseTests(unittest.TestCase):
 
     def test_registry_cases_are_runnable(self) -> None:
         """Every case declares a runner, known modes, and the files it needs."""
+        known_field_names = set(cli.Config.model_fields)
         for case_name, case in load_e2e_cases().items():
             with self.subTest(case=case_name):
-                self.assertTrue(case_runners(case), "case needs cliCommand or importConfig")
+                self.assertTrue(case_runners(case), "case needs args or a cliCommand")
+                self.assertFalse(
+                    "args" in case and "cliCommand" in case,
+                    "declare args (state case) OR cliCommand (replay case), not both",
+                )
                 self.assertTrue(
                     set(case_modes(case)) <= {"local", "live", "performance"},
                     f"unknown mode in {case_modes(case)}",
@@ -48,18 +54,28 @@ class LocalCaseTests(unittest.TestCase):
                 for file_name in sorted(required_case_files(case)):
                     path = FIXTURES_DIR / case_name / file_name
                     self.assertTrue(path.is_file(), f"case requires {path}")
-                cli_command = case.get("cliCommand", "")
+                args = case.get("args", {})
+                if args:
+                    self.assertIn("command", args, "args needs a command key")
+                    unknown_fields = set(args) - {"command"} - known_field_names
+                    self.assertFalse(
+                        unknown_fields, f"args keys are not Config fields: {unknown_fields}"
+                    )
+                argv = (
+                    case_cli_arguments(case, case_name)
+                    if ("args" in case or case.get("cliCommand"))
+                    else []
+                )
                 for placeholder, meaning in (
                     ("{user}", "the live --user"),
                     ("{today}", "the run date (UTC)"),
                 ):
-                    if placeholder in cli_command:
+                    if any(placeholder in token for token in argv):
                         self.assertNotIn(
                             "local",
                             case_modes(case),
                             f"{placeholder} resolves to {meaning}; local mode cannot use it",
                         )
-                argv = shlex.split(cli_command)
                 if argv[:1] == ["restore"] and {"live", "performance"} & set(case_modes(case)):
                     self.assertNotIn(
                         "--apply",

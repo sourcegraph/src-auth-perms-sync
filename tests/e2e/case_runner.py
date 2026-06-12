@@ -24,6 +24,7 @@ from typing import Any, NotRequired, TypedDict, cast
 
 import src_py_lib as src
 import yaml
+from src_py_lib.utils.config import config_options
 
 from src_auth_perms_sync import cli
 from src_auth_perms_sync.shared import types as shared_types
@@ -96,8 +97,13 @@ class FixtureCase(TypedDict):
 
     description: str
     modes: NotRequired[list[str]]  # local, live, performance (default: [local])
-    cliCommand: NotRequired[str]  # CLI arguments; --maps-path is appended for set
-    importConfig: NotRequired[dict[str, Any]]  # Python-import-mode Config fields
+    # State cases declare `args`: the command plus Config fields. The CLI
+    # argv is GENERATED from it (field names → real cli_flag metadata) and
+    # the import API consumes it directly, so one mapping drives both
+    # entrypoints. Replay cases declare a raw `cliCommand` instead, because
+    # their point is argv-level parser behavior.
+    args: NotRequired[dict[str, Any]]
+    cliCommand: NotRequired[str]
     expectedMutations: NotRequired[int]
     # When set, the command must fail, every listed substring must appear in
     # the failure text, and the instance state must be left unchanged.
@@ -556,31 +562,62 @@ def case_modes(case: FixtureCase) -> list[str]:
 
 
 def case_runners(case: FixtureCase) -> list[str]:
-    """Return how a case runs in local mode: parsed argv and/or import API.
+    """Return how a case runs in local mode: generated argv and/or import API.
 
-    Every state case with a cliCommand runs BOTH ways: once through the
-    real argument parser, and once through the Python import API with a
-    Config derived from the same command line — proving each behavior for
-    CLI consumers and library consumers alike. An explicit importConfig
-    overrides the derived one (for testing specific kwargs spellings).
-    Replay cases assert parser behavior, which has no import equivalent.
+    Every state case (declared via `args`) runs BOTH ways: the generated
+    command line through the real argument parser, and the same mapping
+    through the Python import API — both must produce the same state,
+    proving CLI/import parity for every behavior. Replay cases assert
+    parser behavior on a raw cliCommand, which has no import equivalent.
     """
     if is_replay_case(case):
         return ["cli"] if "cliCommand" in case else []
-    runners: list[str] = []
-    if "cliCommand" in case:
-        runners += ["cli", "import"]
-    elif "importConfig" in case:
-        runners.append("import")
-    return runners
+    return ["cli", "import"] if "args" in case else []
+
+
+def cli_flags_by_field_name() -> dict[str, str]:
+    """Map Config field names to their real CLI flags (from field metadata).
+
+    Mechanical snake→kebab casing would be wrong for several fields
+    (e.g. open_telemetry → --otel, sync_saml_organizations →
+    --sync-saml-orgs), so the generator reads the same metadata the
+    argument parser is built from.
+    """
+    return {
+        option.field_name: option.cli_flag
+        for option in config_options(cli.Config)
+        if option.cli_flag
+    }
 
 
 def case_cli_arguments(case: FixtureCase, case_name: str) -> list[str]:
-    """Return cliCommand as argv, appending the case's maps file for set commands."""
-    cli_command = case.get("cliCommand")
-    if cli_command is None:
-        raise ValueError(f"case {case_name!r} has no cliCommand")
-    argv = shlex.split(cli_command)
+    """Return the case's argv: generated from `args`, or raw cliCommand.
+
+    Generated values render as: True → bare flag, False/None → omitted,
+    list → one comma-joined value, anything else → str(). --maps-path is
+    appended for set commands that do not declare maps_path.
+    """
+    args = case.get("args")
+    if args is None:
+        cli_command = case.get("cliCommand")
+        if cli_command is None:
+            raise ValueError(f"case {case_name!r} has neither args nor cliCommand")
+        argv = shlex.split(cli_command)
+    else:
+        flags = cli_flags_by_field_name()
+        argv = [cast(str, args["command"])]
+        for field_name, value in args.items():
+            if field_name == "command" or value is None or value is False:
+                continue
+            flag = flags.get(field_name)
+            if flag is None:
+                raise ValueError(f"case {case_name!r}: unknown Config field {field_name!r}")
+            if value is True:
+                argv.append(flag)
+            elif isinstance(value, list):
+                argv += [flag, ",".join(str(item) for item in cast("list[object]", value))]
+            else:
+                argv += [flag, str(cast(object, value))]
     if argv and argv[0] == "set" and "--maps-path" not in argv:
         argv += ["--maps-path", str(FIXTURES_DIR / case_name / "maps.yaml")]
     return argv
@@ -650,67 +687,39 @@ def required_case_files(case: FixtureCase) -> set[str]:
     if is_replay_case(case):
         return files
     modes = case_modes(case)
-    argv = shlex.split(case["cliCommand"]) if "cliCommand" in case else []
-    import_config = case.get("importConfig")
+    args = case.get("args") or {}
     if "local" in modes:
         files.add("before.json")
-    if ({"live", "performance"} & set(modes)) and "--apply" in argv:
+    if ({"live", "performance"} & set(modes)) and args.get("apply"):
         files.add("before.json")
-    if argv[:1] == ["set"] and "--maps-path" not in argv:
-        files.add("maps.yaml")
-    if (
-        import_config is not None
-        and import_config.get("command") == "set"
-        and "maps_path" not in import_config
-    ):
+    if args.get("command") == "set" and "maps_path" not in args:
         files.add("maps.yaml")
     return files
-
-
-def derived_import_input(case: FixtureCase, case_name: str, endpoint: str) -> cli.CliInput:
-    """Build the import-API equivalent of a case's command line.
-
-    Parses the cliCommand, then reconstructs the Config the way a library
-    consumer would: keyword construction plus model_copy of the fields
-    that differ from defaults. Asserting the same expected state through
-    both entrypoints proves CLI and import parity for every case.
-    """
-    argv = case_cli_arguments(case, case_name)
-    argv += ["--src-endpoint", endpoint, "--src-access-token", "fixture-token"]
-    parsed = cli.load_cli(argv)
-    defaults = cli.Config(src_endpoint=endpoint, src_access_token="fixture-token")
-    updates = {
-        name: getattr(parsed.config, name)
-        for name in type(parsed.config).model_fields
-        if getattr(parsed.config, name) != getattr(defaults, name)
-    }
-    config = defaults.model_copy(update=updates)
-    return cli.CliInput(command_name=parsed.command_name, config=config)
 
 
 def cli_input_for_case(
     case: FixtureCase, case_name: str, endpoint: str, runner: str
 ) -> cli.CliInput:
-    """Build the parsed command for one case, via argv or the import API."""
+    """Build the parsed command for one case, via generated argv or the import API."""
     if runner == "cli":
         argv = case_cli_arguments(case, case_name)
         argv += ["--src-endpoint", endpoint, "--src-access-token", "fixture-token"]
         return cli.load_cli(argv)
-    import_config = case.get("importConfig")
+    import_config = case.get("args")
     if import_config is None:
-        return derived_import_input(case, case_name, endpoint)
+        raise ValueError(f"case {case_name!r} has no args mapping for the import runner")
     options = dict(import_config)
     command_name = cast(cli.CommandName, options.pop("command"))
-    updates: dict[str, object] = {
-        name: tuple(cast("list[object]", value)) if isinstance(value, list) else value
-        for name, value in options.items()
-    }
-    if command_name == "set" and "maps_path" not in updates:
-        updates["maps_path"] = FIXTURES_DIR / case_name / "maps.yaml"
+    if command_name == "set" and "maps_path" not in options:
+        options["maps_path"] = FIXTURES_DIR / case_name / "maps.yaml"
+    # Keyword construction (not model_copy) so pydantic validates and
+    # coerces values exactly as it would for a library consumer — strings
+    # become Paths, lists become tuples.
     config = cli.Config(
         src_endpoint=endpoint,
         src_access_token="fixture-token",
-    ).model_copy(update=updates)
+        **options,
+    )
     return cli.CliInput(command_name=command_name, config=config)
 
 
