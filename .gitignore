@@ -13,7 +13,6 @@ __pycache__
 *.py[oc]
 *.swp
 *.tsv
-*.yaml
 build/
 dist/
 logs*/
@@ -22,7 +21,4 @@ src-auth-perms-sync-runs/
 wheels/
 
 # Allow
-!.env.example
-!.markdownlint-cli2.yaml
-!maps-example.yaml
-!tests/**/*.yaml
+!examples/
