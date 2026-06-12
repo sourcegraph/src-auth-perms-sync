@@ -560,6 +560,7 @@ class CliConfigTests(unittest.TestCase):
             client: src.SourcegraphClient,
             _run_paths: backups.RunPaths,
             _worker_pool: ThreadPoolExecutor,
+            _mapping_rules: object = None,
         ) -> None:
             captured_clients.append(client)
 
@@ -589,6 +590,7 @@ class CliConfigTests(unittest.TestCase):
             client: src.SourcegraphClient,
             _run_paths: backups.RunPaths,
             _worker_pool: ThreadPoolExecutor,
+            _mapping_rules: object = None,
         ) -> None:
             captured_clients.append(client)
 
@@ -817,6 +819,7 @@ class CliConfigTests(unittest.TestCase):
             sourcegraph_site_config,
             run_paths,
             worker_pool,
+            mapping_rules=None,
         )
         run_sync_saml_orgs.assert_called_once_with(
             configuration,
@@ -849,6 +852,7 @@ class CliConfigTests(unittest.TestCase):
                 "GetResult",
                 "InMemoryEventSink",
                 "JSONLEventSink",
+                "MappingRule",
                 "NullEventSink",
                 "Restore",
                 "RunPaths",
@@ -868,6 +872,7 @@ class CliConfigTests(unittest.TestCase):
             endpoint: str,
             _run_paths: backups.RunPaths,
             _worker_pool: ThreadPoolExecutor,
+            _mapping_rules: object = None,
         ) -> cli.run_context.CommandData:
             captured.append((scoped_config, command, endpoint))
             return cli.run_context.CommandData()

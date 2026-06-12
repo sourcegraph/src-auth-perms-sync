@@ -28,6 +28,7 @@ import yaml
 from src_py_lib.utils.config import config_options
 
 from src_auth_perms_sync import cli
+from src_auth_perms_sync.permissions import types as permission_types
 from src_auth_perms_sync.shared import backups
 from src_auth_perms_sync.shared import types as shared_types
 
@@ -782,8 +783,20 @@ def cli_input_for_case(
 
 
 def run_fixture_case(
-    case_name: str, runner: str = "cli", *, no_files: bool = False
+    case_name: str,
+    runner: str = "cli",
+    *,
+    no_files: bool = False,
+    mapping_rules: list[permission_types.MappingRule] | None = None,
+    preserve_artifacts_into: Path | None = None,
 ) -> FixtureRunResult:
+    """Run one fixture case; `mapping_rules` exercises the in-memory Set path.
+
+    With `mapping_rules` set, the case's maps file is NOT passed to the run
+    (maps_path is cleared), proving the rules alone drive the command.
+    `preserve_artifacts_into` routes run artifacts to a caller-owned
+    directory (not cleaned up here) so tests can inspect their contents.
+    """
     case = load_e2e_cases()[case_name]
     case_dir = FIXTURES_DIR / case_name
     before_state = load_state(case_dir / "before.json")
@@ -799,9 +812,16 @@ def run_fixture_case(
     # Route run artifacts (snapshots, maps copies, generated maps.yaml) into
     # a per-case temporary directory so local test runs never pollute the
     # repo's ./src-auth-perms-sync-runs tree; the directory is removed when
-    # the case finishes.
-    with tempfile.TemporaryDirectory(prefix="src-auth-perms-sync-case-") as temp_directory:
-        artifacts_dir = Path(temp_directory)
+    # the case finishes (unless the caller supplied its own directory).
+    with contextlib.ExitStack() as artifact_stack:
+        if preserve_artifacts_into is not None:
+            artifacts_dir = preserve_artifacts_into
+        else:
+            artifacts_dir = Path(
+                artifact_stack.enter_context(
+                    tempfile.TemporaryDirectory(prefix="src-auth-perms-sync-case-")
+                )
+            )
         try:
             cli_input = cli_input_for_case(case, case_name, client.endpoint, runner)
             # Local runs execute in-process against the in-memory fake, where
@@ -811,6 +831,8 @@ def run_fixture_case(
             config_updates: dict[str, object] = {"parallelism": 1}
             if no_files:
                 config_updates["no_files"] = True
+            if mapping_rules is not None:
+                config_updates["maps_path"] = None
             local_config = cli_input.config.model_copy(update=config_updates)
             command = cli.resolve_command(cli_input.command_name, local_config)
             run_paths = backups.resolve_run_paths(
@@ -827,6 +849,7 @@ def run_fixture_case(
                     cast(src.SourcegraphClient, client),
                     run_paths,
                     worker_pool,
+                    mapping_rules=mapping_rules,
                 )
         except SystemExit as exception:
             command_failure = f"SystemExit: {exception.code!r}"

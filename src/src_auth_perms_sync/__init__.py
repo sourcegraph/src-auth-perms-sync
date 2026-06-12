@@ -16,6 +16,7 @@ from src_py_lib import (
 )
 
 from .cli import CommandResult, Config, Get, GetResult, Restore, Set, SyncSamlOrgs
+from .permissions.types import MappingRule
 from .shared.backups import RunPaths
 
 __all__ = [
@@ -28,6 +29,7 @@ __all__ = [
     "GetResult",
     "InMemoryEventSink",
     "JSONLEventSink",
+    "MappingRule",
     "NullEventSink",
     "Restore",
     "RunPaths",

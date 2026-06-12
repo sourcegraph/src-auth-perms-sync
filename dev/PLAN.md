@@ -1,11 +1,11 @@
 # PLAN: file handling + observability redesign
 
-> **Status (2026-06-12): implemented**, except Track A Phase A4
-> (in-memory mapping rules for `Set`), which the plan marks optional —
-> tracked in [TODO.md](./TODO.md). Shipped as src-py-lib v0.3.0 and the
-> src-auth-perms-sync `refactor-logging-and-files` PR. Phases were
-> compressed into one PR per repo (no ContextVar bridge phase was
-> needed); everything else landed as specified.
+> **Status (2026-06-12): fully implemented**, including Track A Phase A4
+> (in-memory mapping rules for `Set`). Shipped as src-py-lib v0.3.0 and
+> src-auth-perms-sync v0.5.0 (`refactor-logging-and-files` PR), with A4
+> following in the `in-memory-mapping-rules` PR. Phases were compressed
+> into one PR per repo (no ContextVar bridge phase was needed);
+> everything landed as specified.
 
 Spans both repos (we own both, both greenfield, no external users):
 

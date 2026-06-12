@@ -8,9 +8,16 @@ structurally validated, including the live/performance ones.
 
 from __future__ import annotations
 
+import tempfile
 import unittest
+from pathlib import Path
+from typing import cast
+
+import yaml
 
 from src_auth_perms_sync import cli
+from src_auth_perms_sync.permissions import types as permission_types
+from src_auth_perms_sync.permissions.workflow import load_mapping_rules
 from tests.e2e.case_runner import (
     FIXTURES_DIR,
     case_cli_arguments,
@@ -92,6 +99,83 @@ class LocalCaseTests(unittest.TestCase):
                 continue
             with self.subTest(case=case_name):
                 self.assertEqual("", run_local_replay_case(case_name))
+
+    def test_in_memory_mapping_rules_match_maps_file(self) -> None:
+        """In-memory rules must drive set exactly like the same rules from YAML.
+
+        The same fixture case runs through the import API three ways: from
+        its maps.yaml file, from the equivalent parsed rules in memory (no
+        maps file passed at all), and from in-memory rules with no_files.
+        All three must plan identical mutations and end in identical
+        instance state. The files-enabled in-memory run must write the
+        rules it actually used into the run directory as the audit copy,
+        and the no_files run must write nothing.
+        """
+        for case_name in ("full-overwrite-dry-run", "full-overwrite-unions"):
+            with self.subTest(case=case_name):
+                mapping_rules = load_mapping_rules(FIXTURES_DIR / case_name / "maps.yaml")
+                self.assertTrue(mapping_rules, "fixture case must define mapping rules")
+
+                from_file = run_fixture_case(case_name, "import")
+                from_memory = run_fixture_case(case_name, "import", mapping_rules=mapping_rules)
+                from_memory_no_files = run_fixture_case(
+                    case_name,
+                    "import",
+                    mapping_rules=mapping_rules,
+                    no_files=True,
+                )
+
+                self.assertIsNone(from_file.failure)
+                self.assertIsNone(from_memory.failure)
+                self.assertIsNone(from_memory_no_files.failure)
+                self.assertEqual(from_file.actual_mutations, from_memory.actual_mutations)
+                self.assertEqual(from_file.actual_state, from_memory.actual_state)
+                self.assertEqual(from_file.actual_mutations, from_memory_no_files.actual_mutations)
+                self.assertEqual(from_file.actual_state, from_memory_no_files.actual_state)
+
+                audit_copies = [
+                    name for name in from_memory.artifact_file_names if name.endswith("maps.yaml")
+                ]
+                self.assertTrue(
+                    audit_copies,
+                    "in-memory run with files enabled must write the rules audit copy",
+                )
+                self.assertEqual(
+                    (),
+                    from_memory_no_files.artifact_file_names,
+                    "in-memory run with no_files must write nothing",
+                )
+
+    def test_in_memory_mapping_rules_audit_copy_contains_rules_used(self) -> None:
+        """The audit maps.yaml must contain exactly the in-memory rules used."""
+        case_name = "full-overwrite-dry-run"
+        mapping_rules = load_mapping_rules(FIXTURES_DIR / case_name / "maps.yaml")
+
+        with tempfile.TemporaryDirectory(prefix="rules-audit-") as temp_directory:
+            audit_directory = Path(temp_directory)
+            result = run_fixture_case(
+                case_name,
+                "import",
+                mapping_rules=mapping_rules,
+                preserve_artifacts_into=audit_directory,
+            )
+            self.assertIsNone(result.failure)
+            audit_copies = sorted(audit_directory.rglob("maps.yaml"))
+            self.assertEqual(1, len(audit_copies), "expected exactly one rules audit copy")
+            audit_content = yaml.safe_load(audit_copies[0].read_text())
+            self.assertEqual({"maps": mapping_rules}, audit_content)
+
+    def test_in_memory_mapping_rules_reject_invalid_structure(self) -> None:
+        """Structurally invalid in-memory rules fail fast, before any mutation."""
+        case_name = "full-overwrite-unions"
+        invalid_rules = [{"name": "Broken", "users": {"unknownField": ["x"]}}]
+        result = run_fixture_case(
+            case_name,
+            "import",
+            mapping_rules=cast("list[permission_types.MappingRule]", invalid_rules),
+        )
+        self.assertIsNotNone(result.failure)
+        self.assertEqual(0, result.actual_mutations, "invalid rules must mutate nothing")
 
     def test_no_files_set_dry_run_matches_files_enabled(self) -> None:
         """no_files must not change a set dry-run's decisions, and writes nothing.

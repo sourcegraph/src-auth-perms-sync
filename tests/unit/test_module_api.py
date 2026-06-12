@@ -88,6 +88,63 @@ class ModuleApiTests(unittest.TestCase):
         # Validation fails before any path resolution, so nothing is created.
         self.assertEqual([], list(self.working_directory.iterdir()))
 
+    def test_set_with_invalid_in_memory_rules_returns_falsy_without_raising(self) -> None:
+        """Invalid in-memory rules fail validation before any network or disk IO."""
+        invalid_rules = [{"name": "Broken", "users": {"unknownField": ["x"]}}]
+        config = make_config(full=True)
+
+        with self.assertLogs("src_auth_perms_sync", level="ERROR") as captured_logs:
+            result = src_auth_perms_sync.Set(
+                config,
+                mapping_rules=cast(
+                    "list[src_auth_perms_sync.MappingRule]",
+                    invalid_rules,
+                ),
+            )
+
+        self.assertIsInstance(result, cli.CommandResult)
+        self.assertFalse(result)
+        # The validation diagnostic reaches host applications through the
+        # package logger, naming the offending field.
+        self.assertIn("unknownField", "\n".join(captured_logs.output))
+        # Validation fails before path resolution, so nothing is created.
+        self.assertEqual([], list(self.working_directory.iterdir()))
+
+    def test_set_with_in_memory_rules_needs_no_maps_file(self) -> None:
+        """With in-memory rules, a missing maps file must not be the failure.
+
+        The unreachable endpoint makes the run fail at site-config
+        validation, proving it got PAST the maps-file requirement that a
+        file-based run would fail first (no maps file exists in this cwd).
+        """
+        rules: list[src_auth_perms_sync.MappingRule] = [
+            {
+                "name": "Everyone everywhere",
+                "users": {"usernameRegexes": [".*"]},
+                "repos": {"nameRegexes": [".*"]},
+            }
+        ]
+        sink = src.InMemoryEventSink()
+        config = make_config(full=True, no_files=True)
+
+        result = src_auth_perms_sync.Set(config, mapping_rules=rules, event_sink=sink)
+
+        self.assertFalse(result)
+        self.assertEqual([], list(self.working_directory.iterdir()))
+        run_end_attributes = [
+            self.event_attributes(event)
+            for event in sink.events
+            if event.get("event_name") == "run"
+            and self.event_attributes(event).get("phase") == "end"
+        ]
+        self.assertEqual(1, len(run_end_attributes))
+        # The failure is the unreachable endpoint (transport), not a missing
+        # maps file (which would have exited with the set-input message
+        # before any HTTP attempt was recorded).
+        self.assertGreaterEqual(
+            cast("int", run_end_attributes[0].get("http.client.request.count")), 1
+        )
+
     def test_event_sink_receives_run_start_and_error_end_events(self) -> None:
         sink = src.InMemoryEventSink()
         config = make_config(no_files=True)

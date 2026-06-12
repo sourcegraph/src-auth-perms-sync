@@ -147,6 +147,20 @@ for provider in get_result.auth_providers:
 for code_host in get_result.code_hosts:
     ...
 
+# Mapping rules can be passed in memory instead of a maps YAML file —
+# same structure and validation as maps.yaml entries:
+rules: list[src.MappingRule] = [
+    {
+        "name": "Map 1",
+        "users": {"usernameRegexes": [".*"]},
+        "repos": {"codeHostConnection": {"kind": "GITHUB"}},
+    },
+]
+result = src.Set(config, mapping_rules=rules)
+# When files are enabled, the rules actually used are written into the
+# run directory for auditability. Snapshots still gate apply=True unless
+# no_files=True and no_backup=True are both set explicitly.
+
 # Other command wrappers:
 # result = src.Restore(config)
 # result = src.SyncSamlOrgs(config)
