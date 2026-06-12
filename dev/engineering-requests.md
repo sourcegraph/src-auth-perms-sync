@@ -8,11 +8,16 @@ shape, and copy/paste issue text.
 ## Requested Sourcegraph changes
 
 1. Add a bulk GraphQL read path for explicit API repository permissions.
-2. Add a cheaper presence/filter path for users without explicit API repo
+2. Add script-oriented API endpoints for user/auth-provider inventory,
+   repository/code-host inventory, SAML group membership, explicit-permission
+   snapshots, and bulk applies.
+3. Add efficient REST / Connect endpoints for explicit API permission listing,
+   presence checks, and bulk repo replacement.
+4. Add a cheaper presence/filter path for users without explicit API repo
    permissions.
-3. Add Jaeger spans / metrics around the new store methods and around current
+5. Add Jaeger spans / metrics around the new store methods and around current
    `ListUserPermissions` / `CountUserPermissions` paths.
-4. Follow up with a bulk overwrite API for large full-set applies.
+6. Follow up with a bulk overwrite API for large full-set applies.
 
 ## Current trace findings
 
@@ -134,6 +139,41 @@ from `github.com/sourcegraph/sourcegraph`:
   permissions, but the read path uses per-user connection queries and repo
   resolver fanout.
 
+## Current explicit-permissions REST API findings
+
+[Deep Search findings](https://sourcegraph.sourcegraph.com/deepsearch/972e0964-1b41-4805-8774-65dad2ad58c6)
+from `github.com/sourcegraph/sourcegraph` show that the new REST / Connect API
+is useful for one-off permission CRUD, but is not efficient enough for
+`src-auth-perms-sync` bulk sync workloads yet.
+
+Current endpoints:
+
+- `POST /api/explicitrepopermissions.v1.Service/GetExplicitRepoPermission`
+- `POST /api/explicitrepopermissions.v1.Service/ListExplicitRepoPermissions`
+- `POST /api/explicitrepopermissions.v1.Service/CreateExplicitRepoPermission`
+- `POST /api/explicitrepopermissions.v1.Service/DeleteExplicitRepoPermission`
+
+Current efficiency gaps:
+
+- `CreateExplicitRepoPermission` creates one repo/user edge at a time. The
+  backing `AddUserToRepo` path checks whether the edge exists, then upserts one
+  row. Using it to sync one repo with hundreds or thousands of users becomes
+  hundreds or thousands of REST calls and SQL operations.
+- `DeleteExplicitRepoPermission` deletes one repo/user edge at a time. It is
+  fine for UI-style single deletes, but not for reconciling a full repo state.
+- `ListExplicitRepoPermissions(parent = users/{user})` is the best current REST
+  read path. It uses `ListUserPermissions` with `SourceAPI`, but still works for
+  only one user per request.
+- `ListExplicitRepoPermissions(parent = repositories/{repo})` has an N+1 shape:
+  after listing repo permissions, the handler calls `loadExplicitRepoPermission`
+  for each returned user, and that helper loads all permissions for that user to
+  check whether the requested repo has an API-sourced edge.
+- There is no REST equivalent of GraphQL `setRepositoryPermissionsForUsers`, so
+  REST cannot currently replace all explicit users for a repo atomically.
+
+Implication: `src-auth-perms-sync` should keep using GraphQL for bulk overwrites
+until REST has batch endpoints backed by direct `user_repo_permissions` queries.
+
 ## Proposed bulk read API
 
 `src-auth-perms-sync` needs to snapshot explicit API permissions for many
@@ -219,6 +259,391 @@ either check explicit-permission presence for candidate users in one indexed
 batch query, or ask Sourcegraph for the filtered user set directly instead of
 probing every user through the expensive permissions connection resolver.
 
+## API endpoints needed to make this script much more efficient
+
+The biggest win is not only replacing individual GraphQL resolvers. The CLI
+needs server-side endpoints that match its workflow: load planning inputs,
+snapshot explicit grants, compute missing/present grant sets, then apply a bulk
+repo replacement. These can be GraphQL fields or REST / Connect methods; the
+important part is that they return scalar sync data from direct store methods
+instead of full GraphQL objects with nested resolver fanout.
+
+- `ListPermissionSyncUsers`: replaces `users { externalAccounts { accountData } }`
+  pages with compact users and selected auth account data from one store path.
+- `ListPermissionSyncRepositories`: replaces nested `repositories {
+  externalServices }` and per-service repo lists with scalar repo inventory.
+- `ListAuthProviderGroupMemberships`: replaces downloading every SAML
+  `accountData` blob and parsing groups locally.
+- `ExportExplicitRepoPermissionsSnapshot`: replaces per-user
+  `permissionsInfo.repositories(source: API)` probes with a paginated
+  `user_repo_permissions` export.
+- `BatchCheckExplicitRepoPermissionPresence`: replaces `first: 1` probes for
+  every candidate user/repo with batched presence booleans.
+- `BatchReplaceExplicitRepoPermissions`: replaces one GraphQL overwrite per
+  repo, or REST one-edge create/delete loops, with bulk store writes.
+
+### `ListPermissionSyncUsers`
+
+`src-auth-perms-sync` needs active users with enough auth-provider metadata to
+match mapping rules and org-sync rules. Today it paginates GraphQL `users` and
+requests nested `externalAccounts(first: 50)`, optionally including full SAML /
+OIDC `accountData` JSON.
+
+Request shape:
+
+```protobuf
+rpc ListPermissionSyncUsers(ListPermissionSyncUsersRequest)
+  returns (ListPermissionSyncUsersResponse);
+
+message ListPermissionSyncUsersRequest {
+  google.protobuf.Timestamp created_after = 1;
+  bool include_emails = 2;
+  bool include_auth_accounts = 3;
+  bool include_account_data = 4;
+  int32 page_size = 5;
+  string page_token = 6;
+}
+
+message PermissionSyncUser {
+  string user = 1; // users/{id}
+  string username = 2;
+  bool builtin_auth = 3;
+  google.protobuf.Timestamp created_at = 4;
+  repeated string verified_emails = 5;
+  repeated PermissionSyncAuthAccount auth_accounts = 6;
+}
+
+message PermissionSyncAuthAccount {
+  string service_type = 1;
+  string service_id = 2;
+  string client_id = 3;
+  bytes account_data_json = 4;
+}
+
+message ListPermissionSyncUsersResponse {
+  repeated PermissionSyncUser users = 1;
+  string next_page_token = 2;
+}
+```
+
+Requirements:
+
+- Page by stable user ID or creation timestamp, not offset, so large instances
+  do not repeatedly scan earlier rows.
+- Let the client omit emails and account data unless rules need them.
+- Return compact account rows. Do not hydrate full user GraphQL objects.
+
+### `ListPermissionSyncRepositories`
+
+The CLI needs repository candidates with `id`, `name`, `createdAt`, and the set
+of external service IDs. Today it either pages all repositories with nested
+`externalServices(first: 50)` or calls `repositories(externalService: ...)` once
+per code host connection.
+
+Request shape:
+
+```protobuf
+rpc ListPermissionSyncRepositories(ListPermissionSyncRepositoriesRequest)
+  returns (ListPermissionSyncRepositoriesResponse);
+
+message ListPermissionSyncRepositoriesRequest {
+  repeated string repository_names = 1;
+  google.protobuf.Timestamp created_after = 2;
+  repeated string external_services = 3; // externalServices/{id}
+  bool include_explicit_permission_presence = 4;
+  int32 page_size = 5;
+  string page_token = 6;
+}
+
+message PermissionSyncRepository {
+  string repository = 1; // repositories/{id}
+  string name = 2;
+  google.protobuf.Timestamp created_at = 3;
+  repeated string external_services = 4;
+  bool has_explicit_repo_permissions = 5;
+}
+
+message ListPermissionSyncRepositoriesResponse {
+  repeated PermissionSyncRepository repositories = 1;
+  string next_page_token = 2;
+}
+```
+
+Expected SQL shape: one query over `repo`, `external_service_repos`, and an
+optional `EXISTS` on `user_repo_permissions source = 'api'`, grouped by repo.
+This directly supports `--repos`, `--repos-created-after`, and
+`--repos-without-explicit-perms` without first building a full before-snapshot.
+
+### `ListAuthProviderGroupMemberships`
+
+The org-sync and SAML-group mapping paths need `(auth provider, group, user)`
+membership data. Today the CLI downloads user external account `accountData` and
+parses SAML assertion JSON locally.
+
+Request shape:
+
+```protobuf
+rpc ListAuthProviderGroupMemberships(ListAuthProviderGroupMembershipsRequest)
+  returns (ListAuthProviderGroupMembershipsResponse);
+
+message ListAuthProviderGroupMembershipsRequest {
+  repeated string auth_provider_config_ids = 1;
+  repeated string groups = 2;
+  string groups_attribute_name = 3;
+  int32 page_size = 4;
+  string page_token = 5;
+}
+
+message AuthProviderGroupMember {
+  string auth_provider_config_id = 1;
+  string service_type = 2;
+  string service_id = 3;
+  string client_id = 4;
+  string group = 5;
+  string user = 6; // users/{id}
+  string username = 7;
+}
+
+message ListAuthProviderGroupMembershipsResponse {
+  repeated AuthProviderGroupMember members = 1;
+  string next_page_token = 2;
+}
+```
+
+Requirements:
+
+- Use Sourcegraph's configured SAML/OIDC group attribute semantics so the CLI
+  does not need to duplicate provider-specific parsing.
+- Support filtering to the groups named by mapping rules, while still allowing
+  an unfiltered discovery mode for `get`.
+- Keep secret provider config values out of the response.
+
+### `ExportExplicitRepoPermissionsSnapshot`
+
+For `get`, `set --full`, and `restore`, the CLI needs the current explicit API
+permission graph. A snapshot export endpoint would be more useful than many
+single-user list calls.
+
+Request shape:
+
+```protobuf
+rpc ExportExplicitRepoPermissionsSnapshot(
+  ExportExplicitRepoPermissionsSnapshotRequest)
+  returns (ExportExplicitRepoPermissionsSnapshotResponse);
+
+message ExportExplicitRepoPermissionsSnapshotRequest {
+  repeated string users = 1;        // optional users/{id} filter
+  repeated string repositories = 2; // optional repositories/{id} filter
+  int32 page_size = 3;
+  string page_token = 4;
+}
+
+message ExplicitRepoPermissionSnapshotEdge {
+  string user = 1;
+  string username = 2;
+  string repository = 3;
+  string repository_name = 4;
+  google.protobuf.Timestamp updated_at = 5;
+}
+
+message ExportExplicitRepoPermissionsSnapshotResponse {
+  repeated ExplicitRepoPermissionSnapshotEdge explicit_repo_permissions = 1;
+  repeated string pending_bind_ids = 2;
+  string next_page_token = 3;
+}
+```
+
+Expected benefit: replace tens of thousands of per-user permission resolver
+queries with a paginated scan of `user_repo_permissions WHERE source = 'api'`,
+joined to `users` and `repo` for names.
+
+### `GetPermissionSyncDiscovery`
+
+The `get` command writes `code-hosts.yaml` and `auth-providers.yaml`, then uses
+the same discovery data for mapping. A single discovery endpoint would simplify
+this and avoid multiple round trips.
+
+Request shape:
+
+```protobuf
+rpc GetPermissionSyncDiscovery(GetPermissionSyncDiscoveryRequest)
+  returns (GetPermissionSyncDiscoveryResponse);
+
+message GetPermissionSyncDiscoveryRequest {
+  bool include_external_service_config = 1;
+  bool include_auth_provider_config = 2;
+}
+
+message GetPermissionSyncDiscoveryResponse {
+  repeated PermissionSyncExternalService external_services = 1;
+  repeated PermissionSyncAuthProvider auth_providers = 2;
+  string permissions_user_mapping_bind_id = 3;
+  bool permissions_user_mapping_enabled = 4;
+}
+```
+
+Requirements:
+
+- Include the current non-secret fields the CLI writes to generated YAML.
+- Preserve the existing site-admin / RBAC checks.
+- Return the site-config invariants the CLI validates before mutating explicit
+  permissions.
+
+## Proposed REST / Connect endpoints
+
+Add REST / Connect endpoints shaped for automation clients, not just UI-style
+single edge CRUD. The generated OpenAPI routes can follow the existing
+`/api/explicitrepopermissions.v1.Service/<Method>` style.
+
+### Batch list explicit repo permissions
+
+Request:
+
+```protobuf
+rpc BatchListExplicitRepoPermissions(BatchListExplicitRepoPermissionsRequest)
+  returns (BatchListExplicitRepoPermissionsResponse);
+
+message BatchListExplicitRepoPermissionsRequest {
+  // Exactly one of users or repositories must be non-empty per request.
+  repeated string users = 1;        // users/{id}
+  repeated string repositories = 2; // repositories/{id}
+  int32 page_size = 3;
+  string page_token = 4;
+}
+
+message ExplicitRepoPermissionEdge {
+  string user = 1;            // users/{id}
+  string username = 2;
+  string repository = 3;      // repositories/{id}
+  string repository_name = 4;
+  google.protobuf.Timestamp updated_at = 5;
+}
+
+message BatchListExplicitRepoPermissionsResponse {
+  repeated ExplicitRepoPermissionEdge explicit_repo_permissions = 1;
+  string next_page_token = 2;
+}
+```
+
+Back user-scoped requests with one indexed SQL shape per page:
+
+```sql
+SELECT urp.user_id, users.username, urp.repo_id, repo.name, urp.updated_at
+FROM user_repo_permissions urp
+JOIN users ON users.id = urp.user_id AND users.deleted_at IS NULL
+JOIN repo ON repo.id = urp.repo_id AND repo.deleted_at IS NULL
+WHERE urp.source = 'api'
+  AND urp.user_id = ANY($1)
+ORDER BY urp.user_id, repo.name, repo.id;
+```
+
+Back repo-scoped requests with the symmetric shape:
+
+```sql
+SELECT urp.user_id, users.username, urp.repo_id, repo.name, urp.updated_at
+FROM user_repo_permissions urp
+JOIN users ON users.id = urp.user_id AND users.deleted_at IS NULL
+JOIN repo ON repo.id = urp.repo_id AND repo.deleted_at IS NULL
+WHERE urp.source = 'api'
+  AND urp.repo_id = ANY($1)
+ORDER BY urp.repo_id, users.username, users.id;
+```
+
+Requirements:
+
+- Do not call `ListRepoPermissions` and then `loadExplicitRepoPermission` per
+  user. The endpoint must not have the current repo-parent N+1 pattern.
+- Return scalar user/repo identifiers and names. Do not hydrate full GraphQL
+  `User` or `Repository` objects.
+- Support keyset pagination over `(user_id, repo_id)` or `(repo_id, user_id)`.
+- Preserve the current permission checks for reading explicit repo permissions.
+
+### Batch check explicit repo permission presence
+
+Request:
+
+```protobuf
+rpc BatchCheckExplicitRepoPermissionPresence(
+  BatchCheckExplicitRepoPermissionPresenceRequest)
+  returns (BatchCheckExplicitRepoPermissionPresenceResponse);
+
+message BatchCheckExplicitRepoPermissionPresenceRequest {
+  repeated string users = 1; // users/{id}
+}
+
+message ExplicitRepoPermissionPresence {
+  string user = 1; // users/{id}
+  bool has_explicit_repo_permissions = 2;
+}
+
+message BatchCheckExplicitRepoPermissionPresenceResponse {
+  repeated ExplicitRepoPermissionPresence users = 1;
+}
+```
+
+Expected SQL shape:
+
+```sql
+SELECT users.id,
+       EXISTS (
+         SELECT 1
+         FROM user_repo_permissions urp
+         WHERE urp.user_id = users.id
+           AND urp.source = 'api'
+       ) AS has_explicit_repo_permissions
+FROM users
+WHERE users.id = ANY($1)
+  AND users.deleted_at IS NULL;
+```
+
+Expected benefit: `get --users-without-explicit-perms` can stop probing every
+candidate user through `User.permissionsInfo.repositories(source: API, first:
+1)` or one-user REST list calls.
+
+### Batch replace explicit repo permissions
+
+Request:
+
+```protobuf
+rpc BatchReplaceExplicitRepoPermissions(
+  BatchReplaceExplicitRepoPermissionsRequest)
+  returns (BatchReplaceExplicitRepoPermissionsResponse);
+
+message ExplicitRepoPermissionReplacement {
+  string repository = 1;      // repositories/{id}
+  repeated string users = 2;  // users/{id}; optional @username support is OK
+}
+
+message BatchReplaceExplicitRepoPermissionsRequest {
+  repeated ExplicitRepoPermissionReplacement replacements = 1;
+}
+
+message ExplicitRepoPermissionReplacementResult {
+  string repository = 1;
+  int32 added = 2;
+  int32 removed = 3;
+  int32 found = 4;
+}
+
+message BatchReplaceExplicitRepoPermissionsResponse {
+  repeated ExplicitRepoPermissionReplacementResult results = 1;
+}
+```
+
+Requirements:
+
+- Replace all API-sourced explicit users for each repo, matching
+  `setRepositoryPermissionsForUsers` semantics.
+- Avoid per-edge `CreateExplicitRepoPermission` / `DeleteExplicitRepoPermission`
+  loops.
+- Resolve users in batches. Numeric `users/{id}` support is enough for
+  `src-auth-perms-sync`, because the CLI already enumerates Sourcegraph users;
+  optional `users/@username` support is useful for hand-authored requests.
+- Make replacement atomic per repository. A later improvement can make a whole
+  multi-repo request atomic if that is practical.
+- Reuse or generalize the existing bulk store write path instead of adding a new
+  row-at-a-time implementation.
+
 ## Bulk overwrite follow-up
 
 The stress profile also needs attention on the write path. A purpose-built bulk
@@ -268,3 +693,43 @@ Acceptance criteria:
 - Follow-up: evaluate a bulk overwrite API for large full-set applies. The
   stress run planned roughly 10 million grants and observed
   `permsStore.upsertUserRepoPermissions-range1` averaging about 2.5s per call.
+
+## Copy/paste REST request
+
+Title: Add efficient REST endpoints for explicit repository permissions
+
+Problem: The current explicit-permissions REST / Connect API only supports
+single-edge CRUD plus one-parent listing. That shape is not efficient for
+automation clients such as `src-auth-perms-sync`. To sync one repo with many
+users, the client would need one `CreateExplicitRepoPermission` or
+`DeleteExplicitRepoPermission` call per edge instead of one bulk replacement.
+The repo-parent list path also has an N+1 pattern: after listing repo
+permissions, it calls `loadExplicitRepoPermission` for each returned user, and
+that helper loads all permissions for that user before checking for the API
+edge.
+
+Request: add automation-friendly REST / Connect endpoints:
+
+- `BatchListExplicitRepoPermissions`: accept many `users/{id}` or many
+  `repositories/{id}` and return scalar edges (`user`, `username`,
+  `repository`, `repository_name`, `updated_at`) directly from
+  `user_repo_permissions` joined to `users` and `repo`, with keyset
+  pagination.
+- `BatchCheckExplicitRepoPermissionPresence`: accept many `users/{id}` and
+  return whether each user has any API-sourced explicit repo permission.
+- `BatchReplaceExplicitRepoPermissions`: accept many repo replacements and
+  atomically replace the full API-sourced explicit user set for each repo,
+  matching `setRepositoryPermissionsForUsers` semantics without per-edge
+  create/delete loops.
+
+Acceptance criteria:
+
+- Listing by repo does not call `loadExplicitRepoPermission` once per returned
+  user.
+- Listing by user or repo is one indexed SQL page over `user_repo_permissions`,
+  joined only to the scalar user/repo tables needed for IDs and names.
+- Presence checks for many users run as one batch query.
+- Bulk replacement resolves users in batches and uses a bulk write path; it does
+  not dispatch one SQL-backed create/delete operation per edge.
+- The new store methods and handlers have Jaeger spans / metrics so operators
+  can see page size, edge count, and latency.
