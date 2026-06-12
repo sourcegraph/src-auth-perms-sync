@@ -66,11 +66,21 @@
 #
 # `{user}` in a cliCommand resolves to the configured --user on the test
 # instance (live/performance modes only).
+#
+# Each case carries an `# Affects:` comment — the net state change between
+# before.json and after.json:
+#   users  distinct users whose explicit grants change
+#   repos  repos whose explicit or pending grant lists change
+#   perms  grant additions + removals (user-repo pairs, incl. pending bindIDs)
+# Rejections, expected errors, dry runs, no-ops, and read-only gets affect
+# nothing (users=0 repos=0 perms=0). Overwrite mutations that resend an
+# identical list count in expectedMutations but not here.
 
 cases:
 
   # ── Local parse replays: argument validation, in-process, no files (fastest) ──
   reject-bare-invocation:
+    # Affects: users=0 repos=0 perms=0
     description: A bare invocation without a command prints usage and exits 2.
     modes:
       - local
@@ -80,6 +90,7 @@ cases:
       - "the following arguments are required: COMMAND"
 
   reject-unknown-command:
+    # Affects: users=0 repos=0 perms=0
     description: An unknown subcommand is rejected with the valid choices.
     modes:
       - local
@@ -89,6 +100,7 @@ cases:
       - "invalid choice: 'bogus'"
 
   reject-two-commands:
+    # Affects: users=0 repos=0 perms=0
     description: Two subcommands in one invocation are rejected.
     modes:
       - local
@@ -98,6 +110,7 @@ cases:
       - unrecognized arguments
 
   reject-get-apply:
+    # Affects: users=0 repos=0 perms=0
     description: get is read-only; --apply is rejected.
     modes:
       - local
@@ -107,6 +120,7 @@ cases:
       - unrecognized arguments
 
   reject-get-full:
+    # Affects: users=0 repos=0 perms=0
     description: --full requires the set command.
     modes:
       - local
@@ -116,6 +130,7 @@ cases:
       - unrecognized arguments
 
   reject-malformed-date:
+    # Affects: users=0 repos=0 perms=0
     description: dates must match YYYY-MM-DD before any network call.
     modes:
       - local
@@ -125,6 +140,7 @@ cases:
       - string_pattern_mismatch
 
   reject-user-filter-conflict:
+    # Affects: users=0 repos=0 perms=0
     description: user filters are mutually exclusive.
     modes:
       - local
@@ -134,6 +150,7 @@ cases:
       - choose only one of --users
 
   reject-user-and-repo-filters:
+    # Affects: users=0 repos=0 perms=0
     description: user filters and repo filters cannot be combined.
     modes:
       - local
@@ -143,6 +160,7 @@ cases:
       - choose either user filters or repo filters
 
   reject-repo-filter-conflict:
+    # Affects: users=0 repos=0 perms=0
     description: repo filters are mutually exclusive.
     modes:
       - local
@@ -152,6 +170,7 @@ cases:
       - choose only one of --repos
 
   reject-repos-created-after-malformed:
+    # Affects: users=0 repos=0 perms=0
     description: repo creation dates must match YYYY-MM-DD at parse time.
     modes:
       - local
@@ -161,6 +180,7 @@ cases:
       - string_pattern_mismatch
 
   reject-get-removed-repositories-created-after:
+    # Affects: users=0 repos=0 perms=0
     description: >-
       The removed --repositories-created-after spelling stays removed; the
       flag is --repos-created-after.
@@ -172,6 +192,7 @@ cases:
       - "unrecognized arguments: --repositories-created-after"
 
   reject-verbosity-conflict:
+    # Affects: users=0 repos=0 perms=0
     description: the --verbose and --quiet log-level aliases are mutually exclusive.
     modes:
       - local
@@ -181,6 +202,7 @@ cases:
       - choose only one of --verbose/-v, --quiet/-q, or --silent/-s
 
   reject-bare-set:
+    # Affects: users=0 repos=0 perms=0
     description: set requires an explicit mode flag.
     modes:
       - local
@@ -190,6 +212,7 @@ cases:
       - set requires one of --full
 
   reject-set-full-and-users:
+    # Affects: users=0 repos=0 perms=0
     description: set modes are mutually exclusive.
     modes:
       - local
@@ -199,6 +222,7 @@ cases:
       - choose at most one
 
   reject-set-user-filter-conflict:
+    # Affects: users=0 repos=0 perms=0
     description: set user filters are mutually exclusive.
     modes:
       - local
@@ -208,6 +232,7 @@ cases:
       - choose only one of --users
 
   reject-set-full-and-created-after:
+    # Affects: users=0 repos=0 perms=0
     description: full overwrite cannot be combined with the additive date filter.
     modes:
       - local
@@ -217,6 +242,7 @@ cases:
       - "--full cannot be combined with --created-after"
 
   reject-set-restore-path:
+    # Affects: users=0 repos=0 perms=0
     description: "--restore-path belongs to restore; set does not accept it."
     modes:
       - local
@@ -226,6 +252,7 @@ cases:
       - "unrecognized arguments: --restore-path"
 
   reject-bare-restore:
+    # Affects: users=0 repos=0 perms=0
     description: restore requires a snapshot path.
     modes:
       - local
@@ -235,6 +262,7 @@ cases:
       - restore requires --restore-path
 
   reject-restore-with-users:
+    # Affects: users=0 repos=0 perms=0
     description: restore does not take user filters.
     modes:
       - local
@@ -244,6 +272,7 @@ cases:
       - unrecognized arguments
 
   reject-restore-repos:
+    # Affects: users=0 repos=0 perms=0
     description: restore does not take repo filters.
     modes:
       - local
@@ -253,6 +282,7 @@ cases:
       - "unrecognized arguments: --repos"
 
   reject-restore-sync-saml-orgs:
+    # Affects: users=0 repos=0 perms=0
     description: "--sync-saml-orgs belongs to set; restore does not accept it."
     modes:
       - local
@@ -262,6 +292,7 @@ cases:
       - "unrecognized arguments: --sync-saml-orgs"
 
   reject-sync-saml-orgs-created-after:
+    # Affects: users=0 repos=0 perms=0
     description: sync-saml-orgs does not take user filters.
     modes:
       - local
@@ -271,6 +302,7 @@ cases:
       - unrecognized arguments
 
   reject-sync-saml-orgs-users:
+    # Affects: users=0 repos=0 perms=0
     description: sync-saml-orgs does not take a user list.
     modes:
       - local
@@ -280,6 +312,7 @@ cases:
       - "unrecognized arguments: --users"
 
   reject-sync-saml-orgs-full:
+    # Affects: users=0 repos=0 perms=0
     description: "--full belongs to set; sync-saml-orgs does not accept it."
     modes:
       - local
@@ -289,6 +322,7 @@ cases:
       - "unrecognized arguments: --full"
 
   reject-sync-saml-orgs-restore-path:
+    # Affects: users=0 repos=0 perms=0
     description: "--restore-path belongs to restore; sync-saml-orgs does not accept it."
     modes:
       - local
@@ -299,6 +333,7 @@ cases:
 
   # ── Local state cases: full CLI runs against an in-memory instance ──
   and-filters-intersect:
+    # Affects: users=1 repos=1 perms=1
     description: >-
       Multiple user filters AND together: both users are in the SAML group,
       but only test_user_09991 matches the email filter.
@@ -312,6 +347,7 @@ cases:
     expectedMutations: 1
 
   regex-filters-scope:
+    # Affects: users=2 repos=2 perms=4
     description: >-
       Email and repo-name regex filters scope grants to matching users and
       repos only. Live, the declared involvedRepos cover the full closed
@@ -341,6 +377,7 @@ cases:
     expectedMutations: 2
 
   saml-group-filter:
+    # Affects: users=1 repos=2 perms=2
     description: >-
       authProvider samlGroup filter grants Bitbucket repos only to users whose
       SAML assertion includes the group.
@@ -354,6 +391,7 @@ cases:
     expectedMutations: 2
 
   saml-group-live:
+    # Affects: users=2 repos=2 perms=4
     description: >-
       authProvider samlGroup filter against the FABRICATED SAML accounts
       that tests/setup.py provisions (setup.yaml samlAccounts): eng-group
@@ -384,6 +422,7 @@ cases:
     expectedMutations: 2
 
   set-created-after-temp-user:
+    # Affects: users=1 repos=1 perms=1
     description: >-
       POSITIVE created-after selection on the real instance: the harness
       creates a fresh temporary user (created today), so
@@ -405,6 +444,7 @@ cases:
     expectedMutations: 1
 
   set-users-created-after:
+    # Affects: users=2 repos=2 perms=4
     description: >-
       createdAfter mode additively grants mapped repos to users created
       on/after the date, preserving existing grants.
@@ -419,6 +459,7 @@ cases:
     expectedMutations: 4
 
   set-users-without-explicit-perms:
+    # Affects: users=1 repos=2 perms=2
     description: >-
       --users-without-explicit-perms additively grants mapped repos only to
       users who currently hold no explicit grants anywhere. The local
@@ -439,6 +480,7 @@ cases:
     expectedMutations: 2
 
   set-users-without-explicit-perms-default-batch:
+    # Affects: users=1 repos=2 perms=2
     description: >-
       Performance-tier twin of set-users-without-explicit-perms at default
       --parallelism and --explicit-permissions-batch-size, so the measured
@@ -459,6 +501,7 @@ cases:
     expectedMutations: 2
 
   set-repos-without-explicit-perms:
+    # Affects: users=2 repos=1 perms=2
     description: >-
       --repos-without-explicit-perms overwrites only repos that currently
       have no explicit grants. Runs in the performance tier on the instance
@@ -474,6 +517,7 @@ cases:
     expectedMutations: 1
 
   set-repos-created-after:
+    # Affects: users=2 repos=1 perms=2
     description: >-
       --repos-created-after scopes the overwrite to repos created on/after
       the date.
@@ -487,6 +531,7 @@ cases:
     expectedMutations: 1
 
   full-overwrite-dry-run:
+    # Affects: users=0 repos=0 perms=0
     description: >-
       set without --apply plans the full overwrite but makes zero mutations
       and leaves state untouched — the dry-run default never mutates.
@@ -499,6 +544,7 @@ cases:
     expectedMutations: 0
 
   empty-maps-noop:
+    # Affects: users=0 repos=0 perms=0
     description: >-
       An empty maps list is a no-op, not an error: zero mutations, existing
       grants untouched.
@@ -512,6 +558,7 @@ cases:
     expectedMutations: 0
 
   match-provider-and-host-fields:
+    # Affects: users=2 repos=2 perms=4
     description: >-
       Users matched by authProvider type/serviceID/clientID/displayName
       (without configID or samlGroup) and repos matched by codeHostConnection
@@ -526,6 +573,7 @@ cases:
     expectedMutations: 2
 
   add-users-by-email-and-list:
+    # Affects: users=2 repos=2 perms=4
     description: >-
       --users accepts a comma-delimited mix of an email address and a
       username; only the two selected users gain grants, additively.
@@ -541,6 +589,7 @@ cases:
     expectedMutations: 4
 
   restore-dry-run-noop:
+    # Affects: users=0 repos=0 perms=0
     description: >-
       restore without --apply plans against a snapshot that differs from
       current state but makes zero mutations.
@@ -553,6 +602,7 @@ cases:
     expectedMutations: 0
 
   restore-applies-snapshot:
+    # Affects: users=2 repos=1 perms=2
     description: >-
       restore --apply overwrites the repo that differs from the snapshot and
       skips the repo that already matches.
@@ -566,6 +616,7 @@ cases:
     expectedMutations: 1
 
   restore-restores-pending:
+    # Affects: users=0 repos=2 perms=2 (both perms are pending bindID grants)
     description: >-
       restore --apply recreates the snapshot's pending grants (bindIDs that
       never resolved to a user) and wipes pending grants the snapshot does
@@ -580,6 +631,7 @@ cases:
     expectedMutations: 2
 
   full-overwrite-preserves-pending:
+    # Affects: users=2 repos=1 perms=2
     description: >-
       A full-overwrite apply (without backup, so the pending state is
       fetched live) resends each mapped repo's pending bindIDs and leaves
@@ -595,6 +647,7 @@ cases:
     expectedMutations: 1
 
   full-overwrite-with-backup:
+    # Affects: users=2 repos=1 perms=2
     description: >-
       The default backup path (no --no-backup) captures before/after
       snapshots (including a pending grant on the mutated repo, which must
@@ -608,6 +661,7 @@ cases:
     expectedMutations: 1
 
   get-user-grants:
+    # Affects: users=0 repos=0 perms=0
     description: >-
       get scoped to one user captures that user's explicit grants and never
       mutates the instance.
@@ -621,6 +675,7 @@ cases:
 
   # ── Local + live: expected-error cases, replayed read-only on the instance ──
   invalid-bad-regex:
+    # Affects: users=0 repos=0 perms=0
     description: >-
       An invalid Python regex in a filter is rejected by structural validation
       before any mutation.
@@ -635,6 +690,7 @@ cases:
       - is not a valid Python regex
 
   invalid-missing-repos-section:
+    # Affects: users=0 repos=0 perms=0
     description: >-
       A rule without a repos section is rejected by structural validation
       before any mutation.
@@ -649,6 +705,7 @@ cases:
       - "`repos:` section is missing"
 
   invalid-unknown-selector-field:
+    # Affects: users=0 repos=0 perms=0
     description: >-
       A typo'd selector field is rejected by structural validation before any
       mutation.
@@ -663,6 +720,7 @@ cases:
       - unknown users field 'userNames'
 
   invalid-set-created-after-date:
+    # Affects: users=0 repos=0 perms=0
     description: >-
       An impossible calendar date passes the YYYY-MM-DD shape check but set
       rejects it post-parse, before any mutation.
@@ -677,6 +735,7 @@ cases:
       - "--created-after must use YYYY-MM-DD"
 
   invalid-set-repos-created-after-date:
+    # Affects: users=0 repos=0 perms=0
     description: >-
       An impossible calendar date passes the YYYY-MM-DD shape check but the
       repo-scoped set rejects it post-parse, before any mutation.
@@ -691,6 +750,7 @@ cases:
       - "--repos-created-after must use YYYY-MM-DD"
 
   invalid-set-unknown-user:
+    # Affects: users=0 repos=0 perms=0
     description: >-
       A --users value naming no Sourcegraph user fails before any mutation.
     modes:
@@ -705,6 +765,7 @@ cases:
       - "No Sourcegraph user found for 'username_doesnt_exist_01'"
 
   invalid-set-unknown-repo:
+    # Affects: users=0 repos=0 perms=0
     description: >-
       A --repos value naming no Sourcegraph repo fails before any mutation.
     modes:
@@ -719,6 +780,7 @@ cases:
       - "No Sourcegraph repo found for: repo-doesnt-exist-49999"
 
   invalid-restore-wrong-schema-version:
+    # Affects: users=0 repos=0 perms=0
     description: >-
       A snapshot with an unsupported schema_version is refused without
       changing any state.
@@ -732,6 +794,7 @@ cases:
       - "snapshot schema_version is 1, expected"
 
   restore-missing-file:
+    # Affects: users=0 repos=0 perms=0
     description: >-
       restore with a snapshot path that does not exist fails without changing
       any state.
@@ -747,6 +810,7 @@ cases:
 
   # ── Local + live: mutating cases, seeded and restored on the instance ──
   no-match-noop:
+    # Affects: users=0 repos=0 perms=0
     description: >-
       A rule matching no users produces zero mutations and leaves existing
       grants untouched.
@@ -761,6 +825,7 @@ cases:
     expectedMutations: 0
 
   set-repos-filter:
+    # Affects: users=3 repos=1 perms=3
     description: >-
       --repos scopes the full overwrite to the listed repos; other mapped
       repos keep their existing grants. Also pins --src-log-level DEBUG:
@@ -779,6 +844,7 @@ cases:
     expectedMutations: 1
 
   add-users-preserves-existing:
+    # Affects: users=1 repos=2 perms=2
     description: >-
       Additive --users mode grants mapped repos to one user without dropping
       existing repo users.
@@ -794,6 +860,7 @@ cases:
     expectedMutations: 2
 
   full-overwrite-removes-stale-grant:
+    # Affects: users=2 repos=1 perms=2
     description: >-
       Full set mode overwrites a mapped repo's explicit users, removing grants
       that no rule justifies.
@@ -809,6 +876,7 @@ cases:
 
   # ── Live only: real-instance validation and organization sync ──
   invalid-created-after-date:
+    # Affects: users=0 repos=0 perms=0
     description: >-
       An impossible calendar date passes the YYYY-MM-DD shape check but is
       rejected by date validation.
@@ -821,6 +889,7 @@ cases:
       - "--created-after must use YYYY-MM-DD"
 
   invalid-missing-maps-file:
+    # Affects: users=0 repos=0 perms=0
     description: >-
       A maps path that does not exist is rejected with a pointer to the
       command that creates the default maps file. Also pins the --quiet
@@ -836,6 +905,7 @@ cases:
       - set input file does not exist
 
   get-created-after-future:
+    # Affects: users=0 repos=0 perms=0
     description: >-
       A far-future --created-after selects no users on the real instance.
     modes:
@@ -846,6 +916,7 @@ cases:
       - Selected 0 user(s) for get output.
 
   get-user-created-after-future:
+    # Affects: users=0 repos=0 perms=0
     description: >-
       --users combined with a far-future --created-after filters the named
       user out of the selection.
@@ -857,6 +928,7 @@ cases:
       - no user metadata selected
 
   get-users-without-perms-created-after-future:
+    # Affects: users=0 repos=0 perms=0
     description: >-
       --users-without-explicit-perms combined with a far-future
       --created-after selects no users.
@@ -868,6 +940,7 @@ cases:
       - Selected 0 user(s) for get output.
 
   get-repos-filter:
+    # Affects: users=0 repos=0 perms=0
     description: >-
       get scoped to one repo by exact name. The snapshot still scans every
       user's explicit grants to find the repo's holders (measured ~400 s at
@@ -880,6 +953,7 @@ cases:
       - Selected 1 repo(s) by exact name.
 
   get-repos-created-after-future:
+    # Affects: users=0 repos=0 perms=0
     description: >-
       A far-future --repos-created-after selects no repos. Also pins the
       --verbose alias: DEBUG verbosity must not hide the INFO summary.
@@ -891,6 +965,7 @@ cases:
       - Selected 0 Sourcegraph repo(s) created on or after 2099-01-01.
 
   set-users-created-after-noop:
+    # Affects: users=0 repos=0 perms=0
     description: >-
       A far-future --created-after selects no users on the real instance:
       zero mutations, seeded state untouched.
@@ -905,6 +980,7 @@ cases:
     expectedMutations: 0
 
   set-repos-created-after-noop:
+    # Affects: users=0 repos=0 perms=0
     description: >-
       A far-future --repos-created-after selects no repos on the real
       instance: zero mutations, seeded state untouched.
@@ -919,6 +995,7 @@ cases:
     expectedMutations: 0
 
   sync-saml-orgs-dry-run:
+    # Affects: users=0 repos=0 perms=0
     description: >-
       Standalone organization sync dry run. Also pins the explicit
       --env-file flag against its default value.
@@ -930,6 +1007,7 @@ cases:
       - Dry run complete
 
   set-users-sync-saml-orgs-dry-run:
+    # Affects: users=0 repos=0 perms=0
     description: >-
       Combined permission + organization sync dispatch, user-scoped, dry run
       only.
@@ -941,6 +1019,7 @@ cases:
       - Dry run complete
 
   set-full-sync-saml-orgs-dry-run:
+    # Affects: users=0 repos=0 perms=0
     description: >-
       Combined permission + organization sync dispatch, full mode, dry run
       only. The dry-run before-capture scans every user (measured ~395 s),
@@ -953,6 +1032,7 @@ cases:
       - Dry run complete
 
   set-created-after-sync-saml-orgs-dry-run:
+    # Affects: users=0 repos=0 perms=0
     description: >-
       Combined permission + organization sync dispatch, created-after mode
       (far-future date selects no users), dry run only.
@@ -964,6 +1044,7 @@ cases:
       - Dry run complete
 
   set-repos-sync-saml-orgs-dry-run:
+    # Affects: users=0 repos=0 perms=0
     description: >-
       Combined permission + organization sync dispatch, repo-scoped, dry run
       only. The dry-run before-capture scans every user even for one repo
@@ -976,6 +1057,7 @@ cases:
       - Dry run complete
 
   set-users-without-perms-sync-saml-orgs-dry-run:
+    # Affects: users=0 repos=0 perms=0
     description: >-
       Combined permission + organization sync dispatch,
       users-without-explicit-perms mode, dry run only. The unfiltered
@@ -989,6 +1071,7 @@ cases:
       - Dry run complete
 
   set-repos-created-after-sync-saml-orgs-dry-run:
+    # Affects: users=0 repos=0 perms=0
     description: >-
       Combined permission + organization sync dispatch, repos-created-after
       mode (far-future date selects no repos), dry run only.
@@ -1000,6 +1083,7 @@ cases:
       - Dry run complete
 
   sync-saml-orgs-apply:
+    # Affects: users=0 repos=0 perms=0 (converges org memberships only; no repo perms)
     description: >-
       Org membership sync converges to SAML group data and validates its own
       outcome; it is safe to re-run.
@@ -1012,6 +1096,7 @@ cases:
 
   # ── Live + performance: timed, measured runs (slowest) ──
   full-overwrite-unions:
+    # Affects: users=3 repos=2 perms=5
     description: >-
       Full set mode unions users across rules, overwrites mapped repos, and
       leaves unmapped repos alone. Pending bindIDs ride along: one on a
@@ -1030,6 +1115,7 @@ cases:
     expectedMutations: 2
 
   get-user-baseline:
+    # Affects: users=0 repos=0 perms=0
     description: Timed read-only baseline of one user's explicit grants.
     modes:
       - performance
@@ -1037,6 +1123,7 @@ cases:
     expectedExitCode: 0
 
   get-full-snapshot:
+    # Affects: users=0 repos=0 perms=0
     description: >-
       Bare get captures the full instance snapshot. Locally it proves get
       never mutates; on the instance it is the timed full 10k-user capture,
@@ -1049,6 +1136,7 @@ cases:
     expectedMutations: 0
 
   get-repos-without-explicit-perms:
+    # Affects: users=0 repos=0 perms=0
     description: >-
       get --repos-without-explicit-perms scopes the snapshot to repos with
       no explicit grants. Requires the full before-snapshot, so on the
@@ -1062,6 +1150,7 @@ cases:
     expectedMutations: 0
 
   set-repos-without-perms-sync-saml-orgs-dry-run:
+    # Affects: users=0 repos=0 perms=0
     description: >-
       Combined permission + organization sync dispatch,
       repos-without-explicit-perms mode, dry run only. Needs the full
