@@ -19,8 +19,8 @@ Levels (each level runs only its own checks):
 
 --live and --performance optionally take a comma-delimited list of test
 names (substring match) to run a subset, e.g. --live full-overwrite-unions.
-Every check the filter skips logs a SKIP line, so the log always states
-which checks ran; a filter that matches no checks fails the run.
+The summary reports how many checks the filter skipped; a filter that
+matches no checks fails the run.
 
 Other commands:
 
@@ -829,11 +829,11 @@ class TestSuite:
         )
 
     def select(self, *names: str) -> bool:
-        """`test_selected`, plus visibility: skipped checks are logged and counted.
+        """`test_selected`, plus bookkeeping so filtering stays visible.
 
-        Gates every optional check, so the log always states which checks
-        ran (their ✓/✗ line) and which ones the filter skipped (a SKIP
-        line). `names[0]` is the check's canonical name.
+        Gates every optional check: matches are counted (a filter matching
+        nothing fails the run) and skips are tallied for the summary.
+        `names[0]` is the check's canonical name.
         """
         if self.test_selected(*names):
             if self.arguments.test_filter:
@@ -841,13 +841,12 @@ class TestSuite:
             return True
         if names[0] not in self.skipped_check_names:
             self.skipped_check_names.append(names[0])
-            log.info("SKIP [filter] %s", names[0])
         return False
 
     def log_test_filter(self) -> None:
         if self.arguments.test_filter:
             log.info(
-                "Test filter (substring match): %s — non-matching checks log a SKIP line.",
+                "Test filter (substring match): %s",
                 ", ".join(repr(token) for token in self.arguments.test_filter),
             )
 
@@ -2225,11 +2224,6 @@ class TestSuite:
         want_full_cycle = self.explicitly_selected("live: set --full", "full cycle")
         if want_full_cycle:
             self.filter_matched_count += 1
-        else:
-            log.info(
-                "SKIP [opt-in] live: set --full — instance-wide stress cycle; "
-                'run `uv run tests/run.py --live "full cycle"`'
-            )
         want_baseline = (
             want_user_cycle or want_full_cycle or self.select("live: get user baseline", "baseline")
         )
@@ -2684,8 +2678,8 @@ class TestSuite:
                 self.arguments.level,
                 False,
                 0.0,
-                f"filter {list(self.arguments.test_filter)} matched no checks — "
-                "the SKIP lines above list every available check name",
+                f"filter {list(self.arguments.test_filter)} matched none of the "
+                f"{len(self.skipped_check_names)} available checks",
             )
         log.info("\n%s", "=" * 72)
         passed = sum(1 for result in self.results if result.passed)
