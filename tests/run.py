@@ -1980,7 +1980,7 @@ class TestSuite:
             self.run_cli_case(
                 CliCase(
                     f"{label} [apply]",
-                    ("sync-saml-orgs", "--apply"),
+                    ("sync-saml-orgs", "--full", "--apply"),
                     0,
                     (ORGANIZATION_SYNC_VALIDATION_OK,),
                 ),

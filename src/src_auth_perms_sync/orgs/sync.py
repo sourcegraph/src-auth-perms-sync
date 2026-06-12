@@ -15,6 +15,7 @@ from typing import Any, cast
 import src_py_lib as src
 
 from ..permissions import apply as permissions_apply
+from ..permissions import command as permissions_command
 from ..shared import backups, run_context, saml_groups
 from ..shared import sourcegraph as shared_sourcegraph
 from ..shared import types as shared_types
@@ -256,6 +257,45 @@ def _load_scoped_organization_sync_state(
         before_snapshot=before_snapshot,
         plan=plan,
         expected_snapshot=expected_snapshot,
+    )
+
+
+def _load_scoped_users_for_filters(
+    client: src.SourcegraphClient,
+    *,
+    user_identifiers: tuple[str, ...],
+    users_without_explicit_perms: bool,
+    user_created_after: str | None,
+    parallelism: int,
+    explicit_permissions_batch_size: int,
+    saml_groups_attribute_name_by_config_id: dict[str, str],
+    worker_pool: ThreadPoolExecutor | None = None,
+) -> list[shared_types.ScopedSamlGroupUser]:
+    """Load and compact the users a standalone scoped org sync covers.
+
+    Reuses the get/set user-selection pipeline; accountData and each
+    user's org memberships ride along in the same queries.
+    """
+    users = permissions_command.load_selected_users(
+        client,
+        user_identifiers=user_identifiers,
+        users_without_explicit_perms=users_without_explicit_perms,
+        user_created_after=user_created_after,
+        parallelism=parallelism,
+        explicit_permissions_batch_size=explicit_permissions_batch_size,
+        include_account_data=True,
+        include_organizations=True,
+        worker_pool=worker_pool,
+    )
+    log.info("Querying auth providers from %s ...", client.endpoint)
+    providers = shared_sourcegraph.list_auth_providers(client)
+    attribute_names_by_provider = saml_groups.attribute_names_by_provider_key(
+        providers, saml_groups_attribute_name_by_config_id
+    )
+    return saml_groups.compact_scoped_saml_group_users(
+        users,
+        providers,
+        attribute_names_by_provider,
     )
 
 
@@ -569,6 +609,10 @@ def cmd_sync_saml_organizations(
     saml_groups_attribute_name_by_config_id: dict[str, str],
     do_backup: bool,
     command_data: run_context.CommandData | None = None,
+    user_identifiers: tuple[str, ...] = (),
+    users_without_explicit_perms: bool = False,
+    user_created_after: str | None = None,
+    explicit_permissions_batch_size: int = 50,
     worker_pool: ThreadPoolExecutor | None = None,
 ) -> None:
     """Create/update Sourcegraph orgs from discovered SAML groups.
@@ -580,26 +624,42 @@ def cmd_sync_saml_organizations(
     The `synced-` prefix marks tool ownership: only orgs carrying it are
     ever modified.
 
-    Two modes, matching the permission-sync mode of the same run:
+    Two modes:
 
-    - Full (standalone `sync-saml-orgs`, or after a full-overwrite set):
+    - Full (`sync-saml-orgs --full`, or after a full-overwrite set):
       converges every synced org to the complete user population,
       including emptying (but never deleting) synced orgs whose SAML
       group disappeared.
-    - Scoped (`command_data.scoped_saml_group_users` is set, after an
-      additive set): per-user additions and removals for exactly the
-      selected users; no other users or orgs are touched and no full
-      user stream or member pages are loaded.
+    - Scoped: per-user additions and removals for exactly the selected
+      users; no other users or orgs are touched and no full user stream
+      or member pages are loaded. The scope comes either from a preceding
+      additive set (`command_data.scoped_saml_group_users`) or from this
+      command's own user filters (`user_identifiers`,
+      `users_without_explicit_perms`, `user_created_after`).
     """
     resolved_command_data = command_data or run_context.CommandData()
     scoped_users = resolved_command_data.scoped_saml_group_users
+    user_filters_selected = (
+        bool(user_identifiers) or users_without_explicit_perms or user_created_after is not None
+    )
     with src.span(
         "cmd_sync_saml_organizations",
         dry_run=dry_run,
         parallelism=parallelism,
         do_backup=do_backup,
-        scoped=scoped_users is not None,
+        scoped=scoped_users is not None or user_filters_selected,
     ) as command_event:
+        if scoped_users is None and user_filters_selected:
+            scoped_users = _load_scoped_users_for_filters(
+                client,
+                user_identifiers=user_identifiers,
+                users_without_explicit_perms=users_without_explicit_perms,
+                user_created_after=user_created_after,
+                parallelism=parallelism,
+                explicit_permissions_batch_size=explicit_permissions_batch_size,
+                saml_groups_attribute_name_by_config_id=(saml_groups_attribute_name_by_config_id),
+                worker_pool=worker_pool,
+            )
         if scoped_users is not None:
             sync_state = _load_scoped_organization_sync_state(
                 client,

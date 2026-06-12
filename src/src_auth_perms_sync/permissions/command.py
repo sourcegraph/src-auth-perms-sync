@@ -274,7 +274,7 @@ def cmd_get(
         cmd_event["external_service_count"] = len(services)
         include_user_account_data = _providers_need_saml_account_data(raw_providers)
 
-        users = _load_get_users(
+        users = load_selected_users(
             client,
             user_identifiers=user_identifiers,
             users_without_explicit_perms=users_without_explicit_perms,
@@ -394,7 +394,7 @@ def cmd_get(
         )
 
 
-def _load_get_users(
+def load_selected_users(
     client: src.SourcegraphClient,
     *,
     user_identifiers: tuple[str, ...],
@@ -403,14 +403,21 @@ def _load_get_users(
     parallelism: int,
     explicit_permissions_batch_size: int,
     include_account_data: bool,
+    include_organizations: bool = False,
     worker_pool: ThreadPoolExecutor | None,
 ) -> list[shared_types.User]:
-    """Load the Sourcegraph users selected by get/set-compatible user filters."""
+    """Load the Sourcegraph users selected by the shared user filters.
+
+    Used by the get command and by the standalone scoped sync-saml-orgs
+    modes; `include_organizations` rides the users' org memberships along
+    in the same queries for scoped org sync.
+    """
     if user_identifiers:
         users = _resolve_user_identifiers(
             client,
             user_identifiers,
             include_account_data=include_account_data,
+            include_organizations=include_organizations,
         )
         if user_created_after is None:
             return users
@@ -463,19 +470,25 @@ def _load_get_users(
             client,
             candidates,
             include_account_data=include_account_data,
+            include_organizations=include_organizations,
             parallelism=parallelism,
             worker_pool=worker_pool,
         )
         log.info("Selected %d user(s) for get output.", len(users))
         return users
 
-    return _load_all_get_users(client, include_account_data=include_account_data)
+    return _load_all_get_users(
+        client,
+        include_account_data=include_account_data,
+        include_organizations=include_organizations,
+    )
 
 
 def _load_all_get_users(
     client: src.SourcegraphClient,
     *,
     include_account_data: bool,
+    include_organizations: bool = False,
 ) -> list[shared_types.User]:
     """Load all users for get output, with progress logs for large instances."""
     total_users = shared_sourcegraph.count_users(client)
@@ -495,6 +508,7 @@ def _load_all_get_users(
         shared_sourcegraph.list_users_streaming(
             client,
             include_account_data=include_account_data,
+            include_organizations=include_organizations,
         ),
         start=1,
     ):

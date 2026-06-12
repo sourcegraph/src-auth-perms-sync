@@ -435,7 +435,7 @@ cases:
     expectedOutput:
       - "unrecognized arguments: --sync-saml-orgs"
 
-  reject-sync-saml-orgs-created-after:
+  reject-bare-sync-saml-orgs:
     # scope:
     #   users: 0
     #   repos: 0
@@ -443,15 +443,19 @@ cases:
     # cost:
     #   bigO: O(1)
     #   note: parse-only -- no instance reads or writes
-    description: sync-saml-orgs does not take user filters.
+    description: >-
+      sync-saml-orgs requires an explicit mode: --full for a whole-instance
+      sync, or a user filter for a scoped sync.
     modes:
       - local
-    cliCommand: sync-saml-orgs --created-after 2099-01-01
+    cliCommand: sync-saml-orgs
     expectedExitCode: 2
     expectedOutput:
-      - unrecognized arguments
+      - >-
+        sync-saml-orgs requires one of --full, --users,
+        --users-without-explicit-perms, or --created-after
 
-  reject-sync-saml-orgs-users:
+  reject-sync-saml-orgs-full-and-users:
     # scope:
     #   users: 0
     #   repos: 0
@@ -459,15 +463,15 @@ cases:
     # cost:
     #   bigO: O(1)
     #   note: parse-only -- no instance reads or writes
-    description: sync-saml-orgs does not take a user list.
+    description: "--full means all users; combining it with a user filter is contradictory."
     modes:
       - local
-    cliCommand: sync-saml-orgs --users username_doesnt_exist_01
+    cliCommand: sync-saml-orgs --full --users username_doesnt_exist_01
     expectedExitCode: 2
     expectedOutput:
-      - "unrecognized arguments: --users"
+      - "choose at most one of --full, --users"
 
-  reject-sync-saml-orgs-full:
+  reject-sync-saml-orgs-full-and-created-after:
     # scope:
     #   users: 0
     #   repos: 0
@@ -475,13 +479,29 @@ cases:
     # cost:
     #   bigO: O(1)
     #   note: parse-only -- no instance reads or writes
-    description: "--full belongs to set; sync-saml-orgs does not accept it."
+    description: "--full means all users; combining it with --created-after is contradictory."
     modes:
       - local
-    cliCommand: sync-saml-orgs --full
+    cliCommand: sync-saml-orgs --full --created-after 2099-01-01
     expectedExitCode: 2
     expectedOutput:
-      - "unrecognized arguments: --full"
+      - "--full cannot be combined with --created-after"
+
+  reject-sync-saml-orgs-repos:
+    # scope:
+    #   users: 0
+    #   repos: 0
+    #   perms: 0
+    # cost:
+    #   bigO: O(1)
+    #   note: parse-only -- no instance reads or writes
+    description: sync-saml-orgs takes user filters, never repo filters.
+    modes:
+      - local
+    cliCommand: sync-saml-orgs --repos test-repo-49981
+    expectedExitCode: 2
+    expectedOutput:
+      - "unrecognized arguments: --repos"
 
   reject-sync-saml-orgs-restore-path:
     # scope:
@@ -1318,6 +1338,16 @@ cases:
     expectedMutations: 2
 
   set-users-sync-saml-orgs-scoped:
+    # scope:
+    #   users: 3
+    #   repos: 1
+    #   perms: 0
+    # cost:
+    #   bigO: O(1)
+    #   reads:
+    #     users: 1
+    #     orgLookups: 1
+    #   writes: 5 mutations
     description: >-
       Additive set --users with --sync-saml-orgs runs a SCOPED org sync:
       the selected user is added to the synced org their SAML group
@@ -1336,6 +1366,15 @@ cases:
     expectedMutations: 5
 
   set-users-sync-saml-orgs-noop:
+    # scope:
+    #   users: 3
+    #   repos: 1
+    #   perms: 1
+    # cost:
+    #   bigO: O(1)
+    #   reads:
+    #     users: 1
+    #   writes: none
     description: >-
       Scoped org sync is idempotent: with repo grants and synced org
       membership already converged, a set --users --sync-saml-orgs apply
@@ -1351,6 +1390,16 @@ cases:
     expectedMutations: 0
 
   sync-saml-orgs-full-cleanup:
+    # scope:
+    #   users: 3
+    #   repos: 1
+    #   perms: 0
+    # cost:
+    #   bigO: O(U)
+    #   reads:
+    #     users: all
+    #     orgMembers: all
+    #   writes: 4 mutations
     description: >-
       Standalone full org sync converges synced orgs both ways: creates the
       org a SAML group requires (cleaning up the creator's auto-membership)
@@ -1360,6 +1409,34 @@ cases:
       - local
     args:
       command: sync_saml_orgs
+      full: true
+      apply: true
+    expectedMutations: 4
+
+  sync-saml-orgs-users-scoped:
+    # scope:
+    #   users: 3
+    #   repos: 1
+    #   perms: 0
+    # cost:
+    #   bigO: O(1)
+    #   reads:
+    #     users: 1
+    #     orgLookups: 1
+    #   writes: 4 mutations
+    description: >-
+      Standalone scoped org sync via sync-saml-orgs --users: the selected
+      user is added to the synced org their SAML group requires (created
+      on demand, creator membership cleaned up) and removed from a synced
+      org their groups no longer justify; an out-of-scope member of that
+      org is untouched and repo permissions never change. create + add +
+      creator removal + stale removal = 4 mutations.
+    modes:
+      - local
+    args:
+      command: sync_saml_orgs
+      users:
+        - test_user_09991
       apply: true
     expectedMutations: 4
 
@@ -1600,11 +1677,11 @@ cases:
     #   writes: none
     #   note: streams every user's SAML account data
     description: >-
-      Standalone organization sync dry run. Also pins the explicit
+      Standalone full organization sync dry run. Also pins the explicit
       --env-file flag against its default value.
     modes:
       - live
-    cliCommand: sync-saml-orgs --env-file .env
+    cliCommand: sync-saml-orgs --full --env-file .env
     expectedExitCode: 0
     expectedOutput:
       - Dry run complete
@@ -1763,7 +1840,7 @@ cases:
       outcome; it is safe to re-run.
     modes:
       - live
-    cliCommand: sync-saml-orgs --apply
+    cliCommand: sync-saml-orgs --full --apply
     expectedExitCode: 0
     expectedOutput:
       - "VALIDATION OK: all target org memberships match"

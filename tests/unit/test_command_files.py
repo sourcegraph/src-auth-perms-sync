@@ -113,7 +113,7 @@ def run_cmd_get(
             "load_discovery",
             return_value=([make_auth_provider()], [make_external_service()], {}),
         ),
-        mock.patch.object(permissions_command, "_load_get_users", return_value=[]),
+        mock.patch.object(permissions_command, "load_selected_users", return_value=[]),
         mock.patch.object(
             permissions_command.permission_snapshot,
             "build_snapshot",
