@@ -1375,8 +1375,8 @@ class TestSuite:
         from tests.e2e.case_runner import case_cli_arguments, expected_exit_code
 
         label = f"{level} fixture: {case_name}"
-        if "cliCommand" not in case:
-            self.record(label, level, False, 0.0, f"{level} mode requires a cliCommand")
+        if "cliCommand" not in case and "args" not in case:
+            self.record(label, level, False, 0.0, f"{level} mode requires args or a cliCommand")
             return
         typed_case = cast("Any", case)
         arguments = tuple(
