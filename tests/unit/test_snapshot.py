@@ -448,17 +448,22 @@ class SnapshotTests(unittest.TestCase):
                 expected_users,
                 repo_names,
             )
-            with backups.run_artifacts_context(directory, "test-run"):
-                diff_path = permission_workflow.write_projected_snapshot_diff_file(
-                    directory / "maps.yaml",
-                    "test-run",
-                    before["endpoint"],
-                    "set-dry-run",
-                    before,
-                    after,
-                    expected_users,
-                    repo_names,
-                )
+            run_paths = backups.RunPaths(
+                timestamp="test-run",
+                artifacts_dir=directory,
+                endpoint_directory=directory,
+                maps_path=directory / "maps.yaml",
+                code_hosts_path=directory / "code-hosts.yaml",
+                auth_providers_path=directory / "auth-providers.yaml",
+                run_directory=directory,
+            )
+            diff_path = permission_workflow.write_projected_snapshot_diff_file(
+                run_paths,
+                before,
+                after,
+                expected_users,
+                repo_names,
+            )
 
             after_on_disk = json.loads(after_path.read_text())
             diff_on_disk = json.loads(diff_path.read_text())

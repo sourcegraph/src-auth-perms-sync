@@ -8,7 +8,7 @@ from collections.abc import Callable, Generator, Iterable, Sized
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Generic, TypeVar, cast
+from typing import Any, Generic, TypeVar, cast
 
 import src_py_lib as src
 
@@ -21,10 +21,18 @@ OutputValue = TypeVar("OutputValue")
 
 @dataclass(frozen=True)
 class CommandData:
-    """Instance data a command loaded and later commands may reuse."""
+    """Instance data a command loaded and later commands or callers may reuse.
+
+    `auth_provider_views` and `code_host_views` carry the same dicts the get
+    command writes to `auth-providers.yaml` and `code-hosts.yaml`, so module
+    callers receive discovery data without re-parsing files.
+    """
 
     auth_providers: list[shared_types.AuthProvider] | None = None
     saml_group_users: list[shared_types.SamlGroupUser] | None = None
+    auth_provider_views: list[dict[str, Any]] | None = None
+    code_host_views: list[dict[str, Any]] | None = None
+    maps_created: bool = False
 
 
 @dataclass(frozen=True)

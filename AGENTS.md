@@ -201,10 +201,16 @@ organization sync maps SAML groups to Sourcegraph org membership. Read
 CLI lives in `src/src_auth_perms_sync/`; invoke with `uv run src-auth-perms-sync`.
 Strict pyright covers the package. Root modules are entrypoints only:
 
-- `cli.py` — `main()`, arg parsing, owns the CLI description.
+- `cli.py` — `main()`, arg parsing, owns the CLI description. Module
+  wrappers (`Get`/`Set`/`Restore`/`SyncSamlOrgs`) return result dataclasses
+  and never install logging handlers; only `main()` runs CLI-mode logging.
 - `shared/` — cross-workflow helpers: Sourcegraph auth-provider/user list
   helpers, shared GraphQL operations and TypedDicts, site-config validation,
-  and SAML group parsing.
+  and SAML group parsing. `shared/backups.py` defines `RunPaths`: every
+  filesystem path for one run, resolved once at the edge
+  (`resolve_run_paths`) and threaded explicitly — never recompute paths
+  from cwd or globals below the edge, and honor `run_paths.write_files`
+  (False under `--no-files`) before any disk write.
 
 Business workflows live in packages:
 

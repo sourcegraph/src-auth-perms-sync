@@ -16,6 +16,7 @@ import io
 import json
 import shlex
 import sys
+import tempfile
 from collections.abc import Iterator, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -27,6 +28,7 @@ import yaml
 from src_py_lib.utils.config import config_options
 
 from src_auth_perms_sync import cli
+from src_auth_perms_sync.shared import backups
 from src_auth_perms_sync.shared import types as shared_types
 
 FIXTURES_DIR = Path(__file__).with_name("fixtures")
@@ -139,6 +141,9 @@ class FixtureRunResult:
     command_failure: str | None = None
     expected_errors: tuple[str, ...] = ()
     runner: str = "cli"  # "cli" (parsed argv) or "import" (programmatic Config)
+    # Files written under the run's temporary artifacts directory, relative
+    # to it. Empty when the run wrote nothing (e.g. under no_files).
+    artifact_file_names: tuple[str, ...] = ()
 
     @property
     def failure(self) -> str | None:
@@ -776,7 +781,9 @@ def cli_input_for_case(
     return cli.CliInput(command_name=command_name, config=config)
 
 
-def run_fixture_case(case_name: str, runner: str = "cli") -> FixtureRunResult:
+def run_fixture_case(
+    case_name: str, runner: str = "cli", *, no_files: bool = False
+) -> FixtureRunResult:
     case = load_e2e_cases()[case_name]
     case_dir = FIXTURES_DIR / case_name
     before_state = load_state(case_dir / "before.json")
@@ -787,26 +794,51 @@ def run_fixture_case(case_name: str, runner: str = "cli") -> FixtureRunResult:
     expected_state = FakeSourcegraphClient(load_state(expected_source)).export_state()
     client = FakeSourcegraphClient(before_state)
     command_failure: str | None = None
+    artifact_file_names: tuple[str, ...] = ()
 
-    try:
-        cli_input = cli_input_for_case(case, case_name, client.endpoint, runner)
-        # Local runs execute in-process against the in-memory fake, where
-        # client parallelism buys nothing and only adds scheduling
-        # nondeterminism — pin it to 1 regardless of the case's command
-        # line. Live/performance runs use the command line as written.
-        local_config = cli_input.config.model_copy(update={"parallelism": 1})
-        command = cli.resolve_command(cli_input.command_name, local_config)
-        with ThreadPoolExecutor(max_workers=local_config.parallelism) as worker_pool:
-            cli.run_command(
-                local_config,
-                command,
-                cast(src.SourcegraphClient, client),
-                worker_pool,
+    # Route run artifacts (snapshots, maps copies, generated maps.yaml) into
+    # a per-case temporary directory so local test runs never pollute the
+    # repo's ./src-auth-perms-sync-runs tree; the directory is removed when
+    # the case finishes.
+    with tempfile.TemporaryDirectory(prefix="src-auth-perms-sync-case-") as temp_directory:
+        artifacts_dir = Path(temp_directory)
+        try:
+            cli_input = cli_input_for_case(case, case_name, client.endpoint, runner)
+            # Local runs execute in-process against the in-memory fake, where
+            # client parallelism buys nothing and only adds scheduling
+            # nondeterminism — pin it to 1 regardless of the case's command
+            # line. Live/performance runs use the command line as written.
+            config_updates: dict[str, object] = {"parallelism": 1}
+            if no_files:
+                config_updates["no_files"] = True
+            local_config = cli_input.config.model_copy(update=config_updates)
+            command = cli.resolve_command(cli_input.command_name, local_config)
+            run_paths = backups.resolve_run_paths(
+                endpoint=client.endpoint,
+                command_artifact_name=command.artifact_name,
+                artifacts_dir=artifacts_dir,
+                maps_path=local_config.maps_path,
+                write_files=not local_config.no_files,
             )
-    except SystemExit as exception:
-        command_failure = f"SystemExit: {exception.code!r}"
-    except Exception as exception:
-        command_failure = f"{type(exception).__name__}: {exception}"
+            with ThreadPoolExecutor(max_workers=local_config.parallelism) as worker_pool:
+                cli.run_command(
+                    local_config,
+                    command,
+                    cast(src.SourcegraphClient, client),
+                    run_paths,
+                    worker_pool,
+                )
+        except SystemExit as exception:
+            command_failure = f"SystemExit: {exception.code!r}"
+        except Exception as exception:
+            command_failure = f"{type(exception).__name__}: {exception}"
+        artifact_file_names = tuple(
+            sorted(
+                str(path.relative_to(artifacts_dir))
+                for path in artifacts_dir.rglob("*")
+                if path.is_file()
+            )
+        )
 
     actual_state = client.export_state()
     return FixtureRunResult(
@@ -824,6 +856,7 @@ def run_fixture_case(case_name: str, runner: str = "cli") -> FixtureRunResult:
         command_failure=command_failure,
         expected_errors=tuple(case.get("expectedErrors", [])),
         runner=runner,
+        artifact_file_names=artifact_file_names,
     )
 
 

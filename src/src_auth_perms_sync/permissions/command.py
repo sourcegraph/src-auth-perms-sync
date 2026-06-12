@@ -31,7 +31,6 @@ from .workflow import (
     load_repository_candidates_by_names,
     load_repository_candidates_created_on_or_after,
     parse_cli_date,
-    snapshot_path,
     sourcegraph_datetime_filter,
     user_ids_created_on_or_after,
     write_maps_backup,
@@ -214,9 +213,7 @@ def _filter_get_snapshot_to_repositories_without_explicit_perms(
 
 def cmd_get(
     client: src.SourcegraphClient,
-    code_hosts_path: Path,
-    auth_providers_path: Path,
-    maps_path: Path,
+    run_paths: backups.RunPaths,
     *,
     user_identifiers: tuple[str, ...],
     users_without_explicit_perms: bool,
@@ -235,9 +232,9 @@ def cmd_get(
 ) -> run_context.CommandData:
     """Refresh the generated discovery YAML files.
 
-    `code_hosts_path` receives Sourcegraph code host connection configs,
-    `auth_providers_path` receives auth provider configs, and `maps_path`
-    is used for the generated get-snapshot name.
+    `run_paths.code_hosts_path` receives Sourcegraph code host connection
+    configs, `run_paths.auth_providers_path` receives auth provider configs,
+    and `run_paths.maps_path` names the maps file recorded in the snapshot.
 
     `saml_groups_attribute_name_by_config_id` is the per-`configID`
     override map produced by `validate_site_config`; non-default
@@ -322,12 +319,15 @@ def cmd_get(
             for provider in raw_providers
         ]
 
-        permissions_maps.dump_code_hosts_yaml(code_hosts_path, services)
-        permissions_maps.dump_auth_providers_yaml(auth_providers_path, providers)
-        cmd_event["code_hosts_path"] = str(code_hosts_path)
-        cmd_event["auth_providers_path"] = str(auth_providers_path)
-        cmd_event["maps_path"] = str(maps_path)
-        log.info("Wrote %s and %s", code_hosts_path, auth_providers_path)
+        if run_paths.write_files:
+            permissions_maps.dump_code_hosts_yaml(run_paths.code_hosts_path, services)
+            permissions_maps.dump_auth_providers_yaml(run_paths.auth_providers_path, providers)
+            log.info("Wrote %s and %s", run_paths.code_hosts_path, run_paths.auth_providers_path)
+        else:
+            log.info("Skipping code-hosts.yaml and auth-providers.yaml because --no-files is set.")
+        cmd_event["code_hosts_path"] = str(run_paths.code_hosts_path)
+        cmd_event["auth_providers_path"] = str(run_paths.auth_providers_path)
+        cmd_event["maps_path"] = str(run_paths.maps_path)
 
         if do_backup:
             selected_repository_ids = _load_get_repository_filter_ids(
@@ -335,13 +335,12 @@ def cmd_get(
                 repository_names=repository_names,
                 repository_created_after=repository_created_after,
             )
-            timestamp = backups.backup_timestamp()
             before_snapshot = permission_snapshot.build_snapshot(
                 client,
                 users,
                 parallelism,
                 bind_id_mode,
-                maps_path,
+                run_paths.maps_path,
                 expected_user_count=len(users),
                 explicit_permissions_batch_size=explicit_permissions_batch_size,
                 worker_pool=worker_pool,
@@ -352,18 +351,22 @@ def cmd_get(
                     client,
                     before_snapshot,
                 )
-            before_path = snapshot_path(maps_path, timestamp, client.endpoint, "get", "before")
-            permission_snapshot.write_snapshot(before_path, before_snapshot)
-            cmd_event["before_snapshot_path"] = str(before_path)
-            maps_backup_path = write_maps_backup(maps_path, timestamp, client.endpoint, "get")
-            if maps_backup_path is not None:
-                cmd_event["maps_backup_path"] = str(maps_backup_path)
-            log.info(
-                "Wrote before-snapshot: %s (%d repo(s) with explicit grants, %d total grant(s)).",
-                before_path,
-                before_snapshot["stats"]["repos_with_explicit_grants"],
-                before_snapshot["stats"]["total_grants"],
-            )
+            if run_paths.write_files:
+                before_path = run_paths.artifact_path("before")
+                permission_snapshot.write_snapshot(before_path, before_snapshot)
+                cmd_event["before_snapshot_path"] = str(before_path)
+                maps_backup_path = write_maps_backup(run_paths.maps_path, run_paths)
+                if maps_backup_path is not None:
+                    cmd_event["maps_backup_path"] = str(maps_backup_path)
+                log.info(
+                    "Wrote before-snapshot: %s "
+                    "(%d repo(s) with explicit grants, %d total grant(s)).",
+                    before_path,
+                    before_snapshot["stats"]["repos_with_explicit_grants"],
+                    before_snapshot["stats"]["total_grants"],
+                )
+            else:
+                log.info("Skipping get before-snapshot and maps backup because --no-files is set.")
         else:
             log.info("Skipping get before-snapshot and maps backup because --no-backup is set.")
         saml_group_users = (
@@ -386,6 +389,8 @@ def cmd_get(
         return run_context.CommandData(
             auth_providers=raw_providers,
             saml_group_users=saml_group_users,
+            auth_provider_views=providers,
+            code_host_views=services,
         )
 
 
@@ -578,8 +583,9 @@ def _log_user_planning_progress(
 
 def cmd_set(
     client: src.SourcegraphClient,
-    input_path: Path,
-    options: permission_types.SetCommandOptions,
+    run_paths: backups.RunPaths,
+    set_options: permission_types.SetCommandOptions,
+    *,
     dry_run: bool,
     parallelism: int,
     explicit_permissions_batch_size: int,
@@ -590,10 +596,11 @@ def cmd_set(
     worker_pool: ThreadPoolExecutor | None = None,
 ) -> run_context.CommandData:
     """Dispatch the selected set mode."""
+    options = set_options
     if options.mode == "full":
         return permissions_full_set.cmd_set_full(
             client,
-            input_path,
+            run_paths,
             options.user_created_after,
             repository_names=(),
             repositories_without_explicit_perms=False,
@@ -611,7 +618,7 @@ def cmd_set(
         assert options.repository_names
         return permissions_full_set.cmd_set_full(
             client,
-            input_path,
+            run_paths,
             None,
             repository_names=options.repository_names,
             repositories_without_explicit_perms=False,
@@ -628,7 +635,7 @@ def cmd_set(
     if options.mode == "repos_without_explicit_perms":
         return permissions_full_set.cmd_set_full(
             client,
-            input_path,
+            run_paths,
             None,
             repository_names=(),
             repositories_without_explicit_perms=True,
@@ -646,7 +653,7 @@ def cmd_set(
         assert options.repository_created_after is not None
         return permissions_full_set.cmd_set_full(
             client,
-            input_path,
+            run_paths,
             None,
             repository_names=(),
             repositories_without_explicit_perms=False,
@@ -664,7 +671,7 @@ def cmd_set(
         assert options.user_identifiers
         return cmd_set_additive_users(
             client,
-            input_path,
+            run_paths,
             options.user_identifiers,
             options.user_created_after,
             dry_run,
@@ -677,7 +684,7 @@ def cmd_set(
     if options.mode == "users_without_explicit_perms":
         return cmd_set_additive_users_without_explicit_perms(
             client,
-            input_path,
+            run_paths,
             options.user_created_after,
             dry_run,
             parallelism,
@@ -691,7 +698,7 @@ def cmd_set(
         assert options.user_created_after is not None
         return cmd_set_additive_created_after(
             client,
-            input_path,
+            run_paths,
             options.user_created_after,
             dry_run,
             parallelism,
@@ -705,7 +712,7 @@ def cmd_set(
 
 def cmd_set_additive_users(
     client: src.SourcegraphClient,
-    input_path: Path,
+    run_paths: backups.RunPaths,
     user_identifiers: tuple[str, ...],
     user_created_after: str | None,
     dry_run: bool,
@@ -718,16 +725,16 @@ def cmd_set_additive_users(
     """Add missing mapped permissions for resolved users."""
     with src.span(
         "cmd_set_additive_users",
-        input_path=str(input_path),
+        input_path=str(run_paths.maps_path),
         user_identifiers=user_identifiers,
         user_created_after=user_created_after,
         dry_run=dry_run,
         parallelism=parallelism,
         do_backup=do_backup,
     ):
-        mapping_rules = load_mapping_rules(input_path)
+        mapping_rules = load_mapping_rules(run_paths.maps_path)
         if not mapping_rules:
-            log.warning("No maps defined in %s — nothing to do.", input_path)
+            log.warning("No maps defined in %s — nothing to do.", run_paths.maps_path)
             return run_context.CommandData()
         include_user_emails = permissions_mapping.mapping_rules_need_user_emails(mapping_rules)
         include_user_account_data = permissions_mapping.mapping_rules_need_saml_account_data(
@@ -769,14 +776,13 @@ def cmd_set_additive_users(
         if not matching_rules:
             _run_additive_apply(
                 client,
-                input_path,
+                run_paths,
                 users,
                 [],
                 dry_run=dry_run,
                 parallelism=parallelism,
                 bind_id_mode=bind_id_mode,
                 do_backup=do_backup,
-                command_name="set-add-users",
                 worker_pool=worker_pool,
             )
             return run_context.CommandData(auth_providers=context.providers)
@@ -814,14 +820,13 @@ def cmd_set_additive_users(
             )
         _run_additive_apply(
             client,
-            input_path,
+            run_paths,
             users,
             additions,
             dry_run=dry_run,
             parallelism=parallelism,
             bind_id_mode=bind_id_mode,
             do_backup=do_backup,
-            command_name="set-add-users",
             existing_repos_by_user_id=existing_repos_by_user_id,
             worker_pool=worker_pool,
         )
@@ -830,7 +835,7 @@ def cmd_set_additive_users(
 
 def cmd_set_additive_users_without_explicit_perms(
     client: src.SourcegraphClient,
-    input_path: Path,
+    run_paths: backups.RunPaths,
     user_created_after: str | None,
     dry_run: bool,
     parallelism: int,
@@ -848,15 +853,15 @@ def cmd_set_additive_users_without_explicit_perms(
         )
     with src.span(
         "cmd_set_additive_users_without_explicit_perms",
-        input_path=str(input_path),
+        input_path=str(run_paths.maps_path),
         user_created_after=user_created_after,
         dry_run=dry_run,
         parallelism=parallelism,
         do_backup=do_backup,
     ):
-        mapping_rules = load_mapping_rules(input_path)
+        mapping_rules = load_mapping_rules(run_paths.maps_path)
         if not mapping_rules:
-            log.warning("No maps defined in %s — nothing to do.", input_path)
+            log.warning("No maps defined in %s — nothing to do.", run_paths.maps_path)
             return run_context.CommandData()
         context = load_mapping_context_discovery(
             client,
@@ -919,14 +924,13 @@ def cmd_set_additive_users_without_explicit_perms(
         if not users:
             _run_additive_apply(
                 client,
-                input_path,
+                run_paths,
                 users,
                 [],
                 dry_run=dry_run,
                 parallelism=parallelism,
                 bind_id_mode=bind_id_mode,
                 do_backup=do_backup,
-                command_name="set-add-users-without-explicit-perms",
                 worker_pool=worker_pool,
             )
             return run_context.CommandData(auth_providers=context.providers)
@@ -940,14 +944,13 @@ def cmd_set_additive_users_without_explicit_perms(
         if not matching_rules:
             _run_additive_apply(
                 client,
-                input_path,
+                run_paths,
                 users,
                 [],
                 dry_run=dry_run,
                 parallelism=parallelism,
                 bind_id_mode=bind_id_mode,
                 do_backup=do_backup,
-                command_name="set-add-users-without-explicit-perms",
                 worker_pool=worker_pool,
             )
             return run_context.CommandData(auth_providers=context.providers)
@@ -994,14 +997,13 @@ def cmd_set_additive_users_without_explicit_perms(
         )
         _run_additive_apply(
             client,
-            input_path,
+            run_paths,
             users,
             additions,
             dry_run=dry_run,
             parallelism=parallelism,
             bind_id_mode=bind_id_mode,
             do_backup=do_backup,
-            command_name="set-add-users-without-explicit-perms",
             worker_pool=worker_pool,
         )
         return run_context.CommandData(auth_providers=context.providers)
@@ -1009,7 +1011,7 @@ def cmd_set_additive_users_without_explicit_perms(
 
 def cmd_set_additive_created_after(
     client: src.SourcegraphClient,
-    input_path: Path,
+    run_paths: backups.RunPaths,
     user_created_after: str,
     dry_run: bool,
     parallelism: int,
@@ -1024,15 +1026,15 @@ def cmd_set_additive_created_after(
     )
     with src.span(
         "cmd_set_additive_created_after",
-        input_path=str(input_path),
+        input_path=str(run_paths.maps_path),
         user_created_after=user_created_after,
         dry_run=dry_run,
         parallelism=parallelism,
         do_backup=do_backup,
     ):
-        mapping_rules = load_mapping_rules(input_path)
+        mapping_rules = load_mapping_rules(run_paths.maps_path)
         if not mapping_rules:
-            log.warning("No maps defined in %s — nothing to do.", input_path)
+            log.warning("No maps defined in %s — nothing to do.", run_paths.maps_path)
             return run_context.CommandData()
         context = load_mapping_context_discovery(
             client,
@@ -1065,14 +1067,13 @@ def cmd_set_additive_created_after(
         if not users:
             _run_additive_apply(
                 client,
-                input_path,
+                run_paths,
                 users,
                 [],
                 dry_run=dry_run,
                 parallelism=parallelism,
                 bind_id_mode=bind_id_mode,
                 do_backup=do_backup,
-                command_name="set-add-users-created-after",
                 worker_pool=worker_pool,
             )
             return run_context.CommandData(auth_providers=context.providers)
@@ -1086,14 +1087,13 @@ def cmd_set_additive_created_after(
         if not matching_rules:
             _run_additive_apply(
                 client,
-                input_path,
+                run_paths,
                 users,
                 [],
                 dry_run=dry_run,
                 parallelism=parallelism,
                 bind_id_mode=bind_id_mode,
                 do_backup=do_backup,
-                command_name="set-add-users-created-after",
                 worker_pool=worker_pool,
             )
             return run_context.CommandData(auth_providers=context.providers)
@@ -1131,14 +1131,13 @@ def cmd_set_additive_created_after(
             )
         _run_additive_apply(
             client,
-            input_path,
+            run_paths,
             users,
             additions,
             dry_run=dry_run,
             parallelism=parallelism,
             bind_id_mode=bind_id_mode,
             do_backup=do_backup,
-            command_name="set-add-users-created-after",
             existing_repos_by_user_id=existing_repos_by_user_id,
             worker_pool=worker_pool,
         )
@@ -1275,21 +1274,15 @@ def _plan_additions_for_user(
     return additions
 
 
-def _additive_run_label(command_name: str, dry_run: bool) -> str:
-    return f"{command_name}-dry-run" if dry_run else f"{command_name}-apply"
-
-
 def _write_additive_initial_artifacts(
     client: src.SourcegraphClient,
-    input_path: Path,
+    run_paths: backups.RunPaths,
     snapshot_users: list[permission_snapshot.SnapshotUser],
     additions: list[permissions_apply.PermissionAddition],
-    timestamp: str,
     *,
     dry_run: bool,
     parallelism: int,
     bind_id_mode: str,
-    command_name: str,
     existing_repos_by_user_id: dict[str, list[permission_types.Repository]] | None = None,
     worker_pool: ThreadPoolExecutor | None = None,
 ) -> permission_snapshot.UserScopedSnapshot:
@@ -1300,7 +1293,7 @@ def _write_additive_initial_artifacts(
             snapshot_users,
             parallelism,
             bind_id_mode,
-            input_path,
+            run_paths.maps_path,
             worker_pool=worker_pool,
         )
     else:
@@ -1309,33 +1302,30 @@ def _write_additive_initial_artifacts(
             snapshot_users,
             existing_repos_by_user_id,
             bind_id_mode,
-            input_path,
+            run_paths.maps_path,
         )
-    run_label = _additive_run_label(command_name, dry_run)
-    before_path = snapshot_path(input_path, timestamp, client.endpoint, run_label, "before")
-    after_path = snapshot_path(input_path, timestamp, client.endpoint, run_label, "after")
-    permission_snapshot.write_user_scoped_snapshot(before_path, before_snapshot)
     after_planned_snapshot = _user_scoped_snapshot_with_additions(
         before_snapshot,
         additions,
     )
-    diff_path: Path | None = None
-    if dry_run or not additions:
-        permission_snapshot.write_user_scoped_snapshot(after_path, after_planned_snapshot)
-        diff_path = write_user_scoped_snapshot_diff_file(
-            input_path,
-            timestamp,
-            client.endpoint,
-            run_label,
-            before_snapshot,
-            after_planned_snapshot,
-        )
-    maps_backup_path = write_maps_backup(input_path, timestamp, client.endpoint, run_label)
-    log.info("Wrote scoped before-snapshot: %s", before_path)
-    if dry_run or not additions:
-        log.info("Wrote scoped after-snapshot: %s diff=%s", after_path, diff_path)
-    if maps_backup_path is not None:
-        log.info("Wrote maps backup for additive run: %s", maps_backup_path)
+    if run_paths.write_files:
+        before_path = run_paths.artifact_path("before")
+        permission_snapshot.write_user_scoped_snapshot(before_path, before_snapshot)
+        log.info("Wrote scoped before-snapshot: %s", before_path)
+        if dry_run or not additions:
+            after_path = run_paths.artifact_path("after")
+            permission_snapshot.write_user_scoped_snapshot(after_path, after_planned_snapshot)
+            diff_path = write_user_scoped_snapshot_diff_file(
+                run_paths,
+                before_snapshot,
+                after_planned_snapshot,
+            )
+            log.info("Wrote scoped after-snapshot: %s diff=%s", after_path, diff_path)
+        maps_backup_path = write_maps_backup(run_paths.maps_path, run_paths)
+        if maps_backup_path is not None:
+            log.info("Wrote maps backup for additive run: %s", maps_backup_path)
+    else:
+        log.info("Skipping additive snapshot and maps backup files because --no-files is set.")
     log.info(
         "Diff (before → planned after):\n%s",
         permission_snapshot.render_user_scoped_diff(before_snapshot, after_planned_snapshot),
@@ -1397,15 +1387,13 @@ def _apply_additive_permissions(
 
 def _finish_additive_apply_with_backup(
     client: src.SourcegraphClient,
-    input_path: Path,
+    run_paths: backups.RunPaths,
     snapshot_users: list[permission_snapshot.SnapshotUser],
     before_snapshot: permission_snapshot.UserScopedSnapshot,
     additions: list[permissions_apply.PermissionAddition],
-    timestamp: str,
     *,
     parallelism: int,
     bind_id_mode: str,
-    command_name: str,
     worker_pool: ThreadPoolExecutor | None = None,
 ) -> None:
     """Capture and validate additive post-apply state."""
@@ -1414,26 +1402,20 @@ def _finish_additive_apply_with_backup(
         snapshot_users,
         parallelism,
         bind_id_mode,
-        input_path,
+        run_paths.maps_path,
         worker_pool=worker_pool,
     )
-    after_path = snapshot_path(
-        input_path,
-        timestamp,
-        client.endpoint,
-        f"{command_name}-apply",
-        "after",
-    )
-    permission_snapshot.write_user_scoped_snapshot(after_path, after_snapshot)
-    diff_path = write_user_scoped_snapshot_diff_file(
-        input_path,
-        timestamp,
-        client.endpoint,
-        f"{command_name}-apply",
-        before_snapshot,
-        after_snapshot,
-    )
-    log.info("Wrote scoped after-snapshot: %s diff=%s", after_path, diff_path)
+    if run_paths.write_files:
+        after_path = run_paths.artifact_path("after")
+        permission_snapshot.write_user_scoped_snapshot(after_path, after_snapshot)
+        diff_path = write_user_scoped_snapshot_diff_file(
+            run_paths,
+            before_snapshot,
+            after_snapshot,
+        )
+        log.info("Wrote scoped after-snapshot: %s diff=%s", after_path, diff_path)
+    else:
+        log.info("Skipping scoped after-snapshot files because --no-files is set.")
     log.info(
         "Diff (before → after):\n%s",
         permission_snapshot.render_user_scoped_diff(before_snapshot, after_snapshot),
@@ -1454,7 +1436,7 @@ def _raise_for_failed_additive(mutations: shared_types.MutationCounts) -> None:
 
 def _run_additive_apply(
     client: src.SourcegraphClient,
-    input_path: Path,
+    run_paths: backups.RunPaths,
     users: list[shared_types.User],
     additions: list[permissions_apply.PermissionAddition],
     *,
@@ -1462,7 +1444,6 @@ def _run_additive_apply(
     parallelism: int,
     bind_id_mode: str,
     do_backup: bool,
-    command_name: str,
     existing_repos_by_user_id: dict[str, list[permission_types.Repository]] | None = None,
     worker_pool: ThreadPoolExecutor | None = None,
 ) -> None:
@@ -1473,19 +1454,15 @@ def _run_additive_apply(
 
     snapshot_users = _snapshot_users_from_users(users)
     before_snapshot: permission_snapshot.UserScopedSnapshot | None = None
-    timestamp: str | None = None
     if do_backup:
-        timestamp = backups.backup_timestamp()
         before_snapshot = _write_additive_initial_artifacts(
             client,
-            input_path,
+            run_paths,
             snapshot_users,
             additions,
-            timestamp,
             dry_run=dry_run,
             parallelism=parallelism,
             bind_id_mode=bind_id_mode,
-            command_name=command_name,
             existing_repos_by_user_id=existing_repos_by_user_id,
             worker_pool=worker_pool,
         )
@@ -1503,17 +1480,14 @@ def _run_additive_apply(
 
     if do_backup:
         assert before_snapshot is not None
-        assert timestamp is not None
         _finish_additive_apply_with_backup(
             client,
-            input_path,
+            run_paths,
             snapshot_users,
             before_snapshot,
             additions,
-            timestamp,
             parallelism=parallelism,
             bind_id_mode=bind_id_mode,
-            command_name=command_name,
             worker_pool=worker_pool,
         )
 
@@ -1615,7 +1589,9 @@ def _validate_additive_after(
 
 def cmd_restore_user_scoped(
     client: src.SourcegraphClient,
-    snapshot_path: Path,
+    restore_path: Path,
+    run_paths: backups.RunPaths,
+    *,
     dry_run: bool,
     parallelism: int,
     bind_id_mode: str,
@@ -1625,18 +1601,21 @@ def cmd_restore_user_scoped(
     """Restore explicit permissions for the users present in a scoped snapshot."""
     permissions_restore.cmd_restore_user_scoped(
         client,
-        snapshot_path,
-        dry_run,
-        parallelism,
-        bind_id_mode,
-        do_backup,
+        restore_path,
+        run_paths,
+        dry_run=dry_run,
+        parallelism=parallelism,
+        bind_id_mode=bind_id_mode,
+        do_backup=do_backup,
         worker_pool=worker_pool,
     )
 
 
 def cmd_restore(
     client: src.SourcegraphClient,
-    snapshot_path: Path,
+    restore_path: Path,
+    run_paths: backups.RunPaths,
+    *,
     dry_run: bool,
     parallelism: int,
     explicit_permissions_batch_size: int,
@@ -1647,11 +1626,12 @@ def cmd_restore(
     """Restore explicit-permissions state on the instance to match a snapshot."""
     permissions_restore.cmd_restore(
         client,
-        snapshot_path,
-        dry_run,
-        parallelism,
-        explicit_permissions_batch_size,
-        bind_id_mode,
-        do_backup,
-        worker_pool,
+        restore_path,
+        run_paths,
+        dry_run=dry_run,
+        parallelism=parallelism,
+        explicit_permissions_batch_size=explicit_permissions_batch_size,
+        bind_id_mode=bind_id_mode,
+        do_backup=do_backup,
+        worker_pool=worker_pool,
     )

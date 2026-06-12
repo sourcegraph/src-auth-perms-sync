@@ -134,15 +134,13 @@ def _log_organization_sync_plan(sync_state: _OrganizationSyncState) -> None:
 
 
 def _write_organization_snapshot_pair(
-    timestamp: str,
-    endpoint: str,
-    command_name: str,
+    run_paths: backups.RunPaths,
     before_snapshot: organization_types.OrganizationSnapshot,
     after_snapshot: organization_types.OrganizationSnapshot,
 ) -> tuple[Path, Path, Path]:
-    before_path = _organization_snapshot_path(timestamp, endpoint, command_name, "before")
-    after_path = _organization_snapshot_path(timestamp, endpoint, command_name, "after")
-    diff_path = _organization_snapshot_path(timestamp, endpoint, command_name, "diff")
+    before_path = _organization_snapshot_path(run_paths, "before")
+    after_path = _organization_snapshot_path(run_paths, "after")
+    diff_path = _organization_snapshot_path(run_paths, "diff")
     _write_organization_snapshot(before_path, before_snapshot)
     _write_organization_snapshot(after_path, after_snapshot)
     _write_organization_snapshot_diff(diff_path, before_snapshot, after_snapshot)
@@ -150,16 +148,17 @@ def _write_organization_snapshot_pair(
 
 
 def _finish_organization_dry_run(
-    endpoint: str,
-    timestamp: str,
+    run_paths: backups.RunPaths,
     sync_state: _OrganizationSyncState,
     do_backup: bool,
 ) -> None:
-    if do_backup:
+    if not do_backup:
+        log.info("Skipped dry-run org snapshots because --no-backup was set.")
+    elif not run_paths.write_files:
+        log.info("Skipping dry-run org snapshots because --no-files is set.")
+    else:
         before_path, after_path, diff_path = _write_organization_snapshot_pair(
-            timestamp,
-            endpoint,
-            "sync-saml-orgs-dry-run",
+            run_paths,
             sync_state.before_snapshot,
             sync_state.expected_snapshot,
         )
@@ -169,22 +168,17 @@ def _finish_organization_dry_run(
             after_path,
             diff_path,
         )
-    else:
-        log.info("Skipped dry-run org snapshots because --no-backup was set.")
     log.info("Dry run complete. Pass --apply to mutate organization membership.")
 
 
 def _write_organization_apply_before_snapshot(
-    endpoint: str,
-    timestamp: str,
+    run_paths: backups.RunPaths,
     before_snapshot: organization_types.OrganizationSnapshot,
-) -> Path:
-    before_path = _organization_snapshot_path(
-        timestamp,
-        endpoint,
-        "sync-saml-orgs-apply",
-        "before",
-    )
+) -> Path | None:
+    if not run_paths.write_files:
+        log.info("Skipping before org snapshot because --no-files is set.")
+        return None
+    before_path = _organization_snapshot_path(run_paths, "before")
     _write_organization_snapshot(before_path, before_snapshot)
     log.info("Wrote before org snapshot: %s.", before_path)
     return before_path
@@ -261,9 +255,9 @@ def _apply_organization_sync(
 
 def _finish_organization_apply_with_backup(
     client: src.SourcegraphClient,
-    timestamp: str,
+    run_paths: backups.RunPaths,
     sync_state: _OrganizationSyncState,
-    before_path: Path,
+    before_path: Path | None,
     parallelism: int,
     worker_pool: ThreadPoolExecutor | None = None,
 ) -> None:
@@ -280,25 +274,27 @@ def _finish_organization_apply_with_backup(
             current_user_after["username"],
         )
     after_snapshot = _snapshot_from_states(client.endpoint, sync_state.targets, after_states)
-    after_path, diff_path = _write_organization_after_snapshot(
-        timestamp,
-        client.endpoint,
-        sync_state.before_snapshot,
-        after_snapshot,
-    )
-    log.info("Wrote after org snapshot: %s diff=%s.", after_path, diff_path)
+    if run_paths.write_files:
+        after_path, diff_path = _write_organization_after_snapshot(
+            run_paths,
+            sync_state.before_snapshot,
+            after_snapshot,
+        )
+        log.info("Wrote after org snapshot: %s diff=%s.", after_path, diff_path)
+    else:
+        log.info("Skipping after and diff org snapshots because --no-files is set.")
     _validate_organization_sync(after_snapshot, sync_state.expected_snapshot)
-    log.info("To inspect the pre-sync org membership state, read:\n  %s", before_path)
+    if before_path is not None:
+        log.info("To inspect the pre-sync org membership state, read:\n  %s", before_path)
 
 
 def _write_organization_after_snapshot(
-    timestamp: str,
-    endpoint: str,
+    run_paths: backups.RunPaths,
     before_snapshot: organization_types.OrganizationSnapshot,
     after_snapshot: organization_types.OrganizationSnapshot,
 ) -> tuple[Path, Path]:
-    after_path = _organization_snapshot_path(timestamp, endpoint, "sync-saml-orgs-apply", "after")
-    diff_path = _organization_snapshot_path(timestamp, endpoint, "sync-saml-orgs-apply", "diff")
+    after_path = _organization_snapshot_path(run_paths, "after")
+    diff_path = _organization_snapshot_path(run_paths, "diff")
     _write_organization_snapshot(after_path, after_snapshot)
     _write_organization_snapshot_diff(diff_path, before_snapshot, after_snapshot)
     return after_path, diff_path
@@ -320,6 +316,7 @@ def _raise_for_failed_organization_sync(result: _OrganizationApplyResult) -> Non
 
 def cmd_sync_saml_organizations(
     client: src.SourcegraphClient,
+    run_paths: backups.RunPaths,
     *,
     dry_run: bool,
     parallelism: int,
@@ -354,16 +351,14 @@ def cmd_sync_saml_organizations(
 
         _log_organization_sync_plan(sync_state)
 
-        timestamp = backups.backup_timestamp()
         if dry_run:
-            _finish_organization_dry_run(client.endpoint, timestamp, sync_state, do_backup)
+            _finish_organization_dry_run(run_paths, sync_state, do_backup)
             return
 
         before_path: Path | None = None
         if do_backup:
             before_path = _write_organization_apply_before_snapshot(
-                client.endpoint,
-                timestamp,
+                run_paths,
                 sync_state.before_snapshot,
             )
 
@@ -377,10 +372,9 @@ def cmd_sync_saml_organizations(
         _record_organization_apply_event(command_event, apply_result)
 
         if do_backup:
-            assert before_path is not None
             _finish_organization_apply_with_backup(
                 client,
-                timestamp,
+                run_paths,
                 sync_state,
                 before_path,
                 parallelism,
@@ -1174,13 +1168,8 @@ def _write_organization_snapshot_diff(
         disk_event["bytes"] = len(contents)
 
 
-def _organization_snapshot_path(
-    timestamp: str,
-    endpoint: str,
-    command: str,
-    state: str,
-) -> Path:
-    return backups.backup_path("saml-organizations", timestamp, endpoint, command, state)
+def _organization_snapshot_path(run_paths: backups.RunPaths, state: str) -> Path:
+    return run_paths.artifact_path(state, family="saml-organizations")
 
 
 def _chunks(values: list[str], size: int) -> list[list[str]]:

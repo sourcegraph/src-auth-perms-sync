@@ -4,6 +4,22 @@ import subprocess
 import sys
 import unittest
 
+import src_py_lib as src
+
+import src_auth_perms_sync
+from src_auth_perms_sync import cli
+from src_auth_perms_sync.shared import backups
+
+
+class PackageImportTests(unittest.TestCase):
+    def test_importing_the_package_exposes_module_mode_names(self) -> None:
+        self.assertIs(src_auth_perms_sync.GetResult, cli.GetResult)
+        self.assertIs(src_auth_perms_sync.CommandResult, cli.CommandResult)
+        self.assertIs(src_auth_perms_sync.RunPaths, backups.RunPaths)
+        self.assertIs(src_auth_perms_sync.EventSink, src.EventSink)
+        for exported_name in ("GetResult", "CommandResult", "RunPaths", "EventSink"):
+            self.assertIn(exported_name, src_auth_perms_sync.__all__)
+
 
 class CliEntrypointTests(unittest.TestCase):
     def test_module_help_prints_usage(self) -> None:
@@ -52,12 +68,20 @@ class CliEntrypointTests(unittest.TestCase):
             text=True,
         )
 
-        self.assertNotIn("--apply", get_help.stdout)
+        # get is read-only: the --apply option must not exist (it is only
+        # mentioned inside the --no-files help text).
+        self.assertNotIn("[--apply]", get_help.stdout)
+        self.assertNotIn("Apply changes", get_help.stdout)
         self.assertIn("--no-backup", get_help.stdout)
+        self.assertIn("--maps-path FILE", get_help.stdout)
+        self.assertIn("--artifacts-dir DIR", get_help.stdout)
+        self.assertIn("--no-files", get_help.stdout)
         self.assertNotIn("--sync-saml-orgs", get_help.stdout)
         self.assertIn("--users USERS", get_help.stdout)
         self.assertNotIn("--user USER", get_help.stdout)
         self.assertIn("--maps-path FILE", set_help.stdout)
+        self.assertIn("--artifacts-dir DIR", set_help.stdout)
+        self.assertIn("--no-files", set_help.stdout)
         self.assertIn("--users USERS", set_help.stdout)
         self.assertIn("--sync-saml-orgs", set_help.stdout)
         self.assertNotIn("--restore-path", set_help.stdout)

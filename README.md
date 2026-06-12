@@ -137,13 +137,43 @@ config = src.Config(
     apply=False,  # Dry run (default), set to True to make changes
 )
 
-succeeded = src.Set(config)
+result = src.Set(config)  # truthy on success; result.paths has run artifacts
+
+# Discovery returns the auth provider and code host data in memory, so you
+# can assemble mapping rules without re-parsing the generated YAML files:
+get_result = src.Get(config)
+for provider in get_result.auth_providers:
+    ...
+for code_host in get_result.code_hosts:
+    ...
 
 # Other command wrappers:
-# succeeded = src.Get(config)
-# succeeded = src.Restore(config)
-# succeeded = src.SyncSamlOrgs(config)
+# result = src.Restore(config)
+# result = src.SyncSamlOrgs(config)
 ```
+
+Module mode never touches your `logging` handlers or the root logger — your
+application's logging config stays in charge. To see progress messages:
+
+```python
+import logging
+
+logging.basicConfig(level=logging.INFO)  # or your own handlers
+logging.getLogger("src_auth_perms_sync").setLevel(logging.INFO)
+logging.getLogger("src_py_lib").setLevel(logging.INFO)
+```
+
+To receive structured wide events programmatically, pass an event sink:
+
+```python
+events = src.InMemoryEventSink()
+src.Get(config, event_sink=events)   # or src.CallbackEventSink(my_function)
+```
+
+To run fully disk-free (no generated YAML, snapshots, or log file), set
+`no_files=True`. Combined with `apply=True` this also requires
+`no_backup=True`, because skipping files gives up the before/after
+snapshots that make `--apply` reversible.
 
 ## Inputs
 
@@ -154,7 +184,12 @@ succeeded = src.Set(config)
 
 - YAML maps file
   - By default: `src-auth-perms-sync-runs/<src_endpoint>/maps.yaml`
-  - Or pass `--maps-path ./path/to/maps.yaml`
+  - Or pass `--maps-path ./path/to/maps.yaml` (works for both `get` and `set`,
+    so the maps file can live outside the generated artifacts tree)
+  - `--artifacts-dir DIR` moves the whole artifacts tree (generated YAML,
+    snapshots, logs); the default is `./src-auth-perms-sync-runs`
+  - `--no-files` writes nothing to disk; with `--apply` it also requires
+    `--no-backup`
   - A list of mapping rules
   - Each mapping rule takes
     - A map of filters for users

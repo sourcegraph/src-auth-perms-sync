@@ -100,6 +100,19 @@ class _AdditiveCommandClient:
         return response
 
 
+def make_run_paths(directory: Path, maps_path: Path) -> backups.RunPaths:
+    endpoint_directory = directory / "artifacts" / "sourcegraph.example.com"
+    return backups.RunPaths(
+        timestamp="2026-06-09-10-00-00",
+        artifacts_dir=directory / "artifacts",
+        endpoint_directory=endpoint_directory,
+        maps_path=maps_path,
+        code_hosts_path=endpoint_directory / "code-hosts.yaml",
+        auth_providers_path=endpoint_directory / "auth-providers.yaml",
+        run_directory=directory / "run-artifacts",
+    )
+
+
 class AdditiveCommandTests(unittest.TestCase):
     def test_no_backup_dry_run_skips_artifacts_and_repo_load_when_no_rule_matches(
         self,
@@ -127,22 +140,21 @@ maps:
 """.lstrip(),
                 encoding="utf-8",
             )
-            run_directory = directory / "run-artifacts"
+            run_paths = make_run_paths(directory, maps_path)
 
-            with backups.run_artifacts_context(run_directory, "2026-06-09-10-00-00"):
-                command.cmd_set_additive_users(
-                    cast(src.SourcegraphClient, client),
-                    maps_path,
-                    ("marc",),
-                    None,
-                    dry_run=True,
-                    parallelism=1,
-                    bind_id_mode="USERNAME",
-                    saml_groups_attribute_name_by_config_id={},
-                    do_backup=False,
-                )
+            command.cmd_set_additive_users(
+                cast(src.SourcegraphClient, client),
+                run_paths,
+                ("marc",),
+                None,
+                dry_run=True,
+                parallelism=1,
+                bind_id_mode="USERNAME",
+                saml_groups_attribute_name_by_config_id={},
+                do_backup=False,
+            )
 
-            self.assertFalse(run_directory.exists())
+            self.assertFalse(run_paths.run_directory.exists())
             self.assertEqual([], client.repo_service_ids)
             self.assertEqual(0, client.explicit_repo_fetch_count)
 
@@ -159,7 +171,8 @@ maps:
         )
 
         with tempfile.TemporaryDirectory() as directory_name:
-            maps_path = Path(directory_name) / "maps.yaml"
+            directory = Path(directory_name)
+            maps_path = directory / "maps.yaml"
             maps_path.write_text(
                 """
 maps:
@@ -176,7 +189,7 @@ maps:
 
             command.cmd_set_additive_users(
                 cast(src.SourcegraphClient, client),
-                maps_path,
+                make_run_paths(directory, maps_path),
                 ("alice",),
                 None,
                 dry_run=True,
@@ -213,21 +226,22 @@ maps:
 """.lstrip(),
                 encoding="utf-8",
             )
-            run_directory = directory / "run-artifacts"
+            run_paths = make_run_paths(directory, maps_path)
+            run_paths.run_directory.mkdir(parents=True)
 
-            with backups.run_artifacts_context(run_directory, "2026-06-09-10-00-00"):
-                command.cmd_set_additive_users(
-                    cast(src.SourcegraphClient, client),
-                    maps_path,
-                    ("alice",),
-                    None,
-                    dry_run=True,
-                    parallelism=1,
-                    bind_id_mode="USERNAME",
-                    saml_groups_attribute_name_by_config_id={},
-                    do_backup=True,
-                )
+            command.cmd_set_additive_users(
+                cast(src.SourcegraphClient, client),
+                run_paths,
+                ("alice",),
+                None,
+                dry_run=True,
+                parallelism=1,
+                bind_id_mode="USERNAME",
+                saml_groups_attribute_name_by_config_id={},
+                do_backup=True,
+            )
 
+            run_directory = run_paths.run_directory
             self.assertTrue((run_directory / "before.json").exists())
             self.assertTrue((run_directory / "after.json").exists())
             self.assertTrue((run_directory / "diff.json").exists())

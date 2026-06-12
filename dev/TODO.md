@@ -1,5 +1,15 @@
 # TODO
 
+## Follow-up: in-memory mapping rules for Set (PLAN.md Track A Phase A4)
+
+The rest of [PLAN.md](./PLAN.md) is implemented (src-py-lib v0.3.0 +
+the consumer refactor-logging-and-files PR). The one deliberately
+deferred piece, marked optional in the plan: let module callers pass
+parsed mapping rules to `Set` instead of a maps file, so the full
+get → assemble → dry-run loop never touches disk. Snapshots must stay
+on disk for `--apply` (reversibility invariant); `no_files` + `apply`
+must keep requiring `no_backup`.
+
 ## High priority: Remote trigger on demand
 
 - Sourcegraph webhook for new user coming in v7.4.0
@@ -13,18 +23,11 @@
 - How do we avoid stampedes (e.g., bulk repo sync triggering thousands
   of re-runs)?
 
-## High priority: Reduce worst-case full-permission sync load
+## Medium priority: Reduce worst-case full-permission sync load
 
 - Use the stress-run evidence in
   [engineering-requests.md](./engineering-requests.md)
   to request Sourcegraph bulk explicit-permission read and write APIs.
-  2026-06-12: presence-probe resolver internals and measured costs added
-  there (see "Presence-check resolver internals"); request is ready to
-  submit. Client-side, `set --users-without-explicit-perms` now matches
-  rules before probing and hydrates users in aliased batches (5,210s →
-  15s on the 10k-user instance), but `get --users-without-explicit-perms`
-  still probes every active user — only a server-side presence/filter API
-  fixes that.
   New evidence 2026-06-10: the whole-instance apply (1,150 repo
   overwrites x 10,002 bindIDs each at parallelism 16) crashed the test
   instance's Postgres ("connection refused", "unexpected EOF"); the
