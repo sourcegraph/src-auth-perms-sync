@@ -64,7 +64,7 @@ user-group-b -> repo-group-2
 Each `maps:` entry is naturally a grouped rule:
 
 ```text
-selected users × selected repos
+selected users x selected repos
 ```
 
 The maps schema keeps this restrictive: `users:` and `repos:` are selector
@@ -91,7 +91,7 @@ The old full-set planner immediately expanded every map entry into:
 repo_id -> set(username)
 ```
 
-That is expensive for rectangular maps such as `10000 users × 1000 repos`:
+That is expensive for rectangular maps such as `10000 users x 1000 repos`:
 the username strings are shared, but each repo owns a large Python set with one
 hash-table entry per planned grant.
 

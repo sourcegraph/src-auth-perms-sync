@@ -85,16 +85,16 @@ small `set` command. Instance: single `pgsql-0` on an 8-core node.
 
 Observed during the concurrent captures:
 
-- `pgsql-0` CPU (`kubectl top`): 7,636–7,683 millicores of 8,000 (saturated).
-- `frontend` / `gitserver` CPU: 124–138m / 2–3m (idle bystanders).
+- `pgsql-0` CPU (`kubectl top`): 7,636-7,683 millicores of 8,000 (saturated).
+- `frontend` / `gitserver` CPU: 124-138m / 2-3m (idle bystanders).
 - `pg_stat_activity`: 29 active statements, all
   `permsStore.ListUserPermissions`, **zero wait events** — pure CPU, no lock
   contention.
 - `pg_stat_statements`: `permsStore.ListUserPermissions` at 24,026 calls,
   27,635.6s total, 1,150ms mean.
-- Per-client capture throughput: 23 users/sec solo → 2–4 users/sec at 4-way
+- Per-client capture throughput: 23 users/sec solo → 2-4 users/sec at 4-way
   concurrency.
-- Aggregate throughput: 8–16 users/sec at 4-way — **below the 23 users/sec a
+- Aggregate throughput: 8-16 users/sec at 4-way — **below the 23 users/sec a
   single client achieves alone** (negative scaling).
 - ALB (CloudWatch): no 5xx, no rejected connections — the edge and frontend
   are not the bottleneck.
@@ -104,7 +104,7 @@ Observed during the concurrent captures:
 Implications for the engineering request:
 
 - A single per-user `permissionsInfo.repositories(source: API)` read costs
-  roughly 0.3–0.4s of Postgres CPU at this state size (1,150ms mean execution
+  roughly 0.3-0.4s of Postgres CPU at this state size (1,150ms mean execution
   under contention), so one operator at modest parallelism can saturate the
   database by itself, and two concurrent operators degrade each other below
   single-operator throughput.
@@ -112,7 +112,7 @@ Implications for the engineering request:
   client read timeout, retries re-run the same expensive queries, adding load
   exactly when the database is saturated.
 - A bulk read API (one query returning explicit grants for many users or for
-  whole repos) would replace ~10,000 × ~1s statements per capture with a
+  whole repos) would replace ~10,000 x ~1s statements per capture with a
   single scan, and would also make concurrent operators viable.
 
 ## Sourcegraph codepath findings
@@ -142,7 +142,7 @@ from `github.com/sourcegraph/sourcegraph`:
 ## Presence-check resolver internals (2026-06-12)
 
 Measured on the 10k-user / 50k-repo test instance, the presence probe
-`User.permissionsInfo.repositories(source: API, first: 1)` costs 225–350ms of
+`User.permissionsInfo.repositories(source: API, first: 1)` costs 225-350ms of
 server work per user, and alias batching barely helps (21,004 single-user
 probes averaged 351.6ms; 25-user batches averaged 5,616ms ≈ 224.7ms/user). A
 single `set --users-without-explicit-perms` run probing all 10,002 users at
@@ -180,7 +180,7 @@ Client-side mitigation shipped in `src-auth-perms-sync` (2026-06-12):
 locally BEFORE probing, so probes scale with the rule-matched user count
 instead of the instance's user count, and user hydration runs as aliased
 25-user batches instead of one `UserByID` request per user. The remaining
-inherent cost — ~225ms × probed user — is exactly what the
+inherent cost — ~225ms x probed user — is exactly what the
 presence/filter API requested below would remove, and
 `get --users-without-explicit-perms` still has to probe every active user
 because its semantics are instance-wide.

@@ -14,6 +14,10 @@ actionlint
 ### Markdown files
 npx --yes markdownlint-cli2@0.22.1
 
+### Confusable Unicode characters in non-Python files
+# (ruff RUF001-RUF003 covers Python strings/comments/docstrings)
+uv run python tests/confusables.py
+
 ### Python files
 
 # Lint + auto-fix safe issues
@@ -37,7 +41,8 @@ own checks.
 
 ```bash
 # Fast, no network (also what the pre-commit hook runs):
-# lint, format, pyright, unit + fixture tests, CLI rejection matrix,
+# lint, format, pyright, confusable-character scan, unit + fixture
+# tests, CLI rejection matrix,
 # randomized permission invariants
 uv run tests/run.py
 
