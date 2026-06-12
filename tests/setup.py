@@ -64,6 +64,78 @@ query SetupAuthProviders {
 PENDING_PERMISSIONS_QUERY = "query SetupPending { usersWithPendingPermissions }"
 
 
+def run_sql(kubectl_config: dict[str, Any], statement: str) -> list[list[str]]:
+    """Run SQL on the pgsql pod; return rows of pipe-separated fields."""
+    script = f"SET app.current_tenant = '{int(kubectl_config['tenantID'])}';\n{statement}"
+    command = [
+        "kubectl",
+        "exec",
+        "-i",
+        "-n",
+        str(kubectl_config["namespace"]),
+        f"pod/{kubectl_config['pod']}",
+        "--",
+        "psql",
+        "-X",
+        "-q",
+        "-At",
+        "-v",
+        "ON_ERROR_STOP=1",
+        "-U",
+        str(kubectl_config["databaseUser"]),
+        "-d",
+        str(kubectl_config["database"]),
+    ]
+    completed = subprocess.run(command, input=script, capture_output=True, text=True, timeout=120)
+    if completed.returncode != 0:
+        raise RuntimeError(f"psql failed: {completed.stderr.strip()}")
+    return [line.split("|") for line in completed.stdout.splitlines() if line]
+
+
+def upsert_saml_account(
+    kubectl_config: dict[str, Any],
+    username: str,
+    groups: list[str],
+    *,
+    service_id: str,
+    client_id: str,
+    account_id: str,
+) -> None:
+    """Write one fabricated SAML external account directly to the database.
+
+    Also used by tests/run.py's live SAML-group-change check, so the
+    interpolated names are validated here, right at the SQL boundary.
+    """
+    if not SAFE_NAME_PATTERN.match(username) or not all(
+        SAFE_NAME_PATTERN.match(group) for group in groups
+    ):
+        raise RuntimeError(f"unsafe username/group name for {username!r}")
+    account_data = json.dumps(
+        {
+            "NameID": account_id,
+            "Values": {
+                "groups": {
+                    "Name": "groups",
+                    "Values": [{"Value": group} for group in groups],
+                },
+                "Email": {"Name": "Email", "Values": [{"Value": account_id}]},
+            },
+        }
+    )
+    run_sql(
+        kubectl_config,
+        "INSERT INTO user_external_accounts "
+        "  (user_id, service_type, service_id, client_id, account_id, "
+        "   account_data, encryption_key_id, kind) "
+        f"SELECT u.id, 'saml', '{service_id}', '{client_id}', '{account_id}', "
+        f"  '{account_data}', '', 'AUTH' "
+        f"FROM users u WHERE u.username = '{username}' AND u.deleted_at IS NULL "
+        "ON CONFLICT (tenant_id, user_id, service_type, service_id, client_id, "
+        "             account_id, kind) WHERE deleted_at IS NULL "
+        "DO UPDATE SET account_data = EXCLUDED.account_data, updated_at = now();",
+    )
+
+
 @dataclass
 class Outcome:
     """One named check: in-sync, fixed, or needing attention."""
@@ -90,33 +162,7 @@ class Setup:
 
     def sql(self, statement: str) -> list[list[str]]:
         """Run SQL on the pgsql pod; return rows of pipe-separated fields."""
-        kubectl_config = self.config["kubectl"]
-        script = f"SET app.current_tenant = '{int(kubectl_config['tenantID'])}';\n{statement}"
-        command = [
-            "kubectl",
-            "exec",
-            "-i",
-            "-n",
-            str(kubectl_config["namespace"]),
-            f"pod/{kubectl_config['pod']}",
-            "--",
-            "psql",
-            "-X",
-            "-q",
-            "-At",
-            "-v",
-            "ON_ERROR_STOP=1",
-            "-U",
-            str(kubectl_config["databaseUser"]),
-            "-d",
-            str(kubectl_config["database"]),
-        ]
-        completed = subprocess.run(
-            command, input=script, capture_output=True, text=True, timeout=120
-        )
-        if completed.returncode != 0:
-            raise RuntimeError(f"psql failed: {completed.stderr.strip()}")
-        return [line.split("|") for line in completed.stdout.splitlines() if line]
+        return run_sql(self.config["kubectl"], statement)
 
     def sql_value(self, statement: str) -> str:
         rows = self.sql(statement)
@@ -226,7 +272,8 @@ class Setup:
                 continue
             drift.append(f"{username}: {current} → {list(groups)}")
             if self.apply:
-                self.upsert_saml_account(
+                upsert_saml_account(
+                    self.config["kubectl"],
                     username,
                     groups,
                     service_id=service_id,
@@ -272,39 +319,6 @@ class Setup:
                     raw = json.loads(raw)
                 return saml_groups.extract_saml_groups(cast("dict[str, Any] | None", raw))
         return None
-
-    def upsert_saml_account(
-        self,
-        username: str,
-        groups: list[str],
-        *,
-        service_id: str,
-        client_id: str,
-        account_id: str,
-    ) -> None:
-        account_data = json.dumps(
-            {
-                "NameID": account_id,
-                "Values": {
-                    "groups": {
-                        "Name": "groups",
-                        "Values": [{"Value": group} for group in groups],
-                    },
-                    "Email": {"Name": "Email", "Values": [{"Value": account_id}]},
-                },
-            }
-        )
-        self.sql(
-            "INSERT INTO user_external_accounts "
-            "  (user_id, service_type, service_id, client_id, account_id, "
-            "   account_data, encryption_key_id, kind) "
-            f"SELECT u.id, 'saml', '{service_id}', '{client_id}', '{account_id}', "
-            f"  '{account_data}', '', 'AUTH' "
-            f"FROM users u WHERE u.username = '{username}' AND u.deleted_at IS NULL "
-            "ON CONFLICT (tenant_id, user_id, service_type, service_id, client_id, "
-            "             account_id, kind) WHERE deleted_at IS NULL "
-            "DO UPDATE SET account_data = EXCLUDED.account_data, updated_at = now();"
-        )
 
     def check_permissions_hygiene(self) -> None:
         hygiene = self.config["permissionsHygiene"]

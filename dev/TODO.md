@@ -1,14 +1,5 @@
 # TODO
 
-## Medium priority: extend SAML-group live coverage to org sync
-
-tests/setup.py now fabricates SAML accounts with synthetic groups
-(`perms-sync-test-eng` / `perms-sync-test-sales`, see tests/setup.yaml).
-saml-group-live covers permission mapping; add a seeded
-`sync-saml-orgs --apply` live case that maps those groups to a throwaway
-org and asserts membership is added AND removed (today's
-sync-saml-orgs-apply only covers the single real Okta user, add-only).
-
 ## Decide: pendingBindIDs / usersWithPendingPermissions
 
 The CLI cannot create pending permissions (it validates users exist), but
@@ -29,11 +20,6 @@ See the thread discussion 2026-06-11.
   Sourcegraph executor?
 - How do we avoid stampedes (e.g., bulk repo sync triggering thousands
   of re-runs)?
-
-## High priority: Verify perms are updated when a user's SAML groups change
-
-- If a user gets added to a new SAML group, which hits a mapping, ensure they
-  get the new perms
 
 ## High priority: Reduce worst-case full-permission sync load
 

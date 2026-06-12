@@ -115,8 +115,62 @@ mutation TestSetRepositoryPermissions($repository: ID!, $userPermissions: [UserP
 }
 """
 
+SAML_AUTH_PROVIDERS_QUERY = """
+query TestSamlAuthProviders {
+  site {
+    authProviders {
+      nodes { serviceType serviceID clientID configID }
+    }
+  }
+}
+"""
+
+ORGANIZATION_LOOKUP_QUERY = """
+query TestOrganizationLookup($query: String!, $first: Int!) {
+  organizations(first: $first, query: $query) {
+    nodes { id name }
+  }
+}
+"""
+
+ORGANIZATION_MEMBERS_READ_BACK_QUERY = """
+query TestOrganizationMembers($id: ID!, $first: Int!, $after: String) {
+  node(id: $id) {
+    ... on Org {
+      members(first: $first, after: $after) {
+        nodes { id username }
+        pageInfo { hasNextPage endCursor }
+      }
+    }
+  }
+}
+"""
+
+CREATE_ORGANIZATION_MUTATION = """
+mutation TestCreateOrganization($name: String!) {
+  createOrganization(name: $name) { id name }
+}
+"""
+
+ADD_ORGANIZATION_MEMBER_MUTATION = """
+mutation TestAddOrganizationMember($organization: ID!, $username: String!) {
+  addUserToOrganization(organization: $organization, username: $username) { alwaysNil }
+}
+"""
+
+REMOVE_ORGANIZATION_MEMBER_MUTATION = """
+mutation TestRemoveOrganizationMember($organization: ID!, $user: ID!) {
+  removeUserFromOrganization(organization: $organization, user: $user) { alwaysNil }
+}
+"""
+
 EXPLICIT_API_PERMISSION_REASON = "Explicit API"
 SITE_ADMIN_PERMISSION_REASON = "Site Admin"
+ORGANIZATION_SYNC_VALIDATION_OK = "VALIDATION OK: all target org memberships match"
+SETUP_CONFIG_PATH = ROOT / "tests" / "setup.yaml"
+# The live SAML-group-change check reuses this registry case's maps.yaml,
+# so the mapping it exercises is the exact one saml-group-live pins.
+SAML_GROUP_CHANGE_CASE = "saml-group-live"
 
 log = logging.getLogger("test")
 command_output_log = logging.getLogger("test.command_output")
@@ -1071,6 +1125,70 @@ class TestSuite:
             )
         return None
 
+    def check_fabricated_saml_accounts(self, name: str, accounts: dict[str, list[str]]) -> bool:
+        """Verify the fabricated SAML accounts match tests/setup.yaml."""
+        started = time.monotonic()
+        drift: list[str] = []
+        for username, expected_groups in sorted(accounts.items()):
+            actual_groups = self.read_back_saml_groups(username)
+            if actual_groups != sorted(expected_groups):
+                drift.append(
+                    f"{username}: expected {sorted(expected_groups)}, found {actual_groups}"
+                )
+        self.record(
+            name,
+            "live",
+            not drift,
+            time.monotonic() - started,
+            f"{'; '.join(drift)}; run `uv run tests/setup.py --apply`"
+            if drift
+            else f"{len(accounts)} account(s) match setup.yaml",
+        )
+        return not drift
+
+    def saml_auth_provider(self) -> dict[str, str] | None:
+        """Return the instance's SAML auth provider fields, or None when absent."""
+        data = self.graphql(SAML_AUTH_PROVIDERS_QUERY, {})
+        providers = cast(
+            "list[dict[str, str]]",
+            cast("dict[str, Any]", data["site"])["authProviders"]["nodes"],
+        )
+        return next(
+            (provider for provider in providers if provider["serviceType"] == "saml"),
+            None,
+        )
+
+    def read_back_organization_members(
+        self, organization_name: str
+    ) -> tuple[str, dict[str, str]] | None:
+        """Return (org GraphQL ID, {member username: user GraphQL ID}), or None if missing."""
+        data = self.graphql(
+            ORGANIZATION_LOOKUP_QUERY,
+            {"query": organization_name, "first": READ_BACK_PAGE_SIZE},
+        )
+        organizations = cast(
+            "list[dict[str, str]]", cast("dict[str, Any]", data["organizations"])["nodes"]
+        )
+        organization = next(
+            (entry for entry in organizations if entry["name"] == organization_name), None
+        )
+        if organization is None:
+            return None
+        members: dict[str, str] = {}
+        after_cursor: str | None = None
+        while True:
+            data = self.graphql(
+                ORGANIZATION_MEMBERS_READ_BACK_QUERY,
+                {"id": organization["id"], "first": READ_BACK_PAGE_SIZE, "after": after_cursor},
+            )
+            connection = cast("dict[str, Any]", cast("dict[str, Any]", data["node"])["members"])
+            for node in cast("list[dict[str, str]]", connection["nodes"]):
+                members[node["username"]] = node["id"]
+            page_info = cast("dict[str, Any]", connection["pageInfo"])
+            if not page_info.get("hasNextPage"):
+                return (organization["id"], members)
+            after_cursor = cast("str | None", page_info.get("endCursor"))
+
     def read_back_repository_explicit_users(
         self, repository_name: str
     ) -> tuple[int, set[str]] | None:
@@ -1196,6 +1314,8 @@ class TestSuite:
         if self.test_selected("wheel install smoke"):
             self.run_wheel_install_smoke()
         self.run_live_fixture_cases(environment)
+        self.run_seeded_org_sync_check(environment)
+        self.run_saml_group_change_check(environment)
         self.run_live_permission_cycles(environment)
         self.check_live_hygiene()
 
@@ -1671,6 +1791,400 @@ class TestSuite:
             time.monotonic() - started,
             "; ".join(mismatches) if mismatches else f"{len(expected_grants)} repo(s) match",
         )
+
+    # -- live: seeded organization sync ----------------------------------------
+
+    def run_seeded_org_sync_check(self, environment: dict[str, str]) -> None:
+        """Seeded `sync-saml-orgs --apply`: membership must be added AND removed.
+
+        The fabricated SAML accounts (tests/setup.yaml samlAccounts) define
+        the desired members of the throwaway orgs derived from the synthetic
+        groups. Seeding makes one org diverge both ways — a member no SAML
+        group justifies, and a missing member the group requires — then one
+        `sync-saml-orgs --apply` must converge every synthetic-group org back
+        to SAML truth, verified by an independent member read-back.
+        """
+        label = "live: sync-saml-orgs seeded"
+        if not self.test_selected(label):
+            return
+        log.info("\n--- Live: seeded organization sync (membership added AND removed) ---")
+        from src_auth_perms_sync.orgs.sync import organization_name_for_saml_group
+
+        saml_accounts = cast("dict[str, list[str]]", load_setup_config()["samlAccounts"])
+        if not self.check_fabricated_saml_accounts(f"{label} [saml fixtures]", saml_accounts):
+            return
+        provider = self.saml_auth_provider()
+        if provider is None:
+            self.record(label, "live", False, 0.0, f"no SAML auth provider on {self.endpoint}")
+            return
+
+        members_by_group: dict[str, set[str]] = {}
+        for username, groups in saml_accounts.items():
+            for group in groups:
+                members_by_group.setdefault(group, set()).add(username)
+        expected_members_by_organization = {
+            organization_name_for_saml_group(provider["configID"], group): usernames
+            for group, usernames in members_by_group.items()
+        }
+
+        seeded_group = min(members_by_group)
+        seeded_organization = organization_name_for_saml_group(provider["configID"], seeded_group)
+        # The sync must REMOVE this member: no SAML group puts them in the org.
+        unjustified_member = next(
+            username
+            for username in sorted(saml_accounts)
+            if seeded_group not in saml_accounts[username]
+        )
+        # The sync must ADD this member back: the SAML group requires them.
+        required_member = min(members_by_group[seeded_group])
+
+        try:
+            if not self.seed_organization_divergence(
+                f"{label} [seed divergence]",
+                seeded_organization,
+                unjustified_member,
+                required_member,
+            ):
+                return
+            self.run_cli_case(
+                CliCase(
+                    f"{label} [apply]",
+                    ("sync-saml-orgs", "--apply"),
+                    0,
+                    (ORGANIZATION_SYNC_VALIDATION_OK,),
+                ),
+                environment,
+                level="live",
+            )
+            self.check_organization_members(
+                f"{label} [member read-back]", expected_members_by_organization
+            )
+        finally:
+            self.repair_organization_divergence(
+                f"{label} [seed repaired]",
+                seeded_organization,
+                unjustified_member,
+                required_member,
+            )
+
+    def seed_organization_divergence(
+        self, name: str, organization_name: str, unjustified_member: str, required_member: str
+    ) -> bool:
+        """Force one org's membership to diverge from SAML truth in both directions.
+
+        Adds `unjustified_member` and removes `required_member`. Creates the
+        org when missing — createOrganization auto-adds the calling admin,
+        which is one more unjustified member the sync must remove.
+        """
+        started = time.monotonic()
+        try:
+            looked_up = self.read_back_organization_members(organization_name)
+            if looked_up is None:
+                created = cast(
+                    "dict[str, str]",
+                    self.graphql(CREATE_ORGANIZATION_MUTATION, {"name": organization_name})[
+                        "createOrganization"
+                    ],
+                )
+                organization_id = created["id"]
+                current_members: dict[str, str] = {}
+            else:
+                organization_id, current_members = looked_up
+            if unjustified_member not in current_members:
+                self.graphql(
+                    ADD_ORGANIZATION_MEMBER_MUTATION,
+                    {"organization": organization_id, "username": unjustified_member},
+                )
+            required_member_id = current_members.get(required_member)
+            if required_member_id is not None:
+                self.graphql(
+                    REMOVE_ORGANIZATION_MEMBER_MUTATION,
+                    {"organization": organization_id, "user": required_member_id},
+                )
+            seeded = self.read_back_organization_members(organization_name)
+            seeded_members = set(seeded[1]) if seeded else set[str]()
+            diverged = (
+                unjustified_member in seeded_members and required_member not in seeded_members
+            )
+            self.record(
+                name,
+                "live",
+                diverged,
+                time.monotonic() - started,
+                f"{organization_name} members now {sorted(seeded_members)}",
+            )
+            return diverged
+        except Exception as exception:
+            self.record(name, "live", False, time.monotonic() - started, str(exception))
+            return False
+
+    def check_organization_members(
+        self, name: str, expected_members_by_organization: dict[str, set[str]]
+    ) -> None:
+        """Independently read back each org's member list and compare exactly."""
+        started = time.monotonic()
+        mismatches: list[str] = []
+        for organization_name, expected_usernames in sorted(
+            expected_members_by_organization.items()
+        ):
+            looked_up = self.read_back_organization_members(organization_name)
+            if looked_up is None:
+                mismatches.append(f"{organization_name}: org not found")
+                continue
+            actual_usernames = set(looked_up[1])
+            if actual_usernames != expected_usernames:
+                missing = sorted(expected_usernames - actual_usernames)[:5]
+                unexpected = sorted(actual_usernames - expected_usernames)[:5]
+                mismatches.append(f"{organization_name}: missing={missing} unexpected={unexpected}")
+        self.record(
+            name,
+            "live",
+            not mismatches,
+            time.monotonic() - started,
+            "; ".join(mismatches)
+            if mismatches
+            else f"{len(expected_members_by_organization)} org(s) match",
+        )
+
+    def repair_organization_divergence(
+        self, name: str, organization_name: str, unjustified_member: str, required_member: str
+    ) -> None:
+        """Best-effort undo of seeded divergence when the sync did not converge.
+
+        A successful sync already removed `unjustified_member` and re-added
+        `required_member`, making this a silent no-op; after a failed run it
+        puts the org back so later runs start from SAML truth.
+        """
+        started = time.monotonic()
+        try:
+            looked_up = self.read_back_organization_members(organization_name)
+            if looked_up is None:
+                return
+            organization_id, current_members = looked_up
+            repaired: list[str] = []
+            if unjustified_member in current_members:
+                self.graphql(
+                    REMOVE_ORGANIZATION_MEMBER_MUTATION,
+                    {"organization": organization_id, "user": current_members[unjustified_member]},
+                )
+                repaired.append(f"removed {unjustified_member}")
+            if required_member not in current_members:
+                self.graphql(
+                    ADD_ORGANIZATION_MEMBER_MUTATION,
+                    {"organization": organization_id, "username": required_member},
+                )
+                repaired.append(f"re-added {required_member}")
+            if repaired:
+                self.record(name, "live", True, time.monotonic() - started, "; ".join(repaired))
+        except Exception as exception:
+            self.record(name, "live", False, time.monotonic() - started, str(exception))
+
+    # -- live: permissions follow a SAML group change ---------------------------
+
+    def run_saml_group_change_check(self, environment: dict[str, str]) -> None:
+        """A user added to a mapped SAML group must gain the mapped perms.
+
+        Reuses the saml-group-live fixture's mapping (samlGroup → exact
+        repos). Baseline: a full apply grants only the group's current
+        members. Then the fabricated SAML account of a non-member gains the
+        mapped group (the same SQL path tests/setup.py uses), the same apply
+        runs again, and the user must now hold the mapped grants. The
+        account and the repos are restored afterwards.
+        """
+        label = "live: perms follow saml group change"
+        if not self.test_selected(label):
+            return
+        log.info("\n--- Live: permissions follow a SAML group change ---")
+        import yaml
+
+        from tests import setup as instance_setup
+
+        setup_config = load_setup_config()
+        saml_accounts = cast("dict[str, list[str]]", setup_config["samlAccounts"])
+        if not self.check_fabricated_saml_accounts(f"{label} [saml fixtures]", saml_accounts):
+            return
+        provider = self.saml_auth_provider()
+        if provider is None:
+            self.record(label, "live", False, 0.0, f"no SAML auth provider on {self.endpoint}")
+            return
+
+        maps_path = FIXTURES_DIR / SAML_GROUP_CHANGE_CASE / "maps.yaml"
+        loaded_maps = cast("dict[str, Any]", yaml.safe_load(maps_path.read_text(encoding="utf-8")))
+        rules = cast("list[dict[str, Any]]", loaded_maps["maps"])
+        mapped_group = cast(
+            str,
+            cast("dict[str, Any]", cast("dict[str, Any]", rules[0]["users"])["authProvider"])[
+                "samlGroup"
+            ],
+        )
+        mapped_repository_names, selector_error = fixture_maps_repo_scope(
+            SAML_GROUP_CHANGE_CASE, has_declared_repository_names=False
+        )
+        if selector_error or not mapped_repository_names:
+            self.record(label, "live", False, 0.0, selector_error or "no mapped repos")
+            return
+
+        baseline_members = {
+            username for username, groups in saml_accounts.items() if mapped_group in groups
+        }
+        changed_user = next(
+            username
+            for username in sorted(saml_accounts)
+            if mapped_group not in saml_accounts[username]
+        )
+        original_groups = list(saml_accounts[changed_user])
+        kubectl_config = cast("dict[str, Any]", setup_config["kubectl"])
+        account_id = str(cast("dict[str, Any]", setup_config["users"])["emailTemplate"]).replace(
+            "{username}", changed_user
+        )
+
+        original_state: dict[str, tuple[int, set[str]]] = {}
+        for repository_name in sorted(mapped_repository_names):
+            read_back = self.read_back_repository_explicit_users(repository_name)
+            if read_back is None:
+                self.record(
+                    label,
+                    "live",
+                    False,
+                    0.0,
+                    f"repo {repository_name!r} does not exist on {self.endpoint}",
+                )
+                return
+            original_state[repository_name] = read_back
+
+        set_arguments = ("set", "--full", "--apply", "--no-backup", "--maps-path", str(maps_path))
+        saml_account_changed = False
+        try:
+            if not self.set_repository_states(
+                f"{label} [seed before-state]",
+                "live",
+                {name: (state[0], set[str]()) for name, state in original_state.items()},
+            ):
+                return
+            self.apply_maps_and_check_grants(
+                label,
+                "baseline",
+                environment,
+                set_arguments,
+                mapped_repository_names,
+                baseline_members,
+            )
+
+            instance_setup.upsert_saml_account(
+                kubectl_config,
+                changed_user,
+                [*original_groups, mapped_group],
+                service_id=provider["serviceID"],
+                client_id=provider["clientID"],
+                account_id=account_id,
+            )
+            saml_account_changed = True
+            expected_groups = sorted([*original_groups, mapped_group])
+            actual_groups = self.read_back_saml_groups(changed_user)
+            self.record(
+                f"{label} [saml group added]",
+                "live",
+                actual_groups == expected_groups,
+                0.0,
+                f"{changed_user}: expected {expected_groups}, found {actual_groups}",
+            )
+            if actual_groups != expected_groups:
+                return
+
+            self.apply_maps_and_check_grants(
+                label,
+                "after group change",
+                environment,
+                set_arguments,
+                mapped_repository_names,
+                baseline_members | {changed_user},
+            )
+        finally:
+            if saml_account_changed:
+                self.restore_saml_account(
+                    f"{label} [saml account restored]",
+                    kubectl_config,
+                    changed_user,
+                    original_groups,
+                    service_id=provider["serviceID"],
+                    client_id=provider["clientID"],
+                    account_id=account_id,
+                )
+            self.set_repository_states(f"{label} [restore original state]", "live", original_state)
+            self.check_repository_states(
+                f"{label} [restore verified]",
+                "live",
+                {name: state[1] for name, state in original_state.items()},
+            )
+
+    def apply_maps_and_check_grants(
+        self,
+        label: str,
+        step: str,
+        environment: dict[str, str],
+        set_arguments: tuple[str, ...],
+        repository_names: set[str],
+        expected_usernames: set[str],
+    ) -> None:
+        """Run one mapped apply, then verify mutation count and repo grants."""
+        result = self.run_cli_case(
+            CliCase(f"{label} [{step} apply]", set_arguments, 0), environment, level="live"
+        )
+        expected_mutations = len(repository_names)
+        actual_mutations = mutations_succeeded_from_log(result.log_path) or 0
+        self.record(
+            f"{label} [{step} mutation count]",
+            "live",
+            actual_mutations == expected_mutations,
+            0.0,
+            f"expected {expected_mutations}, got {actual_mutations}",
+        )
+        self.check_repository_states(
+            f"{label} [{step} grants]",
+            "live",
+            {name: expected_usernames for name in sorted(repository_names)},
+        )
+
+    def restore_saml_account(
+        self,
+        name: str,
+        kubectl_config: dict[str, Any],
+        username: str,
+        original_groups: list[str],
+        *,
+        service_id: str,
+        client_id: str,
+        account_id: str,
+    ) -> None:
+        """Put a fabricated SAML account back to its setup.yaml groups."""
+        from tests import setup as instance_setup
+
+        started = time.monotonic()
+        try:
+            instance_setup.upsert_saml_account(
+                kubectl_config,
+                username,
+                original_groups,
+                service_id=service_id,
+                client_id=client_id,
+                account_id=account_id,
+            )
+            restored_groups = self.read_back_saml_groups(username)
+            self.record(
+                name,
+                "live",
+                restored_groups == sorted(original_groups),
+                time.monotonic() - started,
+                f"{username}: expected {sorted(original_groups)}, found {restored_groups}",
+            )
+        except Exception as exception:
+            self.record(
+                name,
+                "live",
+                False,
+                time.monotonic() - started,
+                f"{exception}; run `uv run tests/setup.py --apply`",
+            )
 
     def run_live_permission_cycles(self, environment: dict[str, str]) -> None:
         # The baseline get is a prerequisite for both cycles, so it runs when
@@ -2541,6 +3055,13 @@ def run_property_checks(seed: int, iterations: int) -> list[PropertyCheckOutcome
 # ---------------------------------------------------------------------------
 
 EXACT_REPOSITORY_SELECTOR_FIELDS = {"names"}
+
+
+def load_setup_config() -> dict[str, Any]:
+    """Parse tests/setup.yaml — the source of truth for fabricated SAML accounts."""
+    import yaml
+
+    return cast("dict[str, Any]", yaml.safe_load(SETUP_CONFIG_PATH.read_text(encoding="utf-8")))
 
 
 def fixture_grants(case_name: str, file_name: str) -> dict[str, set[str]] | None:

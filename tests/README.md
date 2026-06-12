@@ -83,6 +83,21 @@ files (e.g. `test_user_09991`, `test-repo-49981`), and exact selectors only
   instance's Postgres) is opt-in only: `uv run tests/run.py --live "full
   cycle"`.
 
+Two live flows need seeding beyond the registry's repo-grant model, so
+they live as harness checks in run.py rather than tests.yaml cases:
+
+- **`live: sync-saml-orgs seeded`** — diverges one synthetic-group org's
+  membership both ways (adds a member no SAML group justifies, removes a
+  member the group requires), then one `sync-saml-orgs --apply` must
+  converge every synthetic-group org back to SAML truth, verified by an
+  independent member read-back.
+- **`live: perms follow saml group change`** — proves a user added to a
+  mapped SAML group gains the mapped perms: baseline apply with the
+  saml-group-live mapping, then the fabricated SAML account of a
+  non-member gains the group (setup.py's SQL path), the same apply runs
+  again, and the user must now hold the grants. Account and repos are
+  restored afterwards.
+
 Functional coverage of scale-only code paths (pagination, batch stepping,
 dedupe) does NOT require scale data: the local fake serves site-user pages
 of at most 2 (`SITE_USERS_PAGE_CAP` in `e2e/case_runner.py`), so a fixture
