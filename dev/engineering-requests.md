@@ -1,7 +1,7 @@
 # Engineering requests
 
 Use this when opening Sourcegraph Engineering issues from memory-efficiency
-evidence. Capture steps stay in [memory-efficiency.md](./memory-efficiency.md);
+evidence. Capture steps stay in [memory-efficiency.md](./memory-analysis/memory-efficiency.md);
 this file keeps the request-ready problem statement, evidence, proposed API
 shape, and copy/paste issue text.
 

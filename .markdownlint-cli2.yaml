@@ -4,6 +4,9 @@ ignores:
   - ".venv/**"
   - "build/**"
   - "dist/**"
+customRules:
+  - markdownlint-rule-relative-links
 config:
   MD013:
     line_length: 100
+  relative-links: true

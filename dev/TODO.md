@@ -78,7 +78,7 @@ If/when we revisit:
 
 Phase 1 now avoids per-repo username sets for non-overlapping full-set maps.
 If memory remains too high after re-measuring, implement the Phase 2 grouped
-plan in [mapping-efficiency.md](./mapping-efficiency.md): combine map-entry
+plan in [mapping-efficiency.md](./memory-analysis/mapping-efficiency.md): combine map-entry
 overlays into final groups of repos that share the same desired username tuple.
 
 ## Low priority: Expand group-membership filters beyond SAML

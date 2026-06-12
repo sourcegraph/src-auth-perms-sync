@@ -12,7 +12,7 @@
 actionlint
 
 ### Markdown files
-npx --yes markdownlint-cli2@0.22.1
+npx --yes -p markdownlint-cli2@0.22.1 -p markdownlint-rule-relative-links@5.1.0 markdownlint-cli2
 
 ### Confusable Unicode characters in non-Python files
 # (ruff RUF001-RUF003 covers Python strings/comments/docstrings)
@@ -102,7 +102,7 @@ uv run ruff format --check src/src_auth_perms_sync/ tests/
 uv run pyright
 uv run python -m unittest discover -s tests
 uv run src-auth-perms-sync --help
-npx --yes markdownlint-cli2@0.22.1
+npx --yes -p markdownlint-cli2@0.22.1 -p markdownlint-rule-relative-links@5.1.0 markdownlint-cli2
 uv build --wheel --sdist --out-dir /tmp/src-auth-perms-sync-release-check --no-create-gitignore
 rm -rf /tmp/src-auth-perms-sync-release-check
 ```

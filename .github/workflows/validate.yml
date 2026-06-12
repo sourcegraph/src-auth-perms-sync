@@ -127,6 +127,7 @@ jobs:
     runs-on: ubuntu-24.04
     env:
       MARKDOWNLINT_CLI2_VERSION: "0.22.1"
+      MARKDOWNLINT_RELATIVE_LINKS_VERSION: "5.1.0"
 
     steps:
       - name: Check out code
@@ -139,10 +140,14 @@ jobs:
         uses: actions/cache@v5
         with:
           path: ~/.npm
-          key: npm-${{ runner.os }}-markdownlint-cli2-${{ env.MARKDOWNLINT_CLI2_VERSION }}
+          key: npm-${{ runner.os }}-markdownlint-cli2-${{ env.MARKDOWNLINT_CLI2_VERSION }}-relative-links-${{ env.MARKDOWNLINT_RELATIVE_LINKS_VERSION }}
 
       - name: Lint Markdown
-        run: npx --yes "markdownlint-cli2@${MARKDOWNLINT_CLI2_VERSION}"
+        run: >
+          npx --yes
+          -p "markdownlint-cli2@${MARKDOWNLINT_CLI2_VERSION}"
+          -p "markdownlint-rule-relative-links@${MARKDOWNLINT_RELATIVE_LINKS_VERSION}"
+          markdownlint-cli2
 
   python:
     name: Validate Python

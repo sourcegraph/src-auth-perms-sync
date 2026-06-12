@@ -4,7 +4,7 @@ Use this when full snapshot capture or full-set apply is slow. The goal is to
 correlate `src-auth-perms-sync` structured logs with Sourcegraph Jaeger spans
 and pod/Postgres load. Request-ready evidence and copy/paste text for
 Sourcegraph Engineering live in
-[engineering-requests.md](./engineering-requests.md).
+[engineering-requests.md](../engineering-requests.md).
 
 ## Capture a focused trace
 
@@ -157,7 +157,7 @@ The lower-level helper remains available for focused profiling outside a full
 e2e run:
 
 ```bash
-dev/memory-efficiency-monitor-sourcegraph.sh \
+dev/memory-analysis/memory-efficiency-monitor-sourcegraph.sh \
   --namespace m \
   --output-dir /tmp/src-auth-perms-sync-sourcegraph-load-$(date -u +%Y%m%d-%H%M%S)
 ```
@@ -174,4 +174,4 @@ run.
 
 Request-ready trace findings, stress evidence, Sourcegraph codepath notes,
 proposed GraphQL APIs, and copy/paste issue text now live in
-[engineering-requests.md](./engineering-requests.md).
+[engineering-requests.md](../engineering-requests.md).
