@@ -106,6 +106,22 @@ def load_mapping_rules(input_path: Path) -> list[permission_types.MappingRule]:
     return mapping_rules
 
 
+def resolve_mapping_rules(
+    provided_rules: list[permission_types.MappingRule] | None,
+    maps_path: Path,
+) -> list[permission_types.MappingRule]:
+    """Return validated in-memory mapping rules, or load them from the maps file.
+
+    In-memory rules go through the same structural validation as rules read
+    from YAML, so module callers and CLI operators share one contract.
+    """
+    if provided_rules is None:
+        return load_mapping_rules(maps_path)
+    if provided_rules:
+        permissions_mapping.validate_mapping_rules(provided_rules)
+    return provided_rules
+
+
 def load_mapping_context(
     client: src.SourcegraphClient,
     input_path: Path,

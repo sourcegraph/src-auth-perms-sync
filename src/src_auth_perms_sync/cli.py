@@ -26,6 +26,7 @@ from src_py_lib.utils import config as config_utils
 
 from .orgs import command as organizations_command
 from .permissions import command as permissions_command
+from .permissions import mapping as permissions_mapping
 from .permissions import maps as permissions_maps
 from .permissions import types as permission_types
 from .shared import backups, run_context, site_config
@@ -741,6 +742,7 @@ def run_with_client(
     endpoint: str,
     run_paths: backups.RunPaths,
     worker_pool: ThreadPoolExecutor,
+    mapping_rules: list[permission_types.MappingRule] | None = None,
 ) -> run_context.CommandData:
     """Create a client, run the selected command, and always close HTTP resources."""
     http = src.HTTPClient(
@@ -756,7 +758,7 @@ def run_with_client(
         fetch_sg_traces=config.fetch_sg_traces,
     )
     try:
-        return run_command(config, command, client, run_paths, worker_pool)
+        return run_command(config, command, client, run_paths, worker_pool, mapping_rules)
     finally:
         client.http.close()
 
@@ -767,6 +769,7 @@ def run_command(
     client: src.SourcegraphClient,
     run_paths: backups.RunPaths,
     worker_pool: ThreadPoolExecutor,
+    mapping_rules: list[permission_types.MappingRule] | None = None,
 ) -> run_context.CommandData:
     """Dispatch the selected command."""
     sourcegraph_site_config = site_config.validate_site_config(client)
@@ -775,7 +778,13 @@ def run_command(
         command_data = run_get(config, client, sourcegraph_site_config, run_paths, worker_pool)
     elif command.name == "set":
         command_data = run_set(
-            config, command, client, sourcegraph_site_config, run_paths, worker_pool
+            config,
+            command,
+            client,
+            sourcegraph_site_config,
+            run_paths,
+            worker_pool,
+            mapping_rules=mapping_rules,
         )
     elif command.name == "restore":
         run_restore(config, client, sourcegraph_site_config, run_paths, worker_pool)
@@ -810,10 +819,22 @@ def run_set(
     sourcegraph_site_config: site_config.SiteConfig,
     run_paths: backups.RunPaths,
     worker_pool: ThreadPoolExecutor,
+    mapping_rules: list[permission_types.MappingRule] | None = None,
 ) -> run_context.CommandData:
-    """Run the selected repo-permission sync command."""
+    """Run the selected repo-permission sync command.
+
+    With in-memory `mapping_rules` (module callers), no maps file is read;
+    when files are enabled, the rules actually used are written into the run
+    directory so the audit trail stays faithful.
+    """
     assert command.set_options is not None
-    require_set_input_file(run_paths.maps_path)
+    if mapping_rules is None:
+        require_set_input_file(run_paths.maps_path)
+    elif run_paths.write_files:
+        materialized_maps_path = run_paths.input_copy_path(backups.DEFAULT_MAPS_FILE_NAME)
+        permissions_maps.dump_mapping_rules_yaml(materialized_maps_path, mapping_rules)
+        run_paths = dataclasses.replace(run_paths, maps_path=materialized_maps_path)
+        log.info("Wrote in-memory mapping rules for audit: %s", materialized_maps_path)
     return permissions_command.cmd_set(
         client,
         run_paths,
@@ -828,6 +849,7 @@ def run_set(
         do_backup=not config.no_backup,
         retain_saml_group_users=command.sync_saml_organizations,
         worker_pool=worker_pool,
+        mapping_rules=mapping_rules,
     )
 
 
@@ -970,9 +992,22 @@ def Get(config: Config, *, event_sink: src.EventSink | None = None) -> GetResult
     )
 
 
-def Set(config: Config, *, event_sink: src.EventSink | None = None) -> CommandResult:
-    """Run repository permission reconciliation."""
-    succeeded, _, run_paths = _run("set", config, event_sink)
+def Set(
+    config: Config,
+    *,
+    mapping_rules: list[permission_types.MappingRule] | None = None,
+    event_sink: src.EventSink | None = None,
+) -> CommandResult:
+    """Run repository permission reconciliation.
+
+    `mapping_rules` lets module callers pass parsed rules directly (e.g.
+    assembled from `GetResult` data) instead of a maps YAML file. The rules
+    go through the same structural validation as file-loaded rules. When
+    files are enabled, the rules actually used are written into the run
+    directory for auditability; snapshots still gate `apply` unless
+    `no_files` and `no_backup` are both set explicitly.
+    """
+    succeeded, _, run_paths = _run("set", config, event_sink, mapping_rules=mapping_rules)
     return CommandResult(succeeded=succeeded, paths=run_paths)
 
 
@@ -992,11 +1027,21 @@ def _run(
     command_name: CommandName,
     config: Config,
     event_sink: src.EventSink | None,
+    mapping_rules: list[permission_types.MappingRule] | None = None,
 ) -> tuple[bool, run_context.CommandData | None, backups.RunPaths | None]:
     """Run a module-mode command, reporting success instead of raising."""
     try:
-        command_data, run_paths = _run_or_raise(command_name, config, event_sink=event_sink)
+        command_data, run_paths = _run_or_raise(
+            command_name,
+            config,
+            event_sink=event_sink,
+            mapping_rules=mapping_rules,
+        )
     except SystemExit as exception:
+        if isinstance(exception.code, str):
+            # Module mode swallows the exit; surface the diagnostic through
+            # the package logger so host applications can see why it failed.
+            log.error("%s", exception.code)
         return exception.code in (None, 0), None, None
     except Exception:
         log.exception("src-auth-perms-sync run failed.")
@@ -1035,6 +1080,7 @@ def _run_or_raise(
     *,
     cli_mode: bool = False,
     event_sink: src.EventSink | None = None,
+    mapping_rules: list[permission_types.MappingRule] | None = None,
 ) -> tuple[run_context.CommandData, backups.RunPaths]:
     """Run src-auth-perms-sync, preserving CLI-style exceptions.
 
@@ -1043,6 +1089,10 @@ def _run_or_raise(
     application's logging configuration stays in charge.
     """
     validate_config(command_name, config)
+    if mapping_rules is not None:
+        if command_name != "set":
+            config_error("mapping_rules can only be passed to Set")
+        permissions_mapping.validate_mapping_rules(mapping_rules)
     command = resolve_command(command_name, config)
     try:
         endpoint = src.normalize_sourcegraph_endpoint(config.src_endpoint)
@@ -1102,7 +1152,9 @@ def _run_or_raise(
             )
         worker_pool = stack.enter_context(run_context.thread_pool(config.parallelism))
         try:
-            command_data = run_with_client(config, command, endpoint, run_paths, worker_pool)
+            command_data = run_with_client(
+                config, command, endpoint, run_paths, worker_pool, mapping_rules
+            )
         except SystemExit as exception:
             reraise_system_exit_with_logged_error(exception)
         return command_data, run_paths

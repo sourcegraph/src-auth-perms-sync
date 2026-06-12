@@ -26,11 +26,11 @@ from . import types as permission_types
 from .workflow import (
     load_discovery,
     load_mapping_context_discovery,
-    load_mapping_rules,
     load_repos_for_mapping_context,
     load_repository_candidates_by_names,
     load_repository_candidates_created_on_or_after,
     parse_cli_date,
+    resolve_mapping_rules,
     sourcegraph_datetime_filter,
     user_ids_created_on_or_after,
     write_maps_backup,
@@ -594,8 +594,13 @@ def cmd_set(
     do_backup: bool,
     retain_saml_group_users: bool = False,
     worker_pool: ThreadPoolExecutor | None = None,
+    mapping_rules: list[permission_types.MappingRule] | None = None,
 ) -> run_context.CommandData:
-    """Dispatch the selected set mode."""
+    """Dispatch the selected set mode.
+
+    `mapping_rules` carries in-memory rules from module callers; when None,
+    rules are loaded from `run_paths.maps_path`.
+    """
     options = set_options
     if options.mode == "full":
         return permissions_full_set.cmd_set_full(
@@ -613,6 +618,7 @@ def cmd_set(
             do_backup=do_backup,
             retain_saml_group_users=retain_saml_group_users,
             worker_pool=worker_pool,
+            mapping_rules=mapping_rules,
         )
     if options.mode == "repos":
         assert options.repository_names
@@ -631,6 +637,7 @@ def cmd_set(
             do_backup=do_backup,
             retain_saml_group_users=retain_saml_group_users,
             worker_pool=worker_pool,
+            mapping_rules=mapping_rules,
         )
     if options.mode == "repos_without_explicit_perms":
         return permissions_full_set.cmd_set_full(
@@ -648,6 +655,7 @@ def cmd_set(
             do_backup=do_backup,
             retain_saml_group_users=retain_saml_group_users,
             worker_pool=worker_pool,
+            mapping_rules=mapping_rules,
         )
     if options.mode == "repos_created_after":
         assert options.repository_created_after is not None
@@ -666,6 +674,7 @@ def cmd_set(
             do_backup=do_backup,
             retain_saml_group_users=retain_saml_group_users,
             worker_pool=worker_pool,
+            mapping_rules=mapping_rules,
         )
     if options.mode == "users":
         assert options.user_identifiers
@@ -680,6 +689,7 @@ def cmd_set(
             saml_groups_attribute_name_by_config_id,
             do_backup,
             worker_pool,
+            mapping_rules=mapping_rules,
         )
     if options.mode == "users_without_explicit_perms":
         return cmd_set_additive_users_without_explicit_perms(
@@ -693,6 +703,7 @@ def cmd_set(
             saml_groups_attribute_name_by_config_id,
             do_backup,
             worker_pool,
+            mapping_rules=mapping_rules,
         )
     if options.mode == "created_after":
         assert options.user_created_after is not None
@@ -706,6 +717,7 @@ def cmd_set(
             saml_groups_attribute_name_by_config_id,
             do_backup,
             worker_pool,
+            mapping_rules=mapping_rules,
         )
     return run_context.CommandData()
 
@@ -721,6 +733,7 @@ def cmd_set_additive_users(
     saml_groups_attribute_name_by_config_id: dict[str, str],
     do_backup: bool,
     worker_pool: ThreadPoolExecutor | None = None,
+    mapping_rules: list[permission_types.MappingRule] | None = None,
 ) -> run_context.CommandData:
     """Add missing mapped permissions for resolved users."""
     with src.span(
@@ -732,7 +745,7 @@ def cmd_set_additive_users(
         parallelism=parallelism,
         do_backup=do_backup,
     ):
-        mapping_rules = load_mapping_rules(run_paths.maps_path)
+        mapping_rules = resolve_mapping_rules(mapping_rules, run_paths.maps_path)
         if not mapping_rules:
             log.warning("No maps defined in %s — nothing to do.", run_paths.maps_path)
             return run_context.CommandData()
@@ -844,6 +857,7 @@ def cmd_set_additive_users_without_explicit_perms(
     saml_groups_attribute_name_by_config_id: dict[str, str],
     do_backup: bool,
     worker_pool: ThreadPoolExecutor | None = None,
+    mapping_rules: list[permission_types.MappingRule] | None = None,
 ) -> run_context.CommandData:
     """Add mapped permissions for users with no explicit API grants."""
     created_after_filter: str | None = None
@@ -859,7 +873,7 @@ def cmd_set_additive_users_without_explicit_perms(
         parallelism=parallelism,
         do_backup=do_backup,
     ):
-        mapping_rules = load_mapping_rules(run_paths.maps_path)
+        mapping_rules = resolve_mapping_rules(mapping_rules, run_paths.maps_path)
         if not mapping_rules:
             log.warning("No maps defined in %s — nothing to do.", run_paths.maps_path)
             return run_context.CommandData()
@@ -1019,6 +1033,7 @@ def cmd_set_additive_created_after(
     saml_groups_attribute_name_by_config_id: dict[str, str],
     do_backup: bool,
     worker_pool: ThreadPoolExecutor | None = None,
+    mapping_rules: list[permission_types.MappingRule] | None = None,
 ) -> run_context.CommandData:
     """Add missing mapped permissions for users created on or after a date."""
     created_after_filter = sourcegraph_datetime_filter(
@@ -1032,7 +1047,7 @@ def cmd_set_additive_created_after(
         parallelism=parallelism,
         do_backup=do_backup,
     ):
-        mapping_rules = load_mapping_rules(run_paths.maps_path)
+        mapping_rules = resolve_mapping_rules(mapping_rules, run_paths.maps_path)
         if not mapping_rules:
             log.warning("No maps defined in %s — nothing to do.", run_paths.maps_path)
             return run_context.CommandData()

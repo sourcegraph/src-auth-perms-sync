@@ -21,12 +21,12 @@ from . import types as permission_types
 from .workflow import (
     load_mapping_context_discovery,
     load_mapping_context_for_rules,
-    load_mapping_rules,
     load_repository_candidates_by_names,
     load_repository_candidates_created_on_or_after,
     mapping_context_with_repository_candidates,
     projected_snapshot_shell,
     render_projected_snapshot_diff,
+    resolve_mapping_rules,
     user_ids_created_on_or_after,
     validate_post_apply,
     write_maps_backup,
@@ -968,6 +968,7 @@ def cmd_set_full(
     do_backup: bool,
     retain_saml_group_users: bool,
     worker_pool: ThreadPoolExecutor | None = None,
+    mapping_rules: list[permission_types.MappingRule] | None = None,
 ) -> run_context.CommandData:
     """Overwrite each mapped repo with the union of users from all rules."""
     with src.span(
@@ -981,7 +982,7 @@ def cmd_set_full(
         parallelism=parallelism,
         do_backup=do_backup,
     ) as command_event:
-        mapping_rules = load_mapping_rules(run_paths.maps_path)
+        mapping_rules = resolve_mapping_rules(mapping_rules, run_paths.maps_path)
         if not mapping_rules:
             _finish_empty_full_set_mapping_rules(
                 client,

@@ -269,6 +269,28 @@ def create_maps_yaml_if_missing(path: Path) -> bool:
         return True
 
 
+def dump_mapping_rules_yaml(
+    path: Path,
+    mapping_rules: list[permission_types.MappingRule],
+) -> None:
+    """Write in-memory mapping rules as a maps YAML file for run auditability."""
+    content = yaml.safe_dump(
+        {"maps": mapping_rules},
+        sort_keys=False,
+        default_flow_style=False,
+    )
+    with src.span(
+        "disk_io",
+        level="DEBUG",
+        op="write",
+        path=str(path),
+        file_kind="yaml",
+    ) as disk_event:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content)
+        disk_event["bytes"] = len(content)
+
+
 def load_maps_yaml(path: Path) -> permission_types.ConfigFile:
     with src.span(
         "disk_io",

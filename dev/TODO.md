@@ -1,15 +1,5 @@
 # TODO
 
-## Follow-up: in-memory mapping rules for Set (PLAN.md Track A Phase A4)
-
-The rest of [PLAN.md](./PLAN.md) is implemented (src-py-lib v0.3.0 +
-the consumer refactor-logging-and-files PR). The one deliberately
-deferred piece, marked optional in the plan: let module callers pass
-parsed mapping rules to `Set` instead of a maps file, so the full
-get → assemble → dry-run loop never touches disk. Snapshots must stay
-on disk for `--apply` (reversibility invariant); `no_files` + `apply`
-must keep requiring `no_backup`.
-
 ## High priority: Remote trigger on demand
 
 - Sourcegraph webhook for new user coming in v7.4.0
