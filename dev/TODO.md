@@ -1,5 +1,13 @@
 # TODO
 
+## In planning: file handling + observability redesign
+
+Full spec in [PLAN.md](./PLAN.md): `RunPaths` + `--artifacts-dir` +
+`--no-files` (Track A), `EventSink` + module guest-mode logging + OTel
+wide events (Track B), across src-py-lib and src-auth-perms-sync.
+Not started; begin with Track A Phase A0 characterization tests on a
+clean worktree off origin/main.
+
 ## High priority: Remote trigger on demand
 
 - Sourcegraph webhook for new user coming in v7.4.0
@@ -13,18 +21,11 @@
 - How do we avoid stampedes (e.g., bulk repo sync triggering thousands
   of re-runs)?
 
-## High priority: Reduce worst-case full-permission sync load
+## Medium priority: Reduce worst-case full-permission sync load
 
 - Use the stress-run evidence in
   [engineering-requests.md](./engineering-requests.md)
   to request Sourcegraph bulk explicit-permission read and write APIs.
-  2026-06-12: presence-probe resolver internals and measured costs added
-  there (see "Presence-check resolver internals"); request is ready to
-  submit. Client-side, `set --users-without-explicit-perms` now matches
-  rules before probing and hydrates users in aliased batches (5,210s →
-  15s on the 10k-user instance), but `get --users-without-explicit-perms`
-  still probes every active user — only a server-side presence/filter API
-  fixes that.
   New evidence 2026-06-10: the whole-instance apply (1,150 repo
   overwrites x 10,002 bindIDs each at parallelism 16) crashed the test
   instance's Postgres ("connection refused", "unexpected EOF"); the
