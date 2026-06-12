@@ -25,5 +25,4 @@ wheels/
 !.env.example
 !.markdownlint-cli2.yaml
 !maps-example.yaml
-!tests/tests.yaml
-!tests/e2e/fixtures/**/maps.yaml
+!tests/**/*.yaml
