@@ -97,8 +97,13 @@ cases:
 
   # ── Local parse replays: argument validation, in-process, no files (fastest) ──
   reject-bare-invocation:
-    # affects: {users: 0, repos: 0, perms: 0}
-    # cost: {bigO: O(1), note: parse-only — no instance reads or writes}
+    # affects:
+    #   users: 0
+    #   repos: 0
+    #   perms: 0
+    # cost:
+    #   bigO:   O(1)
+    #   note:   parse-only — no instance reads or writes
     description: A bare invocation without a command prints usage and exits 2.
     modes:
       - local
@@ -108,8 +113,13 @@ cases:
       - "the following arguments are required: COMMAND"
 
   reject-unknown-command:
-    # affects: {users: 0, repos: 0, perms: 0}
-    # cost: {bigO: O(1), note: parse-only — no instance reads or writes}
+    # affects:
+    #   users: 0
+    #   repos: 0
+    #   perms: 0
+    # cost:
+    #   bigO:   O(1)
+    #   note:   parse-only — no instance reads or writes
     description: An unknown subcommand is rejected with the valid choices.
     modes:
       - local
@@ -119,8 +129,13 @@ cases:
       - "invalid choice: 'bogus'"
 
   reject-two-commands:
-    # affects: {users: 0, repos: 0, perms: 0}
-    # cost: {bigO: O(1), note: parse-only — no instance reads or writes}
+    # affects:
+    #   users: 0
+    #   repos: 0
+    #   perms: 0
+    # cost:
+    #   bigO:   O(1)
+    #   note:   parse-only — no instance reads or writes
     description: Two subcommands in one invocation are rejected.
     modes:
       - local
@@ -130,8 +145,13 @@ cases:
       - unrecognized arguments
 
   reject-get-apply:
-    # affects: {users: 0, repos: 0, perms: 0}
-    # cost: {bigO: O(1), note: parse-only — no instance reads or writes}
+    # affects:
+    #   users: 0
+    #   repos: 0
+    #   perms: 0
+    # cost:
+    #   bigO:   O(1)
+    #   note:   parse-only — no instance reads or writes
     description: get is read-only; --apply is rejected.
     modes:
       - local
@@ -141,8 +161,13 @@ cases:
       - unrecognized arguments
 
   reject-get-full:
-    # affects: {users: 0, repos: 0, perms: 0}
-    # cost: {bigO: O(1), note: parse-only — no instance reads or writes}
+    # affects:
+    #   users: 0
+    #   repos: 0
+    #   perms: 0
+    # cost:
+    #   bigO:   O(1)
+    #   note:   parse-only — no instance reads or writes
     description: --full requires the set command.
     modes:
       - local
@@ -152,8 +177,13 @@ cases:
       - unrecognized arguments
 
   reject-malformed-date:
-    # affects: {users: 0, repos: 0, perms: 0}
-    # cost: {bigO: O(1), note: parse-only — no instance reads or writes}
+    # affects:
+    #   users: 0
+    #   repos: 0
+    #   perms: 0
+    # cost:
+    #   bigO:   O(1)
+    #   note:   parse-only — no instance reads or writes
     description: dates must match YYYY-MM-DD before any network call.
     modes:
       - local
@@ -163,8 +193,13 @@ cases:
       - string_pattern_mismatch
 
   reject-user-filter-conflict:
-    # affects: {users: 0, repos: 0, perms: 0}
-    # cost: {bigO: O(1), note: parse-only — no instance reads or writes}
+    # affects:
+    #   users: 0
+    #   repos: 0
+    #   perms: 0
+    # cost:
+    #   bigO:   O(1)
+    #   note:   parse-only — no instance reads or writes
     description: user filters are mutually exclusive.
     modes:
       - local
@@ -174,8 +209,13 @@ cases:
       - choose only one of --users
 
   reject-user-and-repo-filters:
-    # affects: {users: 0, repos: 0, perms: 0}
-    # cost: {bigO: O(1), note: parse-only — no instance reads or writes}
+    # affects:
+    #   users: 0
+    #   repos: 0
+    #   perms: 0
+    # cost:
+    #   bigO:   O(1)
+    #   note:   parse-only — no instance reads or writes
     description: user filters and repo filters cannot be combined.
     modes:
       - local
@@ -185,8 +225,13 @@ cases:
       - choose either user filters or repo filters
 
   reject-repo-filter-conflict:
-    # affects: {users: 0, repos: 0, perms: 0}
-    # cost: {bigO: O(1), note: parse-only — no instance reads or writes}
+    # affects:
+    #   users: 0
+    #   repos: 0
+    #   perms: 0
+    # cost:
+    #   bigO:   O(1)
+    #   note:   parse-only — no instance reads or writes
     description: repo filters are mutually exclusive.
     modes:
       - local
@@ -196,8 +241,13 @@ cases:
       - choose only one of --repos
 
   reject-repos-created-after-malformed:
-    # affects: {users: 0, repos: 0, perms: 0}
-    # cost: {bigO: O(1), note: parse-only — no instance reads or writes}
+    # affects:
+    #   users: 0
+    #   repos: 0
+    #   perms: 0
+    # cost:
+    #   bigO:   O(1)
+    #   note:   parse-only — no instance reads or writes
     description: repo creation dates must match YYYY-MM-DD at parse time.
     modes:
       - local
@@ -207,8 +257,13 @@ cases:
       - string_pattern_mismatch
 
   reject-get-removed-repositories-created-after:
-    # affects: {users: 0, repos: 0, perms: 0}
-    # cost: {bigO: O(1), note: parse-only — no instance reads or writes}
+    # affects:
+    #   users: 0
+    #   repos: 0
+    #   perms: 0
+    # cost:
+    #   bigO:   O(1)
+    #   note:   parse-only — no instance reads or writes
     description: >-
       The removed --repositories-created-after spelling stays removed; the
       flag is --repos-created-after.
@@ -220,8 +275,13 @@ cases:
       - "unrecognized arguments: --repositories-created-after"
 
   reject-verbosity-conflict:
-    # affects: {users: 0, repos: 0, perms: 0}
-    # cost: {bigO: O(1), note: parse-only — no instance reads or writes}
+    # affects:
+    #   users: 0
+    #   repos: 0
+    #   perms: 0
+    # cost:
+    #   bigO:   O(1)
+    #   note:   parse-only — no instance reads or writes
     description: the --verbose and --quiet log-level aliases are mutually exclusive.
     modes:
       - local
@@ -231,8 +291,13 @@ cases:
       - choose only one of --verbose/-v, --quiet/-q, or --silent/-s
 
   reject-bare-set:
-    # affects: {users: 0, repos: 0, perms: 0}
-    # cost: {bigO: O(1), note: parse-only — no instance reads or writes}
+    # affects:
+    #   users: 0
+    #   repos: 0
+    #   perms: 0
+    # cost:
+    #   bigO:   O(1)
+    #   note:   parse-only — no instance reads or writes
     description: set requires an explicit mode flag.
     modes:
       - local
@@ -242,8 +307,13 @@ cases:
       - set requires one of --full
 
   reject-set-full-and-users:
-    # affects: {users: 0, repos: 0, perms: 0}
-    # cost: {bigO: O(1), note: parse-only — no instance reads or writes}
+    # affects:
+    #   users: 0
+    #   repos: 0
+    #   perms: 0
+    # cost:
+    #   bigO:   O(1)
+    #   note:   parse-only — no instance reads or writes
     description: set modes are mutually exclusive.
     modes:
       - local
@@ -253,8 +323,13 @@ cases:
       - choose at most one
 
   reject-set-user-filter-conflict:
-    # affects: {users: 0, repos: 0, perms: 0}
-    # cost: {bigO: O(1), note: parse-only — no instance reads or writes}
+    # affects:
+    #   users: 0
+    #   repos: 0
+    #   perms: 0
+    # cost:
+    #   bigO:   O(1)
+    #   note:   parse-only — no instance reads or writes
     description: set user filters are mutually exclusive.
     modes:
       - local
@@ -264,8 +339,13 @@ cases:
       - choose only one of --users
 
   reject-set-full-and-created-after:
-    # affects: {users: 0, repos: 0, perms: 0}
-    # cost: {bigO: O(1), note: parse-only — no instance reads or writes}
+    # affects:
+    #   users: 0
+    #   repos: 0
+    #   perms: 0
+    # cost:
+    #   bigO:   O(1)
+    #   note:   parse-only — no instance reads or writes
     description: full overwrite cannot be combined with the additive date filter.
     modes:
       - local
@@ -275,8 +355,13 @@ cases:
       - "--full cannot be combined with --created-after"
 
   reject-set-restore-path:
-    # affects: {users: 0, repos: 0, perms: 0}
-    # cost: {bigO: O(1), note: parse-only — no instance reads or writes}
+    # affects:
+    #   users: 0
+    #   repos: 0
+    #   perms: 0
+    # cost:
+    #   bigO:   O(1)
+    #   note:   parse-only — no instance reads or writes
     description: "--restore-path belongs to restore; set does not accept it."
     modes:
       - local
@@ -286,8 +371,13 @@ cases:
       - "unrecognized arguments: --restore-path"
 
   reject-bare-restore:
-    # affects: {users: 0, repos: 0, perms: 0}
-    # cost: {bigO: O(1), note: parse-only — no instance reads or writes}
+    # affects:
+    #   users: 0
+    #   repos: 0
+    #   perms: 0
+    # cost:
+    #   bigO:   O(1)
+    #   note:   parse-only — no instance reads or writes
     description: restore requires a snapshot path.
     modes:
       - local
@@ -297,8 +387,13 @@ cases:
       - restore requires --restore-path
 
   reject-restore-with-users:
-    # affects: {users: 0, repos: 0, perms: 0}
-    # cost: {bigO: O(1), note: parse-only — no instance reads or writes}
+    # affects:
+    #   users: 0
+    #   repos: 0
+    #   perms: 0
+    # cost:
+    #   bigO:   O(1)
+    #   note:   parse-only — no instance reads or writes
     description: restore does not take user filters.
     modes:
       - local
@@ -308,8 +403,13 @@ cases:
       - unrecognized arguments
 
   reject-restore-repos:
-    # affects: {users: 0, repos: 0, perms: 0}
-    # cost: {bigO: O(1), note: parse-only — no instance reads or writes}
+    # affects:
+    #   users: 0
+    #   repos: 0
+    #   perms: 0
+    # cost:
+    #   bigO:   O(1)
+    #   note:   parse-only — no instance reads or writes
     description: restore does not take repo filters.
     modes:
       - local
@@ -319,8 +419,13 @@ cases:
       - "unrecognized arguments: --repos"
 
   reject-restore-sync-saml-orgs:
-    # affects: {users: 0, repos: 0, perms: 0}
-    # cost: {bigO: O(1), note: parse-only — no instance reads or writes}
+    # affects:
+    #   users: 0
+    #   repos: 0
+    #   perms: 0
+    # cost:
+    #   bigO:   O(1)
+    #   note:   parse-only — no instance reads or writes
     description: "--sync-saml-orgs belongs to set; restore does not accept it."
     modes:
       - local
@@ -330,8 +435,13 @@ cases:
       - "unrecognized arguments: --sync-saml-orgs"
 
   reject-sync-saml-orgs-created-after:
-    # affects: {users: 0, repos: 0, perms: 0}
-    # cost: {bigO: O(1), note: parse-only — no instance reads or writes}
+    # affects:
+    #   users: 0
+    #   repos: 0
+    #   perms: 0
+    # cost:
+    #   bigO:   O(1)
+    #   note:   parse-only — no instance reads or writes
     description: sync-saml-orgs does not take user filters.
     modes:
       - local
@@ -341,8 +451,13 @@ cases:
       - unrecognized arguments
 
   reject-sync-saml-orgs-users:
-    # affects: {users: 0, repos: 0, perms: 0}
-    # cost: {bigO: O(1), note: parse-only — no instance reads or writes}
+    # affects:
+    #   users: 0
+    #   repos: 0
+    #   perms: 0
+    # cost:
+    #   bigO:   O(1)
+    #   note:   parse-only — no instance reads or writes
     description: sync-saml-orgs does not take a user list.
     modes:
       - local
@@ -352,8 +467,13 @@ cases:
       - "unrecognized arguments: --users"
 
   reject-sync-saml-orgs-full:
-    # affects: {users: 0, repos: 0, perms: 0}
-    # cost: {bigO: O(1), note: parse-only — no instance reads or writes}
+    # affects:
+    #   users: 0
+    #   repos: 0
+    #   perms: 0
+    # cost:
+    #   bigO:   O(1)
+    #   note:   parse-only — no instance reads or writes
     description: "--full belongs to set; sync-saml-orgs does not accept it."
     modes:
       - local
@@ -363,8 +483,13 @@ cases:
       - "unrecognized arguments: --full"
 
   reject-sync-saml-orgs-restore-path:
-    # affects: {users: 0, repos: 0, perms: 0}
-    # cost: {bigO: O(1), note: parse-only — no instance reads or writes}
+    # affects:
+    #   users: 0
+    #   repos: 0
+    #   perms: 0
+    # cost:
+    #   bigO:   O(1)
+    #   note:   parse-only — no instance reads or writes
     description: "--restore-path belongs to restore; sync-saml-orgs does not accept it."
     modes:
       - local
@@ -375,7 +500,10 @@ cases:
 
   # ── Local state cases: full CLI runs against an in-memory instance ──
   and-filters-intersect:
-    # affects: {users: 1, repos: 1, perms: 1}
+    # affects:
+    #   users: 1
+    #   repos: 1
+    #   perms: 1
     # cost:
     #   bigO:   O(U+R)
     #   reads:  {users: all, repos: all, permScans: 0}
@@ -393,7 +521,10 @@ cases:
     expectedMutations: 1
 
   regex-filters-scope:
-    # affects: {users: 2, repos: 2, perms: 4}
+    # affects:
+    #   users: 2
+    #   repos: 2
+    #   perms: 4
     # cost:
     #   bigO:   O(U+R)
     #   reads:  {users: all, repos: all, permScans: 0}
@@ -427,7 +558,10 @@ cases:
     expectedMutations: 2
 
   saml-group-filter:
-    # affects: {users: 1, repos: 2, perms: 2}
+    # affects:
+    #   users: 1
+    #   repos: 2
+    #   perms: 2
     # cost:
     #   bigO:   O(U+R)
     #   reads:  {users: all, repos: all, permScans: 0}
@@ -445,7 +579,10 @@ cases:
     expectedMutations: 2
 
   saml-group-live:
-    # affects: {users: 2, repos: 2, perms: 4}
+    # affects:
+    #   users: 2
+    #   repos: 2
+    #   perms: 4
     # cost:
     #   bigO:   O(U+R)
     #   reads:  {users: all, repos: all, permScans: 0}
@@ -480,7 +617,10 @@ cases:
     expectedMutations: 2
 
   set-created-after-temp-user:
-    # affects: {users: 1, repos: 1, perms: 1}
+    # affects:
+    #   users: 1
+    #   repos: 1
+    #   perms: 1
     # cost:
     #   bigO:   O(R)
     #   reads:  {users: 1, repos: all, permScans: 1}
@@ -507,7 +647,10 @@ cases:
     expectedMutations: 1
 
   set-users-created-after:
-    # affects: {users: 2, repos: 2, perms: 4}
+    # affects:
+    #   users: 2
+    #   repos: 2
+    #   perms: 4
     # cost:
     #   bigO:   O(R)
     #   reads:  {users: selected, repos: all, permScans: selected}
@@ -527,7 +670,10 @@ cases:
     expectedMutations: 4
 
   set-users-without-explicit-perms:
-    # affects: {users: 1, repos: 2, perms: 2}
+    # affects:
+    #   users: 1
+    #   repos: 2
+    #   perms: 2
     # cost:
     #   bigO:   O(U+R)
     #   reads:  {users: all, repos: all, permScans: rule-matched}
@@ -553,7 +699,10 @@ cases:
     expectedMutations: 2
 
   set-users-without-explicit-perms-default-batch:
-    # affects: {users: 1, repos: 2, perms: 2}
+    # affects:
+    #   users: 1
+    #   repos: 2
+    #   perms: 2
     # cost:
     #   bigO:   O(U+R)
     #   reads:  {users: all, repos: all, permScans: rule-matched}
@@ -579,7 +728,10 @@ cases:
     expectedMutations: 2
 
   set-repos-without-explicit-perms:
-    # affects: {users: 2, repos: 1, perms: 2}
+    # affects:
+    #   users: 2
+    #   repos: 1
+    #   perms: 2
     # cost:
     #   bigO:   O(U·scan + R)
     #   reads:  {users: all, repos: all, permScans: all}
@@ -600,7 +752,10 @@ cases:
     expectedMutations: 1
 
   set-repos-created-after:
-    # affects: {users: 2, repos: 1, perms: 2}
+    # affects:
+    #   users: 2
+    #   repos: 1
+    #   perms: 2
     # cost:
     #   bigO:   O(U)
     #   reads:  {users: all, repos: date-matched, permScans: 0}
@@ -619,7 +774,10 @@ cases:
     expectedMutations: 1
 
   full-overwrite-dry-run:
-    # affects: {users: 0, repos: 0, perms: 0}
+    # affects:
+    #   users: 0
+    #   repos: 0
+    #   perms: 0
     # cost:
     #   bigO:   O(U·scan + R)
     #   reads:  {users: all, repos: all, permScans: all}
@@ -637,8 +795,13 @@ cases:
     expectedMutations: 0
 
   empty-maps-noop:
-    # affects: {users: 0, repos: 0, perms: 0}
-    # cost: {bigO: O(1), note: no rules → exits before any instance scan}
+    # affects:
+    #   users: 0
+    #   repos: 0
+    #   perms: 0
+    # cost:
+    #   bigO:   O(1)
+    #   note:   no rules → exits before any instance scan
     description: >-
       An empty maps list is a no-op, not an error: zero mutations, existing
       grants untouched.
@@ -652,7 +815,10 @@ cases:
     expectedMutations: 0
 
   match-provider-and-host-fields:
-    # affects: {users: 2, repos: 2, perms: 4}
+    # affects:
+    #   users: 2
+    #   repos: 2
+    #   perms: 4
     # cost:
     #   bigO:   O(U+R)
     #   reads:  {users: all, repos: all, permScans: 0}
@@ -671,7 +837,10 @@ cases:
     expectedMutations: 2
 
   add-users-by-email-and-list:
-    # affects: {users: 2, repos: 2, perms: 4}
+    # affects:
+    #   users: 2
+    #   repos: 2
+    #   perms: 4
     # cost:
     #   bigO:   O(R)
     #   reads:  {users: 2, repos: all, permScans: 2}
@@ -691,7 +860,10 @@ cases:
     expectedMutations: 4
 
   restore-dry-run-noop:
-    # affects: {users: 0, repos: 0, perms: 0}
+    # affects:
+    #   users: 0
+    #   repos: 0
+    #   perms: 0
     # cost:
     #   bigO:   O(U·scan)
     #   reads:  {users: all, permScans: all}
@@ -709,7 +881,10 @@ cases:
     expectedMutations: 0
 
   restore-applies-snapshot:
-    # affects: {users: 2, repos: 1, perms: 2}
+    # affects:
+    #   users: 2
+    #   repos: 1
+    #   perms: 2
     # cost:
     #   bigO:   O(U·scan)
     #   reads:  {users: all, permScans: all}
@@ -728,7 +903,10 @@ cases:
     expectedMutations: 1
 
   restore-restores-pending:
-    # affects: {users: 0, repos: 2, perms: 2}  (both perms are pending bindID grants)
+    # affects:
+    #   users: 0
+    #   repos: 2
+    #   perms: 2  (both perms are pending bindID grants)
     # cost:
     #   bigO:   O(U·scan)
     #   reads:  {users: all, permScans: all + pending listing}
@@ -747,7 +925,10 @@ cases:
     expectedMutations: 2
 
   full-overwrite-preserves-pending:
-    # affects: {users: 2, repos: 1, perms: 2}
+    # affects:
+    #   users: 2
+    #   repos: 1
+    #   perms: 2
     # cost:
     #   bigO:   O(U+R)
     #   reads:  {users: all, repos: all, permScans: 0}
@@ -768,7 +949,10 @@ cases:
     expectedMutations: 1
 
   full-overwrite-with-backup:
-    # affects: {users: 2, repos: 1, perms: 2}
+    # affects:
+    #   users: 2
+    #   repos: 1
+    #   perms: 2
     # cost:
     #   bigO:   O(U·scan + R)
     #   reads:  {users: all, repos: all, permScans: 2×all}
@@ -787,8 +971,13 @@ cases:
     expectedMutations: 1
 
   get-user-grants:
-    # affects: {users: 0, repos: 0, perms: 0}
-    # cost: {bigO: O(1), reads: {users: 1, permScans: 1}}
+    # affects:
+    #   users: 0
+    #   repos: 0
+    #   perms: 0
+    # cost:
+    #   bigO:   O(1)
+    #   reads:  {users: 1, permScans: 1}
     description: >-
       get scoped to one user captures that user's explicit grants and never
       mutates the instance.
@@ -802,8 +991,13 @@ cases:
 
   # ── Local + live: expected-error cases, replayed read-only on the instance ──
   invalid-bad-regex:
-    # affects: {users: 0, repos: 0, perms: 0}
-    # cost: {bigO: O(1), note: maps validation fails before any instance read}
+    # affects:
+    #   users: 0
+    #   repos: 0
+    #   perms: 0
+    # cost:
+    #   bigO:   O(1)
+    #   note:   maps validation fails before any instance read
     description: >-
       An invalid Python regex in a filter is rejected by structural validation
       before any mutation.
@@ -818,8 +1012,13 @@ cases:
       - is not a valid Python regex
 
   invalid-missing-repos-section:
-    # affects: {users: 0, repos: 0, perms: 0}
-    # cost: {bigO: O(1), note: maps validation fails before any instance read}
+    # affects:
+    #   users: 0
+    #   repos: 0
+    #   perms: 0
+    # cost:
+    #   bigO:   O(1)
+    #   note:   maps validation fails before any instance read
     description: >-
       A rule without a repos section is rejected by structural validation
       before any mutation.
@@ -834,8 +1033,13 @@ cases:
       - "`repos:` section is missing"
 
   invalid-unknown-selector-field:
-    # affects: {users: 0, repos: 0, perms: 0}
-    # cost: {bigO: O(1), note: maps validation fails before any instance read}
+    # affects:
+    #   users: 0
+    #   repos: 0
+    #   perms: 0
+    # cost:
+    #   bigO:   O(1)
+    #   note:   maps validation fails before any instance read
     description: >-
       A typo'd selector field is rejected by structural validation before any
       mutation.
@@ -850,8 +1054,13 @@ cases:
       - unknown users field 'userNames'
 
   invalid-set-created-after-date:
-    # affects: {users: 0, repos: 0, perms: 0}
-    # cost: {bigO: O(1), note: date validation fails before any instance read}
+    # affects:
+    #   users: 0
+    #   repos: 0
+    #   perms: 0
+    # cost:
+    #   bigO:   O(1)
+    #   note:   date validation fails before any instance read
     description: >-
       An impossible calendar date passes the YYYY-MM-DD shape check but set
       rejects it post-parse, before any mutation.
@@ -866,8 +1075,13 @@ cases:
       - "--created-after must use YYYY-MM-DD"
 
   invalid-set-repos-created-after-date:
-    # affects: {users: 0, repos: 0, perms: 0}
-    # cost: {bigO: O(1), note: date validation fails before any instance read}
+    # affects:
+    #   users: 0
+    #   repos: 0
+    #   perms: 0
+    # cost:
+    #   bigO:   O(1)
+    #   note:   date validation fails before any instance read
     description: >-
       An impossible calendar date passes the YYYY-MM-DD shape check but the
       repo-scoped set rejects it post-parse, before any mutation.
@@ -882,8 +1096,14 @@ cases:
       - "--repos-created-after must use YYYY-MM-DD"
 
   invalid-set-unknown-user:
-    # affects: {users: 0, repos: 0, perms: 0}
-    # cost: {bigO: O(1), reads: ≤2 user lookups, note: fails before any scan}
+    # affects:
+    #   users: 0
+    #   repos: 0
+    #   perms: 0
+    # cost:
+    #   bigO:   O(1)
+    #   reads:  ≤2 user lookups
+    #   note:   fails before any scan
     description: >-
       A --users value naming no Sourcegraph user fails before any mutation.
     modes:
@@ -898,8 +1118,14 @@ cases:
       - "No Sourcegraph user found for 'username_doesnt_exist_01'"
 
   invalid-set-unknown-repo:
-    # affects: {users: 0, repos: 0, perms: 0}
-    # cost: {bigO: O(1), reads: 1 repo-name lookup, note: fails before the user scan}
+    # affects:
+    #   users: 0
+    #   repos: 0
+    #   perms: 0
+    # cost:
+    #   bigO:   O(1)
+    #   reads:  1 repo-name lookup
+    #   note:   fails before the user scan
     description: >-
       A --repos value naming no Sourcegraph repo fails before any mutation.
     modes:
@@ -914,8 +1140,13 @@ cases:
       - "No Sourcegraph repo found for: repo-doesnt-exist-49999"
 
   invalid-restore-wrong-schema-version:
-    # affects: {users: 0, repos: 0, perms: 0}
-    # cost: {bigO: O(1), note: reads the snapshot file only — no instance reads}
+    # affects:
+    #   users: 0
+    #   repos: 0
+    #   perms: 0
+    # cost:
+    #   bigO:   O(1)
+    #   note:   reads the snapshot file only — no instance reads
     description: >-
       A snapshot with an unsupported schema_version is refused without
       changing any state.
@@ -929,8 +1160,13 @@ cases:
       - "snapshot schema_version is 1, expected"
 
   restore-missing-file:
-    # affects: {users: 0, repos: 0, perms: 0}
-    # cost: {bigO: O(1), note: file-existence check only — no instance reads}
+    # affects:
+    #   users: 0
+    #   repos: 0
+    #   perms: 0
+    # cost:
+    #   bigO:   O(1)
+    #   note:   file-existence check only — no instance reads
     description: >-
       restore with a snapshot path that does not exist fails without changing
       any state.
@@ -946,7 +1182,10 @@ cases:
 
   # ── Local + live: mutating cases, seeded and restored on the instance ──
   no-match-noop:
-    # affects: {users: 0, repos: 0, perms: 0}
+    # affects:
+    #   users: 0
+    #   repos: 0
+    #   perms: 0
     # cost:
     #   bigO:   O(U+R)
     #   reads:  {users: all, repos: all, permScans: 0}
@@ -965,7 +1204,10 @@ cases:
     expectedMutations: 0
 
   set-repos-filter:
-    # affects: {users: 3, repos: 1, perms: 3}
+    # affects:
+    #   users: 3
+    #   repos: 1
+    #   perms: 3
     # cost:
     #   bigO:   O(U)
     #   reads:  {users: all, repos: 1, permScans: 0}
@@ -988,7 +1230,10 @@ cases:
     expectedMutations: 1
 
   add-users-preserves-existing:
-    # affects: {users: 1, repos: 2, perms: 2}
+    # affects:
+    #   users: 1
+    #   repos: 2
+    #   perms: 2
     # cost:
     #   bigO:   O(R)
     #   reads:  {users: 1, repos: all, permScans: 1}
@@ -1008,7 +1253,10 @@ cases:
     expectedMutations: 2
 
   full-overwrite-removes-stale-grant:
-    # affects: {users: 2, repos: 1, perms: 2}
+    # affects:
+    #   users: 2
+    #   repos: 1
+    #   perms: 2
     # cost:
     #   bigO:   O(U+R)
     #   reads:  {users: all, repos: all, permScans: 0}
@@ -1028,8 +1276,13 @@ cases:
 
   # ── Live only: real-instance validation and organization sync ──
   invalid-created-after-date:
-    # affects: {users: 0, repos: 0, perms: 0}
-    # cost: {bigO: O(1), note: date validation fails before any instance read}
+    # affects:
+    #   users: 0
+    #   repos: 0
+    #   perms: 0
+    # cost:
+    #   bigO:   O(1)
+    #   note:   date validation fails before any instance read
     description: >-
       An impossible calendar date passes the YYYY-MM-DD shape check but is
       rejected by date validation.
@@ -1042,8 +1295,13 @@ cases:
       - "--created-after must use YYYY-MM-DD"
 
   invalid-missing-maps-file:
-    # affects: {users: 0, repos: 0, perms: 0}
-    # cost: {bigO: O(1), note: maps-file existence check only — no instance reads}
+    # affects:
+    #   users: 0
+    #   repos: 0
+    #   perms: 0
+    # cost:
+    #   bigO:   O(1)
+    #   note:   maps-file existence check only — no instance reads
     description: >-
       A maps path that does not exist is rejected with a pointer to the
       command that creates the default maps file. Also pins the --quiet
@@ -1059,8 +1317,14 @@ cases:
       - set input file does not exist
 
   get-created-after-future:
-    # affects: {users: 0, repos: 0, perms: 0}
-    # cost: {bigO: O(1), reads: {users: 0, permScans: 0}, note: server-side date filter selects nobody}
+    # affects:
+    #   users: 0
+    #   repos: 0
+    #   perms: 0
+    # cost:
+    #   bigO:   O(1)
+    #   reads:  {users: 0, permScans: 0}
+    #   note:   server-side date filter selects nobody
     description: >-
       A far-future --created-after selects no users on the real instance.
     modes:
@@ -1071,8 +1335,14 @@ cases:
       - Selected 0 user(s) for get output.
 
   get-user-created-after-future:
-    # affects: {users: 0, repos: 0, perms: 0}
-    # cost: {bigO: O(1), reads: {users: 1 lookup, permScans: 0}, note: the user is filtered out by date}
+    # affects:
+    #   users: 0
+    #   repos: 0
+    #   perms: 0
+    # cost:
+    #   bigO:   O(1)
+    #   reads:  {users: 1 lookup, permScans: 0}
+    #   note:   the user is filtered out by date
     description: >-
       --users combined with a far-future --created-after filters the named
       user out of the selection.
@@ -1084,8 +1354,14 @@ cases:
       - no user metadata selected
 
   get-users-without-perms-created-after-future:
-    # affects: {users: 0, repos: 0, perms: 0}
-    # cost: {bigO: O(1), reads: {users: 0, permScans: 0}, note: filtered candidate query selects nobody}
+    # affects:
+    #   users: 0
+    #   repos: 0
+    #   perms: 0
+    # cost:
+    #   bigO:   O(1)
+    #   reads:  {users: 0, permScans: 0}
+    #   note:   filtered candidate query selects nobody
     description: >-
       --users-without-explicit-perms combined with a far-future
       --created-after selects no users.
@@ -1097,7 +1373,10 @@ cases:
       - Selected 0 user(s) for get output.
 
   get-repos-filter:
-    # affects: {users: 0, repos: 0, perms: 0}
+    # affects:
+    #   users: 0
+    #   repos: 0
+    #   perms: 0
     # cost:
     #   bigO:   O(U·scan)
     #   reads:  {users: all, repos: 1, permScans: all}
@@ -1115,7 +1394,10 @@ cases:
       - Selected 1 repo(s) by exact name.
 
   get-repos-created-after-future:
-    # affects: {users: 0, repos: 0, perms: 0}
+    # affects:
+    #   users: 0
+    #   repos: 0
+    #   perms: 0
     # cost:
     #   bigO:   O(U)
     #   reads:  {users: all, repos: ~1 page, permScans: 0}
@@ -1132,8 +1414,14 @@ cases:
       - Selected 0 Sourcegraph repo(s) created on or after 2099-01-01.
 
   set-users-created-after-noop:
-    # affects: {users: 0, repos: 0, perms: 0}
-    # cost: {bigO: O(1), reads: {users: 0}, note: server-side date filter selects nobody — exits before the repo scan}
+    # affects:
+    #   users: 0
+    #   repos: 0
+    #   perms: 0
+    # cost:
+    #   bigO:   O(1)
+    #   reads:  {users: 0}
+    #   note:   server-side date filter selects nobody — exits before the repo scan
     description: >-
       A far-future --created-after selects no users on the real instance:
       zero mutations, seeded state untouched.
@@ -1148,7 +1436,10 @@ cases:
     expectedMutations: 0
 
   set-repos-created-after-noop:
-    # affects: {users: 0, repos: 0, perms: 0}
+    # affects:
+    #   users: 0
+    #   repos: 0
+    #   perms: 0
     # cost:
     #   bigO:   O(U)
     #   reads:  {users: all, repos: ~1 page, permScans: 0}
@@ -1167,7 +1458,10 @@ cases:
     expectedMutations: 0
 
   sync-saml-orgs-dry-run:
-    # affects: {users: 0, repos: 0, perms: 0}
+    # affects:
+    #   users: 0
+    #   repos: 0
+    #   perms: 0
     # cost:
     #   bigO:   O(U)
     #   reads:  {users: all, orgMembers: all}
@@ -1184,7 +1478,10 @@ cases:
       - Dry run complete
 
   set-users-sync-saml-orgs-dry-run:
-    # affects: {users: 0, repos: 0, perms: 0}
+    # affects:
+    #   users: 0
+    #   repos: 0
+    #   perms: 0
     # cost:
     #   bigO:   O(U)
     #   reads:  {users: 1 + all, permScans: 1}
@@ -1201,7 +1498,10 @@ cases:
       - Dry run complete
 
   set-full-sync-saml-orgs-dry-run:
-    # affects: {users: 0, repos: 0, perms: 0}
+    # affects:
+    #   users: 0
+    #   repos: 0
+    #   perms: 0
     # cost:
     #   bigO:   O(U·scan + R)
     #   reads:  {users: all, repos: all, permScans: all}
@@ -1219,7 +1519,10 @@ cases:
       - Dry run complete
 
   set-created-after-sync-saml-orgs-dry-run:
-    # affects: {users: 0, repos: 0, perms: 0}
+    # affects:
+    #   users: 0
+    #   repos: 0
+    #   perms: 0
     # cost:
     #   bigO:   O(U)
     #   reads:  {users: 0 + all}
@@ -1236,7 +1539,10 @@ cases:
       - Dry run complete
 
   set-repos-sync-saml-orgs-dry-run:
-    # affects: {users: 0, repos: 0, perms: 0}
+    # affects:
+    #   users: 0
+    #   repos: 0
+    #   perms: 0
     # cost:
     #   bigO:   O(U·scan)
     #   reads:  {users: 2×all, repos: 1, permScans: all}
@@ -1254,7 +1560,10 @@ cases:
       - Dry run complete
 
   set-users-without-perms-sync-saml-orgs-dry-run:
-    # affects: {users: 0, repos: 0, perms: 0}
+    # affects:
+    #   users: 0
+    #   repos: 0
+    #   perms: 0
     # cost:
     #   bigO:   O(U+R)
     #   reads:  {users: 2×all, repos: all, permScans: rule-matched}
@@ -1273,7 +1582,10 @@ cases:
       - Dry run complete
 
   set-repos-created-after-sync-saml-orgs-dry-run:
-    # affects: {users: 0, repos: 0, perms: 0}
+    # affects:
+    #   users: 0
+    #   repos: 0
+    #   perms: 0
     # cost:
     #   bigO:   O(U)
     #   reads:  {users: 0 + all, repos: ~1 page}
@@ -1290,7 +1602,10 @@ cases:
       - Dry run complete
 
   sync-saml-orgs-apply:
-    # affects: {users: 0, repos: 0, perms: 0}  (converges org memberships only; no repo perms)
+    # affects:
+    #   users: 0
+    #   repos: 0
+    #   perms: 0  (converges org memberships only; no repo perms)
     # cost:
     #   bigO:   O(U)
     #   reads:  {users: all, orgMembers: all}
@@ -1307,7 +1622,10 @@ cases:
 
   # ── Live + performance: timed, measured runs (slowest) ──
   full-overwrite-unions:
-    # affects: {users: 3, repos: 2, perms: 5}
+    # affects:
+    #   users: 3
+    #   repos: 2
+    #   perms: 5
     # cost:
     #   bigO:   O(U+R)
     #   reads:  {users: all, repos: all, permScans: 0}
@@ -1330,8 +1648,13 @@ cases:
     expectedMutations: 2
 
   get-user-baseline:
-    # affects: {users: 0, repos: 0, perms: 0}
-    # cost: {bigO: O(1), reads: {users: 1, permScans: 1}}
+    # affects:
+    #   users: 0
+    #   repos: 0
+    #   perms: 0
+    # cost:
+    #   bigO:   O(1)
+    #   reads:  {users: 1, permScans: 1}
     description: Timed read-only baseline of one user's explicit grants.
     modes:
       - performance
@@ -1339,7 +1662,10 @@ cases:
     expectedExitCode: 0
 
   get-full-snapshot:
-    # affects: {users: 0, repos: 0, perms: 0}
+    # affects:
+    #   users: 0
+    #   repos: 0
+    #   perms: 0
     # cost:
     #   bigO:   O(U·scan)
     #   reads:  {users: all, permScans: all}
@@ -1357,7 +1683,10 @@ cases:
     expectedMutations: 0
 
   get-repos-without-explicit-perms:
-    # affects: {users: 0, repos: 0, perms: 0}
+    # affects:
+    #   users: 0
+    #   repos: 0
+    #   perms: 0
     # cost:
     #   bigO:   O(U·scan + R)
     #   reads:  {users: all, repos: all, permScans: all}
@@ -1375,7 +1704,10 @@ cases:
     expectedMutations: 0
 
   set-repos-without-perms-sync-saml-orgs-dry-run:
-    # affects: {users: 0, repos: 0, perms: 0}
+    # affects:
+    #   users: 0
+    #   repos: 0
+    #   perms: 0
     # cost:
     #   bigO:   O(U·scan + R)
     #   reads:  {users: 2×all, repos: all, permScans: all}
