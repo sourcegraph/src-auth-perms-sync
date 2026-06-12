@@ -67,6 +67,9 @@
       "externalServiceID": 1,
       "explicitPermissionsUsers": [
         "test_user_09994"
+      ],
+      "pendingBindIDs": [
+        "perms-sync-test-pending-ghost1"
       ]
     },
     {
@@ -83,6 +86,9 @@
       "externalServiceID": 1,
       "explicitPermissionsUsers": [
         "test_user_09994"
+      ],
+      "pendingBindIDs": [
+        "perms-sync-test-pending-ghost2"
       ]
     }
   ]

@@ -46,6 +46,11 @@ permissionsHygiene:
   # Explicit API grants on LIVE repos beyond this count are leftovers from
   # crashed or unfinished runs; setup reports them (per repo) and fails.
   # Grants attached to soft-deleted repos are pure orphans: --apply deletes
-  # them. Pending permissions should always be empty between runs: --apply
-  # clears them.
+  # them.
   maxExplicitGrants: 50
+  # Live fixture cases seed pending bindIDs (grants that never resolved to
+  # a user) with this prefix and restore them away; leftovers mean an
+  # interrupted run, and --apply deletes exactly those rows. Pending
+  # bindIDs WITHOUT this prefix have an unknown origin: setup reports them
+  # and never deletes them.
+  syntheticPendingBindIDPrefix: "perms-sync-test-pending-"

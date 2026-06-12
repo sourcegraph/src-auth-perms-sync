@@ -998,7 +998,10 @@ cases:
   full-overwrite-unions:
     description: >-
       Full set mode unions users across rules, overwrites mapped repos, and
-      leaves unmapped repos alone.
+      leaves unmapped repos alone. Pending bindIDs ride along: one on a
+      mapped repo must survive its overwrite, one on an unmapped canary
+      must stay untouched — live runs seed, verify, and restore them
+      against the real instance.
     modes:
       - local
       - live

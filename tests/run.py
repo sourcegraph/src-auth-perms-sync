@@ -120,6 +120,20 @@ mutation TestSetRepositoryPermissions($repository: ID!, $userPermissions: [UserP
 }
 """
 
+PENDING_REPOS_READ_BACK_QUERY = """
+query TestPendingRepos($bindID: String!, $first: Int!, $after: String) {
+  authorizedUserRepositories(username: $bindID, first: $first, after: $after) {
+    nodes { name }
+    pageInfo { hasNextPage endCursor }
+  }
+}
+"""
+
+# Pending bindIDs seeded by live fixture cases match this prefix, so leftovers
+# from an interrupted run are recognizable and `tests/setup.py --apply` can
+# clear them without touching pending grants of unknown origin.
+SYNTHETIC_PENDING_BINDID_PREFIX = "perms-sync-test-pending-"
+
 SAML_AUTH_PROVIDERS_QUERY = """
 query TestSamlAuthProviders {
   site {
@@ -1386,16 +1400,32 @@ class TestSuite:
         except Exception as exception:
             self.record("live hygiene: pending bindIDs", "live", False, 0.0, str(exception))
             return
+        synthetic = [
+            bind_id for bind_id in pending if bind_id.startswith(SYNTHETIC_PENDING_BINDID_PREFIX)
+        ]
+        unknown = [
+            bind_id
+            for bind_id in pending
+            if not bind_id.startswith(SYNTHETIC_PENDING_BINDID_PREFIX)
+        ]
+        details: list[str] = []
+        if synthetic:
+            details.append(
+                f"synthetic leftovers from an interrupted run: {synthetic[:5]} — "
+                "`uv run tests/setup.py --apply` clears them"
+            )
+        if unknown:
+            details.append(
+                f"pending bindIDs of unknown origin: {unknown[:5]} — investigate "
+                "before clearing (an empty setRepositoryPermissionsForUsers on the "
+                "affected repo removes its pending rows)"
+            )
         self.record(
             "live hygiene: pending bindIDs",
             "live",
             not pending,
             time.monotonic() - started,
-            "none"
-            if not pending
-            else f"pending bindIDs of unknown origin: {pending[:5]} — investigate "
-            "before clearing (an empty setRepositoryPermissionsForUsers on the "
-            "affected repo removes its pending rows)",
+            "none" if not pending else "; ".join(details),
         )
 
     def run_wheel_install_smoke(self) -> None:
@@ -1609,6 +1639,8 @@ class TestSuite:
             self.record(label, level, False, 0.0, "missing before.json")
             return
         after_grants = fixture_grants(case_name, "after.json") or before_grants
+        before_pending = fixture_pending(case_name, "before.json") or {}
+        after_pending = fixture_pending(case_name, "after.json") or before_pending
         rule_repository_names, selector_error = fixture_maps_repo_scope(
             case_name, has_declared_repository_names=bool(declared_repository_names)
         )
@@ -1637,6 +1669,17 @@ class TestSuite:
                 return
             original_state[repository_name] = read_back
         repository_ids = {name: state[0] for name, state in original_state.items()}
+
+        # Pending grants ride along: seeded with the before-state, expected to
+        # survive the run exactly as the fixture says, and restored with the
+        # original state. The read-backs and extra outcomes only engage when
+        # the case or the instance actually involves pending grants.
+        original_pending = self.read_back_pending_by_repository(set(involved_names))
+        pending_in_scope = bool(
+            original_pending
+            or any(before_pending.get(name) for name in involved_names)
+            or any(after_pending.get(name) for name in involved_names)
+        )
 
         # Preflight: some modes (e.g. --users-without-explicit-perms) are only
         # deterministic when the named users hold no grants beyond the
@@ -1697,7 +1740,10 @@ class TestSuite:
                 f"{label} [seed before-state]",
                 level,
                 {
-                    name: (repository_ids[name], before_grants.get(name, set()))
+                    name: (
+                        repository_ids[name],
+                        before_grants.get(name, set()) | before_pending.get(name, set()),
+                    )
                     for name in involved_names
                 },
             )
@@ -1708,6 +1754,12 @@ class TestSuite:
                 level,
                 {name: before_grants.get(name, set()) for name in involved_names},
             )
+            if pending_in_scope:
+                self.check_pending_states(
+                    f"{label} [seed pending verified]",
+                    level,
+                    {name: before_pending.get(name, set()) for name in involved_names},
+                )
 
             today = datetime.datetime.now(datetime.UTC).date().isoformat()
             main_arguments = tuple(
@@ -1734,17 +1786,35 @@ class TestSuite:
                     f"expected {expected_mutations}, got {actual_mutations}",
                 )
             self.check_repository_states(f"{label} [state verified]", level, expected_after)
+            if pending_in_scope:
+                self.check_pending_states(
+                    f"{label} [pending preserved]",
+                    level,
+                    {
+                        name: after_pending.get(name, before_pending.get(name, set()))
+                        for name in involved_names
+                    },
+                )
         finally:
             self.set_repository_states(
                 f"{label} [restore original state]",
                 level,
-                original_state,
+                {
+                    name: (state[0], state[1] | original_pending.get(name, set()))
+                    for name, state in original_state.items()
+                },
             )
             self.check_repository_states(
                 f"{label} [restore verified]",
                 level,
                 {name: state[1] for name, state in original_state.items()},
             )
+            if pending_in_scope:
+                self.check_pending_states(
+                    f"{label} [restore pending verified]",
+                    level,
+                    {name: original_pending.get(name, set()) for name in involved_names},
+                )
             for username, user_id in created_temporary_user_ids.items():
                 self.delete_temporary_user(label, level, username, user_id)
 
@@ -2233,6 +2303,64 @@ class TestSuite:
                 time.monotonic() - started,
                 f"{exception}; run `uv run tests/setup.py --apply`",
             )
+
+    def read_back_pending_repo_names(self, bind_id: str) -> set[str]:
+        """Return the repo names a pending bindID has explicit-API grants on.
+
+        `authorizedUserRepositories` falls back to the pending-permissions
+        store when the bindID matches no user — the only API that exposes a
+        pending bindID's repos.
+        """
+        names: set[str] = set()
+        after_cursor: str | None = None
+        while True:
+            data = self.graphql(
+                PENDING_REPOS_READ_BACK_QUERY,
+                {"bindID": bind_id, "first": READ_BACK_PAGE_SIZE, "after": after_cursor},
+            )
+            connection = cast("dict[str, Any]", data["authorizedUserRepositories"])
+            for node in cast("list[dict[str, Any]]", connection["nodes"]):
+                names.add(cast(str, node["name"]))
+            page_info = cast("dict[str, Any]", connection["pageInfo"])
+            if not page_info.get("hasNextPage"):
+                return names
+            after_cursor = cast("str | None", page_info.get("endCursor"))
+
+    def read_back_pending_by_repository(self, repository_names: set[str]) -> dict[str, set[str]]:
+        """Return {involved repo name: pending bindIDs} read from the instance."""
+        pending_by_repository: dict[str, set[str]] = {}
+        bind_ids = cast(
+            "list[str]",
+            self.graphql("query TestPending { usersWithPendingPermissions }", {})[
+                "usersWithPendingPermissions"
+            ],
+        )
+        for bind_id in bind_ids:
+            for repository_name in self.read_back_pending_repo_names(bind_id):
+                if repository_name in repository_names:
+                    pending_by_repository.setdefault(repository_name, set()).add(bind_id)
+        return pending_by_repository
+
+    def check_pending_states(
+        self, name: str, level: str, expected_pending: dict[str, set[str]]
+    ) -> None:
+        """Independently read back involved repos' pending bindIDs and compare."""
+        started = time.monotonic()
+        actual_pending = self.read_back_pending_by_repository(set(expected_pending))
+        mismatches: list[str] = []
+        for repository_name, expected_bind_ids in sorted(expected_pending.items()):
+            actual_bind_ids = actual_pending.get(repository_name, set())
+            if actual_bind_ids != expected_bind_ids:
+                missing = sorted(expected_bind_ids - actual_bind_ids)[:5]
+                unexpected = sorted(actual_bind_ids - expected_bind_ids)[:5]
+                mismatches.append(f"{repository_name}: missing={missing} unexpected={unexpected}")
+        self.record(
+            name,
+            level,
+            not mismatches,
+            time.monotonic() - started,
+            "; ".join(mismatches) if mismatches else f"{len(expected_pending)} repo(s) match",
+        )
 
     def run_live_permission_cycles(self, environment: dict[str, str]) -> None:
         # The baseline get is a prerequisite for both cycles, so it runs when
@@ -3164,6 +3292,20 @@ def fixture_grants(case_name: str, file_name: str) -> dict[str, set[str]] | None
     return {
         cast(str, repository["name"]): set(
             cast("list[str]", repository["explicitPermissionsUsers"])
+        )
+        for repository in cast("list[dict[str, Any]]", state["repos"])
+    }
+
+
+def fixture_pending(case_name: str, file_name: str) -> dict[str, set[str]] | None:
+    """Return {repo name: pending bindIDs} from one fixture state file."""
+    path = FIXTURES_DIR / case_name / file_name
+    if not path.is_file():
+        return None
+    state = cast("dict[str, Any]", json.loads(path.read_text(encoding="utf-8")))
+    return {
+        cast(str, repository["name"]): set(
+            cast("list[str]", repository.get("pendingBindIDs") or [])
         )
         for repository in cast("list[dict[str, Any]]", state["repos"])
     }
