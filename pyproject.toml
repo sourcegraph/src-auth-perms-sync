@@ -63,7 +63,10 @@ line-length = 100
 extend-exclude = ["src-auth-perms-sync-runs"]
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "B", "UP", "SIM"]
+# RUF001-RUF003 ban confusable Unicode (en dash, multiplication sign,
+# lookalike letters) in Python strings, comments, and docstrings;
+# tests/confusables.py applies the same policy to non-Python files.
+select = ["E", "F", "I", "B", "UP", "SIM", "RUF001", "RUF002", "RUF003"]
 
 [tool.uv]
 package = true

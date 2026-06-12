@@ -953,6 +953,10 @@ class TestSuite:
         self.gate("ruff format --check", ["uv", "run", "ruff", "format", "--check", "."])
         self.gate("pyright", ["uv", "run", "pyright"])
         self.gate(
+            "confusable characters (non-Python files)",
+            ["uv", "run", "python", "tests/confusables.py"],
+        )
+        self.gate(
             "unit + fixture tests",
             ["uv", "run", "python", "-m", "unittest", "discover", "-s", "tests"],
         )
