@@ -19,6 +19,8 @@ Levels (each level runs only its own checks):
 
 --live and --performance optionally take a comma-delimited list of test
 names (substring match) to run a subset, e.g. --live full-overwrite-unions.
+Every check the filter skips logs a SKIP line, so the log always states
+which checks ran; a filter that matches no checks fails the run.
 
 Other commands:
 
@@ -780,6 +782,8 @@ class TestSuite:
     endpoint: str = ""
     access_token: str = ""
     test_user: str = ""
+    skipped_check_names: list[str] = field(default_factory=list[str])
+    filter_matched_count: int = 0
 
     # -- bookkeeping --------------------------------------------------------
 
@@ -823,6 +827,29 @@ class TestSuite:
         return any(
             token.lower() in name.lower() for token in self.arguments.test_filter for name in names
         )
+
+    def select(self, *names: str) -> bool:
+        """`test_selected`, plus visibility: skipped checks are logged and counted.
+
+        Gates every optional check, so the log always states which checks
+        ran (their ✓/✗ line) and which ones the filter skipped (a SKIP
+        line). `names[0]` is the check's canonical name.
+        """
+        if self.test_selected(*names):
+            if self.arguments.test_filter:
+                self.filter_matched_count += 1
+            return True
+        if names[0] not in self.skipped_check_names:
+            self.skipped_check_names.append(names[0])
+            log.info("SKIP [filter] %s", names[0])
+        return False
+
+    def log_test_filter(self) -> None:
+        if self.arguments.test_filter:
+            log.info(
+                "Test filter (substring match): %s — non-matching checks log a SKIP line.",
+                ", ".join(repr(token) for token in self.arguments.test_filter),
+            )
 
     # -- subprocess helpers --------------------------------------------------
 
@@ -1303,6 +1330,7 @@ class TestSuite:
 
     def run_live(self) -> None:
         log.info("\n=== Live: %s ===", self.endpoint or "(loading .env)")
+        self.log_test_filter()
         try:
             environment = self.prepare_live()
         except (LiveAbort, SystemExit) as error:
@@ -1311,7 +1339,7 @@ class TestSuite:
         self.record("live prerequisites", "live", True, 0.0)
 
         self.check_live_hygiene()
-        if self.test_selected("wheel install smoke"):
+        if self.select("wheel install smoke"):
             self.run_wheel_install_smoke()
         self.run_live_fixture_cases(environment)
         self.run_seeded_org_sync_check(environment)
@@ -1325,7 +1353,7 @@ class TestSuite:
         Deep hygiene (grant-table counts, orphan cleanup, SAML fixtures,
         synthetic emails) is `uv run tests/setup.py`'s job before the run.
         """
-        if not self.test_selected("live hygiene"):
+        if not self.select("live hygiene"):
             return
         started = time.monotonic()
         try:
@@ -1462,7 +1490,7 @@ class TestSuite:
     def run_live_fixture_cases(self, environment: dict[str, str]) -> None:
         log.info("\n--- Live: tests.yaml cases against the real instance ---")
         for case_name, case in self.fixture_cases_for_mode("live"):
-            if self.test_selected(f"live fixture: {case_name}"):
+            if self.select(f"live fixture: {case_name}"):
                 self.run_fixture_case_on_instance(case_name, case, environment, level="live")
 
     def fixture_cases_for_mode(self, mode: str) -> list[tuple[str, dict[str, Any]]]:
@@ -1805,7 +1833,7 @@ class TestSuite:
         to SAML truth, verified by an independent member read-back.
         """
         label = "live: sync-saml-orgs seeded"
-        if not self.test_selected(label):
+        if not self.select(label):
             return
         log.info("\n--- Live: seeded organization sync (membership added AND removed) ---")
         from src_auth_perms_sync.orgs.sync import organization_name_for_saml_group
@@ -1992,7 +2020,7 @@ class TestSuite:
         account and the repos are restored afterwards.
         """
         label = "live: perms follow saml group change"
-        if not self.test_selected(label):
+        if not self.select(label):
             return
         log.info("\n--- Live: permissions follow a SAML group change ---")
         import yaml
@@ -2189,16 +2217,21 @@ class TestSuite:
     def run_live_permission_cycles(self, environment: dict[str, str]) -> None:
         # The baseline get is a prerequisite for both cycles, so it runs when
         # any of them is selected.
-        want_user_cycle = self.test_selected("live: set --users apply", "user cycle")
+        want_user_cycle = self.select("live: set --users apply", "user cycle")
         # The full cycle applies the ROOT maps.yaml to the whole instance
         # (10k users x ~1,150 repos) — an instance-wide stress run that has
         # crashed the test instance's Postgres. Opt-in only:
         #   uv run tests/run.py --live "full cycle"
         want_full_cycle = self.explicitly_selected("live: set --full", "full cycle")
+        if want_full_cycle:
+            self.filter_matched_count += 1
+        else:
+            log.info(
+                "SKIP [opt-in] live: set --full — instance-wide stress cycle; "
+                'run `uv run tests/run.py --live "full cycle"`'
+            )
         want_baseline = (
-            self.test_selected("live: get user baseline", "baseline")
-            or want_user_cycle
-            or want_full_cycle
+            want_user_cycle or want_full_cycle or self.select("live: get user baseline", "baseline")
         )
         if not want_baseline:
             return
@@ -2422,6 +2455,7 @@ class TestSuite:
             self.arguments.repeat,
             self.arguments.jaeger_trace_limit,
         )
+        self.log_test_filter()
         try:
             environment = self.prepare_live()
         except (LiveAbort, SystemExit) as error:
@@ -2496,8 +2530,8 @@ class TestSuite:
 
         # The dry run is also the baseline snapshot source for the apply +
         # restore pair, so selecting the apply implies running the dry run.
-        want_apply = self.test_selected("perf: set --full apply", "perf: restore full")
-        want_dry_run = want_apply or self.test_selected("perf: set --full dry-run")
+        want_apply = self.select("perf: set --full apply", "perf: restore full")
+        want_dry_run = want_apply or self.select("perf: set --full dry-run")
 
         if want_dry_run:
             dry_run = measure(
@@ -2528,7 +2562,7 @@ class TestSuite:
                     )
                 )
         for case_name, case in self.fixture_cases_for_mode("performance"):
-            if self.test_selected(f"performance fixture: {case_name}"):
+            if self.select(f"performance fixture: {case_name}"):
                 self.run_fixture_case_on_instance(
                     case_name,
                     case,
@@ -2644,18 +2678,33 @@ class TestSuite:
     # -- summary -------------------------------------------------------------------
 
     def print_summary(self) -> int:
+        if self.arguments.test_filter and self.filter_matched_count == 0:
+            self.record(
+                "test filter",
+                self.arguments.level,
+                False,
+                0.0,
+                f"filter {list(self.arguments.test_filter)} matched no checks — "
+                "the SKIP lines above list every available check name",
+            )
         log.info("\n%s", "=" * 72)
         passed = sum(1 for result in self.results if result.passed)
         failed = len(self.results) - passed
         for result in self.results:
             if not result.passed:
                 log.error("FAILED [%s] %s — %s", result.level, result.name, result.detail)
+        skipped_suffix = (
+            f" Skipped {len(self.skipped_check_names)} check(s) not matching the test filter."
+            if self.skipped_check_names
+            else ""
+        )
         log.log(
             logging.ERROR if failed else logging.INFO,
-            "Summary: %d passed, %d failed, %d total.",
+            "Summary: %d passed, %d failed, %d total.%s",
             passed,
             failed,
             len(self.results),
+            skipped_suffix,
         )
         return 1 if failed else 0
 
