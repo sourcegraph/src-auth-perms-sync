@@ -186,7 +186,68 @@ class _PipelinedCandidateClient:
         return cast(src.JSONDict, response)
 
 
+class _UserHydrationClient:
+    """Serves UsersByIDBatch; `missing_user_ids` hydrate to null nodes."""
+
+    def __init__(self, missing_user_ids: set[str]) -> None:
+        self.missing_user_ids = missing_user_ids
+        self.calls: list[src.JSONDict] = []
+        self.queries: list[str] = []
+
+    def graphql(
+        self,
+        query: str,
+        variables: src.JSONDict | None = None,
+        *,
+        follow_pages: bool = True,
+    ) -> src.JSONDict:
+        if variables is None:
+            raise AssertionError("expected UsersByIDBatch variables")
+        if follow_pages:
+            raise AssertionError("hydration batch should not ask the client to follow pages")
+        self.calls.append(dict(variables))
+        self.queries.append(query)
+
+        response: dict[str, object] = {}
+        for variable_name, variable_value in variables.items():
+            if not isinstance(variable_value, str):
+                raise AssertionError("expected user ID variable")
+            if variable_value in self.missing_user_ids:
+                response[variable_name] = None
+                continue
+            response[variable_name] = {
+                "id": variable_value,
+                "username": f"name-of-{variable_value}",
+                "builtinAuth": True,
+                "externalAccounts": {"nodes": []},
+            }
+        return cast(src.JSONDict, response)
+
+
 class PermissionsSourcegraphTests(unittest.TestCase):
+    def test_get_users_by_ids_batches_hydration_and_preserves_order(self) -> None:
+        requested_user_ids = [f"user-{user_number}" for user_number in range(60)]
+        client = _UserHydrationClient(missing_user_ids={"user-30"})
+
+        users = permissions_sourcegraph.get_users_by_ids(
+            cast(src.SourcegraphClient, client),
+            requested_user_ids,
+            parallelism=1,
+        )
+
+        self.assertEqual(len(users), 60)
+        self.assertIsNone(users[30])
+        hydrated_ids = [user["id"] for user in users if user is not None]
+        self.assertEqual(
+            hydrated_ids,
+            [user_id for user_id in requested_user_ids if user_id != "user-30"],
+        )
+        # 60 users at the hydration batch size of 25 → 3 requests.
+        self.assertEqual([len(call) for call in client.calls], [25, 25, 10])
+        for query in client.queries:
+            self.assertIn("query UsersByIDBatch", query)
+            self.assertNotIn("permissionsInfo", query)
+
     def test_list_repos_for_external_service_uses_larger_pages(self) -> None:
         client = _RepoConnectionClient()
 

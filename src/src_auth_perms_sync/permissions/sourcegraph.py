@@ -22,6 +22,7 @@ from . import types as permission_types
 log = logging.getLogger(__name__)
 SITE_USER_CANDIDATE_PAGE_SIZE = 1000
 REPOSITORY_PAGE_SIZE = 1000
+USER_HYDRATION_BATCH_SIZE = 25
 
 
 @dataclass(frozen=True)
@@ -207,6 +208,50 @@ def get_user_by_id(
         ),
     )
     return cast(shared_types.User | None, data.get("node"))
+
+
+def get_users_by_ids(
+    client: src.SourcegraphClient,
+    user_ids: Sequence[str],
+    *,
+    include_emails: bool = False,
+    include_account_data: bool = True,
+    parallelism: int = 1,
+    worker_pool: ThreadPoolExecutor | None = None,
+    progress_label: str | None = None,
+) -> list[shared_types.User | None]:
+    """Hydrate User nodes by GraphQL ID in aliased batches.
+
+    Returns one entry per requested ID, in order; `None` marks users that
+    no longer exist.
+    """
+
+    def fetch_batch(batch: Sequence[str]) -> list[shared_types.User | None]:
+        data = client.graphql(
+            queries.users_by_ids_batch_query(
+                len(batch),
+                include_emails=include_emails,
+                include_account_data=include_account_data,
+            ),
+            cast(src.JSONDict, {f"user{index}": user_id for index, user_id in enumerate(batch)}),
+            follow_pages=False,
+        )
+        users: list[shared_types.User | None] = []
+        for index in range(len(batch)):
+            node = src.json_dict(data.get(f"user{index}"))
+            users.append(cast(shared_types.User, node) if node.get("id") else None)
+        return users
+
+    users: list[shared_types.User | None] = []
+    for batch_users in run_context.parallel_map(
+        fetch_batch,
+        _batches(tuple(user_ids), USER_HYDRATION_BATCH_SIZE),
+        parallelism=parallelism,
+        worker_pool=worker_pool,
+        progress_label=progress_label,
+    ):
+        users.extend(batch_users)
+    return users
 
 
 def list_site_user_candidates(

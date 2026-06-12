@@ -139,6 +139,52 @@ from `github.com/sourcegraph/sourcegraph`:
   permissions, but the read path uses per-user connection queries and repo
   resolver fanout.
 
+## Presence-check resolver internals (2026-06-12)
+
+Measured on the 10k-user / 50k-repo test instance, the presence probe
+`User.permissionsInfo.repositories(source: API, first: 1)` costs 225–350ms of
+server work per user, and alias batching barely helps (21,004 single-user
+probes averaged 351.6ms; 25-user batches averaged 5,616ms ≈ 224.7ms/user). A
+single `set --users-without-explicit-perms` run probing all 10,002 users at
+batch size 1 spent 4,269s of its 5,210s total in these probes.
+
+Reading the resolver code in `github.com/sourcegraph/sourcegraph` explains why
+`first: 1` does not make the probe cheap:
+
+- `UserResolver.PermissionsInfo` (resolver.go) **unconditionally** calls
+  `db.Perms().LoadUserPermissions`, which runs
+  `SELECT ... FROM user_repo_permissions WHERE user_id = $1` with **no LIMIT
+  and no source filter**, only to compute the parent object's `source` /
+  `updatedAt` fields. The rows are discarded afterward.
+- `userPermissionsInfoResolver.Repositories` (permissions_info.go) builds a
+  CTE (`reposPermissionsInfoQueryFmt` in perms_store.go) that **materializes
+  every repo accessible to the user** — a full `repo` ⋈
+  `external_service_repos` ⋈ `external_services` join with the correlated
+  authz `EXISTS` predicate and an `ORDER BY` — before the outer query applies
+  `urp.source = 'API'` and the LIMIT. `first: 1` becomes `LIMIT 2` on the
+  outer query only; the CTE is not short-circuited.
+- Requesting `totalCount` adds a second independent execution of the same CTE
+  (`CountUserPermissions`).
+- `user_repo_permissions` has only two indexes:
+  `(user_id, user_external_account_id, repo_id)` unique and `(repo_id)`.
+  Nothing covers `source`, so even the row-level filter cannot use an index.
+
+The cheap query Sourcegraph could run instead is a single indexed scan:
+
+```sql
+SELECT DISTINCT user_id FROM user_repo_permissions WHERE source = 'api';
+```
+
+Client-side mitigation shipped in `src-auth-perms-sync` (2026-06-12):
+`set --users-without-explicit-perms` now matches maps.yaml user selectors
+locally BEFORE probing, so probes scale with the rule-matched user count
+instead of the instance's user count, and user hydration runs as aliased
+25-user batches instead of one `UserByID` request per user. The remaining
+inherent cost — ~225ms × probed user — is exactly what the
+presence/filter API requested below would remove, and
+`get --users-without-explicit-perms` still has to probe every active user
+because its semantics are instance-wide.
+
 ## Current explicit-permissions REST API findings
 
 [Deep Search findings](https://sourcegraph.sourcegraph.com/deepsearch/972e0964-1b41-4805-8774-65dad2ad58c6)

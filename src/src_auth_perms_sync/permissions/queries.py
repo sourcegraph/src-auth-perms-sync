@@ -219,6 +219,32 @@ query UserByID($id: ID!) {{
 """
 
 
+def users_by_ids_batch_query(
+    batch_size: int,
+    *,
+    include_emails: bool = False,
+    include_account_data: bool = True,
+) -> str:
+    """Hydrate many users in one request via aliased `node()` lookups.
+
+    Replaces one `UserByID` round trip per user: the per-request overhead
+    dominates user hydration, so batching cuts request count by the batch
+    size with the same per-user fields.
+    """
+    fields = user_fields(include_emails=include_emails, include_account_data=include_account_data)
+    variables = ", ".join(f"$user{index}: ID!" for index in range(batch_size))
+    aliases = "".join(
+        f"""
+  user{index}: node(id: $user{index}) {{
+    ... on User {{
+      {fields}
+    }}
+  }}"""
+        for index in range(batch_size)
+    )
+    return f"query UsersByIDBatch({variables}) {{{aliases}\n}}"
+
+
 QUERY_USER_BY_USERNAME = query_user_by_username()
 QUERY_USER_BY_EMAIL = query_user_by_email()
 QUERY_USER_BY_ID = query_user_by_id()

@@ -233,6 +233,13 @@ class FakeSourcegraphClient:
             return {"user": self._graphql_user_by_email(variable_values["email"])}
         if "query UserByID" in query:
             return {"node": self._graphql_user_by_id(variable_values["id"])}
+        if "query UsersByIDBatch" in query:
+            hydrated: dict[str, Any] = {}
+            index = 0
+            while f"user{index}" in variable_values:
+                hydrated[f"user{index}"] = self._graphql_user_by_id(variable_values[f"user{index}"])
+                index += 1
+            return hydrated
         if "query SiteUsers" in query:
             return {"site": {"users": self._site_users(variable_values)}}
         if "query UserExplicitRepoExistsBatch" in query:

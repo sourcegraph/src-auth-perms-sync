@@ -26,6 +26,13 @@ See the thread discussion 2026-06-11.
 - Use the stress-run evidence in
   [engineering-requests.md](./engineering-requests.md)
   to request Sourcegraph bulk explicit-permission read and write APIs.
+  2026-06-12: presence-probe resolver internals and measured costs added
+  there (see "Presence-check resolver internals"); request is ready to
+  submit. Client-side, `set --users-without-explicit-perms` now matches
+  rules before probing and hydrates users in aliased batches (5,210s →
+  15s on the 10k-user instance), but `get --users-without-explicit-perms`
+  still probes every active user — only a server-side presence/filter API
+  fixes that.
   New evidence 2026-06-10: the whole-instance apply (1,150 repo
   overwrites x 10,002 bindIDs each at parallelism 16) crashed the test
   instance's Postgres ("connection refused", "unexpected EOF"); the
