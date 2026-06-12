@@ -12,7 +12,7 @@ Adding a new matcher type:
   2. Add it as a sibling key on `UserSelector` or `RepositorySelector`.
   3. Add a branch in `resolve_users` / `resolve_repos` below.
   4. Add structural validation in `validate_mapping_rules`.
-  5. Add an example rule using the new matcher to `maps-example.yaml`.
+  5. Add an example rule using the new matcher to `examples/maps.yaml`.
 """
 
 from __future__ import annotations
