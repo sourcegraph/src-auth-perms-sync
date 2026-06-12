@@ -6,6 +6,7 @@ import src_py_lib as src
 
 from src_auth_perms_sync.permissions import restore as permission_restore
 from src_auth_perms_sync.permissions import snapshot as permission_snapshot
+from src_auth_perms_sync.permissions import types as permission_types
 
 
 class RestoreTests(unittest.TestCase):
@@ -67,6 +68,79 @@ class RestoreTests(unittest.TestCase):
         )
         self.assertEqual(("github.com/sourcegraph/extra", ()), overwrites_by_repo[extra_repo_id])
 
+    def test_plan_full_restore_restores_and_wipes_pending_grants(self) -> None:
+        matching_repo_id = src.encode_repository_id(1)
+        drifted_repo_id = src.encode_repository_id(2)
+        pending_only_target_repo_id = src.encode_repository_id(3)
+        pending_only_current_repo_id = src.encode_repository_id(4)
+        matching_repo: permission_types.Repository = {
+            "id": matching_repo_id,
+            "name": "github.com/sourcegraph/matching",
+        }
+        drifted_repo: permission_types.Repository = {
+            "id": drifted_repo_id,
+            "name": "github.com/sourcegraph/drifted",
+        }
+        pending_only_target_repo: permission_types.Repository = {
+            "id": pending_only_target_repo_id,
+            "name": "github.com/sourcegraph/pending-only-target",
+        }
+        pending_only_current_repo: permission_types.Repository = {
+            "id": pending_only_current_repo_id,
+            "name": "github.com/sourcegraph/pending-only-current",
+        }
+        target_snapshot = self.make_snapshot(
+            {
+                matching_repo_id: self.make_repo_snapshot(matching_repo["name"], ["alice"]),
+                drifted_repo_id: self.make_repo_snapshot(drifted_repo["name"], ["alice"]),
+            },
+            pending_users={
+                "ghost": [matching_repo, drifted_repo, pending_only_target_repo],
+            },
+        )
+        current_snapshot = self.make_snapshot(
+            {
+                matching_repo_id: self.make_repo_snapshot(matching_repo["name"], ["alice"]),
+                drifted_repo_id: self.make_repo_snapshot(drifted_repo["name"], ["alice"]),
+            },
+            pending_users={
+                "ghost": [matching_repo],
+                "stale": [pending_only_current_repo],
+            },
+        )
+        snapshot_state = permission_restore.RestoreSnapshotState(
+            target_snapshot=target_snapshot,
+            current_snapshot=current_snapshot,
+            users=[],
+        )
+
+        plan = permission_restore.plan_full_restore(snapshot_state)
+
+        overwrites_by_repo = {
+            overwrite.repository_id: (overwrite.repository_name, overwrite.usernames)
+            for overwrite in plan.overwrites
+        }
+        # Real users and pending both match — no mutation.
+        self.assertNotIn(matching_repo_id, overwrites_by_repo)
+        # Pending grant missing from current state — restored alongside alice.
+        self.assertEqual(
+            (drifted_repo["name"], ("alice", "ghost")),
+            overwrites_by_repo[drifted_repo_id],
+        )
+        # Repo with only a pending grant in the target — recreated.
+        self.assertEqual(
+            (pending_only_target_repo["name"], ("ghost",)),
+            overwrites_by_repo[pending_only_target_repo_id],
+        )
+        # Pending-only repo absent from the target — wiped.
+        self.assertEqual(
+            (pending_only_current_repo["name"], ()),
+            overwrites_by_repo[pending_only_current_repo_id],
+        )
+        self.assertEqual(3, plan.snapshot_repo_count)
+        self.assertEqual(1, plan.skipped_repo_count)
+        self.assertEqual(1, plan.extra_repo_count)
+
     def make_repo_snapshot(
         self,
         name: str,
@@ -80,6 +154,7 @@ class RestoreTests(unittest.TestCase):
     def make_snapshot(
         self,
         repos: dict[str, permission_snapshot.RepoSnapshot],
+        pending_users: dict[str, list[permission_types.Repository]] | None = None,
     ) -> permission_snapshot.Snapshot:
         total_grants = sum(len(repo_snapshot["users"]) for repo_snapshot in repos.values())
         users_with_explicit_grants = {
@@ -92,7 +167,7 @@ class RestoreTests(unittest.TestCase):
             "bindID_mode": "USERNAME",
             "config_file": None,
             "config_sha256": None,
-            "pending_bindIDs": [],
+            "pending_users": pending_users or {},
             "stats": {
                 "total_users_scanned": len(users_with_explicit_grants),
                 "users_with_explicit_grants": len(users_with_explicit_grants),

@@ -468,7 +468,9 @@ def projected_snapshot_shell(
         "bindID_mode": before_snapshot["bindID_mode"],
         "config_file": before_snapshot["config_file"],
         "config_sha256": before_snapshot["config_sha256"],
-        "pending_bindIDs": list(before_snapshot["pending_bindIDs"]),
+        # Full-set overwrites preserve pending grants, so the projection
+        # carries them through unchanged.
+        "pending_users": dict(before_snapshot["pending_users"]),
         "stats": projected_snapshot_stats(before_snapshot, expected_users),
         "repos": {},
     }
@@ -543,6 +545,7 @@ def validate_post_apply(
     after: permission_snapshot.Snapshot,
     expected_users: dict[str, tuple[str, ...]],
     mutated_repo_ids: set[str],
+    expected_pending_users: dict[str, list[permission_types.Repository]] | None = None,
 ) -> None:
     """Post-apply sanity gates. Each failure WARNs/ERRORs but does not raise.
 
@@ -555,11 +558,16 @@ def validate_post_apply(
        after-snapshot's explicit-user list must equal the union we asked
        for. Disagreement means a partial write, a concurrent mutation by
        another tool, or a server-side bug.
+
+    3. Pending preservation: overwrites resend each repo's pending bindIDs,
+       so the after-state's pending grants must match
+       `expected_pending_users` (when supplied). A pending bindID may
+       legitimately vanish by becoming a real user mid-run.
     """
     requested_usernames: set[str] = set()
     for usernames in expected_users.values():
         requested_usernames.update(usernames)
-    pending = set(after["pending_bindIDs"])
+    pending = set(after["pending_users"])
     stuck = sorted(requested_usernames & pending)
     if stuck:
         log.error(
@@ -568,6 +576,9 @@ def validate_post_apply(
             len(stuck),
             ", ".join(stuck),
         )
+
+    if expected_pending_users is not None:
+        _warn_on_pending_grant_drift(expected_pending_users, after["pending_users"])
 
     mismatches = 0
     for repo_id in mutated_repo_ids:
@@ -600,6 +611,29 @@ def validate_post_apply(
         log.info(
             "VALIDATION OK: all %d mutated repo(s) match the requested explicit-permissions state.",
             len(mutated_repo_ids),
+        )
+
+
+def _warn_on_pending_grant_drift(
+    expected_pending_users: dict[str, list[permission_types.Repository]],
+    actual_pending_users: dict[str, list[permission_types.Repository]],
+) -> None:
+    """Warn when pending grants were not preserved exactly as expected."""
+    drifted: list[str] = []
+    for bind_id in sorted(set(expected_pending_users) | set(actual_pending_users)):
+        expected_repo_ids = {
+            repository["id"] for repository in expected_pending_users.get(bind_id, [])
+        }
+        actual_repo_ids = {repository["id"] for repository in actual_pending_users.get(bind_id, [])}
+        if expected_repo_ids != actual_repo_ids:
+            drifted.append(bind_id)
+    if drifted:
+        log.warning(
+            "VALIDATION: pending grants for %d bindID(s) do not match the "
+            "expected preserved state (a pending user signing in mid-run "
+            "also causes this): %s",
+            len(drifted),
+            ", ".join(drifted),
         )
 
 

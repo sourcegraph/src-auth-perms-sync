@@ -504,7 +504,10 @@ class SnapshotTests(unittest.TestCase):
             with self.assertRaises(SystemExit) as exit_context:
                 permission_snapshot.read_snapshot(snapshot_path)
 
-        self.assertIn("expected 5", str(exit_context.exception))
+        self.assertIn(
+            f"expected {permission_snapshot.SNAPSHOT_SCHEMA_VERSION}",
+            str(exit_context.exception),
+        )
 
     def test_snapshot_with_repository_filter_recomputes_stats(self) -> None:
         snapshot = self.make_snapshot()
@@ -525,7 +528,75 @@ class SnapshotTests(unittest.TestCase):
         self.assertEqual(2, filtered["stats"]["total_grants"])
         self.assertEqual(2, filtered["stats"]["total_users_scanned"])
 
-    def make_snapshot(self) -> permission_snapshot.Snapshot:
+    def test_write_snapshot_round_trips_pending_users(self) -> None:
+        repo_id = src.encode_repository_id(7)
+        snapshot = self.make_snapshot(
+            pending_users={"ghost": [{"id": repo_id, "name": "github.com/sourcegraph/ghostly"}]}
+        )
+
+        with tempfile.TemporaryDirectory() as directory_name:
+            snapshot_path = Path(directory_name) / "before.json"
+
+            permission_snapshot.write_snapshot(snapshot_path, snapshot)
+            on_disk = json.loads(snapshot_path.read_text())
+            loaded_snapshot = permission_snapshot.read_snapshot(snapshot_path)
+
+        self.assertEqual(
+            [{"id": 7, "name": "github.com/sourcegraph/ghostly"}],
+            on_disk["pending_users"]["ghost"],
+        )
+        self.assertEqual(snapshot["pending_users"], loaded_snapshot["pending_users"])
+
+    def test_snapshot_diff_tracks_pending_changes(self) -> None:
+        first_repo: permission_types.Repository = {
+            "id": src.encode_repository_id(1),
+            "name": "github.com/sourcegraph/example",
+        }
+        second_repo: permission_types.Repository = {
+            "id": src.encode_repository_id(2),
+            "name": "github.com/sourcegraph/second",
+        }
+        before = self.make_snapshot(pending_users={"ghost": [first_repo], "stale": [first_repo]})
+        after = self.make_snapshot(pending_users={"ghost": [second_repo], "fresh": [first_repo]})
+
+        diff = permission_snapshot.build_snapshot_diff(before, after)
+        rendered = permission_snapshot.render_snapshot_diff(before, after)
+
+        self.assertEqual(["fresh"], diff["pending_bindIDs"]["added"])
+        self.assertEqual(["stale"], diff["pending_bindIDs"]["removed"])
+        self.assertEqual(["ghost"], diff["pending_bindIDs"]["changed"])
+        self.assertEqual(1, diff["summary"]["pending_bindIDs_added"])
+        self.assertEqual(1, diff["summary"]["pending_bindIDs_removed"])
+        self.assertEqual(1, diff["summary"]["pending_bindIDs_changed"])
+        self.assertNotEqual("No changes.", rendered)
+        self.assertIn("Pending bindIDs added (1): fresh", rendered)
+        self.assertIn("Pending bindIDs removed (1): stale", rendered)
+        self.assertIn("Pending bindIDs changed (1): ghost", rendered)
+
+    def test_snapshot_with_repository_filter_filters_pending_users(self) -> None:
+        first_repo: permission_types.Repository = {
+            "id": src.encode_repository_id(1),
+            "name": "github.com/sourcegraph/example",
+        }
+        second_repo: permission_types.Repository = {
+            "id": src.encode_repository_id(2),
+            "name": "github.com/sourcegraph/second",
+        }
+        snapshot = self.make_snapshot(
+            pending_users={"ghost": [first_repo, second_repo], "stale": [second_repo]}
+        )
+
+        filtered = permission_snapshot.snapshot_with_repository_filter(
+            snapshot,
+            {first_repo["id"]},
+        )
+
+        self.assertEqual({"ghost": [first_repo]}, filtered["pending_users"])
+
+    def make_snapshot(
+        self,
+        pending_users: dict[str, list[permission_types.Repository]] | None = None,
+    ) -> permission_snapshot.Snapshot:
         return {
             "schema_version": permission_snapshot.SNAPSHOT_SCHEMA_VERSION,
             "captured_at": "2026-05-26T00:00:00+00:00",
@@ -533,7 +604,7 @@ class SnapshotTests(unittest.TestCase):
             "bindID_mode": "USERNAME",
             "config_file": None,
             "config_sha256": None,
-            "pending_bindIDs": [],
+            "pending_users": pending_users or {},
             "stats": {
                 "total_users_scanned": 2,
                 "users_with_explicit_grants": 2,

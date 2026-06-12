@@ -262,13 +262,28 @@ query UserExplicitRepos($id: ID!, $first: Int!, $after: String) {
 }
 """
 
-# Used as part of post-apply validation: any of OUR bindIDs appearing in
-# this list means the bindID didn't resolve to a real user (typically a
-# username typo or a recent rename — would fail for our case since we
-# only ever pass usernames the script already enumerated from the users
-# query).
+# Explicit-API grants whose bindID didn't resolve to a real user yet
+# ("grant before first login"). Snapshots capture them so set/restore can
+# preserve them, and post-apply validation checks none of OUR usernames
+# landed here (which would mean a write didn't bind to a real user).
 QUERY_PENDING_BINDIDS = """
 query PendingBindIDs {
   usersWithPendingPermissions
+}
+"""
+
+# For a bindID with no matching user, this resolver falls back to the
+# pending-permissions store and returns the repos the bindID is pending
+# on ("late binding" — see the GraphQL schema comment). That fallback is
+# the only API that exposes WHICH repos a pending bindID has.
+QUERY_PENDING_USER_REPOS = """
+query PendingUserRepos($bindID: String!, $first: Int!, $after: String) {
+  authorizedUserRepositories(username: $bindID, first: $first, after: $after) {
+    nodes {
+      id
+      name
+    }
+    pageInfo { hasNextPage endCursor }
+  }
 }
 """

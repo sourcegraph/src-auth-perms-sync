@@ -1,12 +1,19 @@
 # TODO
 
-## Decide: pendingBindIDs / usersWithPendingPermissions
+## Medium priority: live coverage for pending-permission preservation
 
-The CLI cannot create pending permissions (it validates users exist), but
-snapshots record `pending_bindIDs`, and setup.py / the live hygiene check
-report (never delete) any that appear. Decide whether "grant before first
-login" is a customer need; if not, consider dropping the snapshot field.
-See the thread discussion 2026-06-11.
+Decided 2026-06-12: snapshots capture per-bindID pending repos
+(`pending_users`, snapshot schema v6), and set/restore overwrites resend
+each repo's pending bindIDs so the script neither creates nor loses them.
+Local coverage exists (fixtures `full-overwrite-preserves-pending`,
+`restore-restores-pending`, plus a randomized invariant). Remaining:
+
+- Seed a pending bindID on the live test instance (one
+  `setRepositoryPermissionsForUsers` with an unknown bindID in
+  tests/setup.py), assert it survives `set --full --apply` and a restore
+  round-trip, then clean it up.
+- Relax the live hygiene check / setup.py report to recognize the seeded
+  bindID as expected.
 
 ## High priority: Remote trigger on demand
 

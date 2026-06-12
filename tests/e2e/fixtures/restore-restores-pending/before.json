@@ -41,6 +41,16 @@
       "externalServiceID": 1,
       "explicitPermissionsUsers": [
         "test_user_09991"
+      ],
+      "pendingBindIDs": []
+    },
+    {
+      "id": 102,
+      "name": "test-repo-49982",
+      "externalServiceID": 1,
+      "explicitPermissionsUsers": [],
+      "pendingBindIDs": [
+        "stale_user_19992@perms-sync.test"
       ]
     }
   ]

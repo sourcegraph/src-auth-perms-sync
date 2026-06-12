@@ -80,6 +80,8 @@ class FixtureRepo(TypedDict):
     name: str
     externalServiceID: int
     explicitPermissionsUsers: list[str]
+    # Explicit-API grants for bindIDs with no matching user (pending).
+    pendingBindIDs: NotRequired[list[str]]  # default: []
     createdAt: NotRequired[str]  # default: 2026-01-01T00:00:00Z
 
 
@@ -89,7 +91,6 @@ class FixtureState(TypedDict):
     externalServices: list[FixtureExternalService]
     users: list[FixtureUser]
     repos: list[FixtureRepo]
-    pendingBindIDs: list[str]
 
 
 class FixtureCase(TypedDict):
@@ -180,7 +181,6 @@ class FakeSourcegraphClient:
         self._external_services = list(state["externalServices"])
         self._users = list(state["users"])
         self._repos = list(state["repos"])
-        self._pending_bind_ids = list(state["pendingBindIDs"])
         self._mutation_count = 0
 
         self._users_by_graphql_id = {
@@ -196,6 +196,10 @@ class FakeSourcegraphClient:
         }
         self._permissions_by_repository_id = {
             repository["id"]: set(repository["explicitPermissionsUsers"])
+            for repository in self._repos
+        }
+        self._pending_bind_ids_by_repository_id = {
+            repository["id"]: set(repository.get("pendingBindIDs", []))
             for repository in self._repos
         }
 
@@ -251,7 +255,7 @@ class FakeSourcegraphClient:
         if "query RepositoryNamesByID" in query:
             return self._repository_names_by_id(variable_values)
         if "query PendingBindIDs" in query:
-            return {"usersWithPendingPermissions": list(self._pending_bind_ids)}
+            return {"usersWithPendingPermissions": self._pending_bind_ids()}
         if "mutation SetRepoPerms" in query:
             self._set_repo_permissions(variable_values)
             return {"setRepositoryPermissionsForUsers": {"alwaysNil": None}}
@@ -288,6 +292,8 @@ class FakeSourcegraphClient:
             return iter(self._repository_candidates(variable_values))
         if path == ("node", "permissionsInfo", "repositories"):
             return iter(self._explicit_repository_nodes_for_user(variable_values["id"]))
+        if path == ("authorizedUserRepositories",):
+            return iter(self._authorized_user_repositories(variable_values["bindID"]))
         raise AssertionError(f"Unhandled fixture connection path: {path}")
 
     def export_state(self) -> FixtureState:
@@ -301,6 +307,9 @@ class FakeSourcegraphClient:
                     "explicitPermissionsUsers": sorted(
                         self._permissions_by_repository_id[repository["id"]]
                     ),
+                    "pendingBindIDs": sorted(
+                        self._pending_bind_ids_by_repository_id[repository["id"]]
+                    ),
                 }
             )
         return {
@@ -309,7 +318,6 @@ class FakeSourcegraphClient:
             "externalServices": self._external_services,
             "users": self._users,
             "repos": repos,
-            "pendingBindIDs": self._pending_bind_ids,
         }
 
     def _graphql_user_by_username(self, username_value: object) -> dict[str, Any] | None:
@@ -498,12 +506,50 @@ class FakeSourcegraphClient:
         return data
 
     def _set_repo_permissions(self, variables: dict[str, object]) -> None:
+        """Mirror the real resolver: bindIDs matching a user become explicit
+        grants; the rest replace the repo's pending rows — both in one call."""
         repository_id = self._repository_integer_id(variables["repo"])
         user_permissions = cast(list[dict[str, str]], variables["userPerms"])
+        bind_ids = {user_permission["bindID"] for user_permission in user_permissions}
         self._permissions_by_repository_id[repository_id] = {
-            user_permission["bindID"] for user_permission in user_permissions
+            bind_id for bind_id in bind_ids if bind_id in self._users_by_username
+        }
+        self._pending_bind_ids_by_repository_id[repository_id] = {
+            bind_id for bind_id in bind_ids if bind_id not in self._users_by_username
         }
         self._mutation_count += 1
+
+    def _pending_bind_ids(self) -> list[str]:
+        return sorted(
+            {
+                bind_id
+                for bind_ids in self._pending_bind_ids_by_repository_id.values()
+                for bind_id in bind_ids
+            }
+        )
+
+    def _authorized_user_repositories(self, bind_id_value: object) -> list[dict[str, Any]]:
+        """Real users get their explicit repos; unknown bindIDs fall back to
+        the pending store — the server's "late binding" behavior."""
+        if not isinstance(bind_id_value, str):
+            raise AssertionError("bindID variable must be a string")
+        user = self._users_by_username.get(bind_id_value)
+        if user is not None:
+            return [
+                self._require_graphql_repository(repository)
+                for repository in self._repos
+                if user["username"] in self._permissions_by_repository_id[repository["id"]]
+            ]
+        return [
+            self._require_graphql_repository(repository)
+            for repository in self._repos
+            if bind_id_value in self._pending_bind_ids_by_repository_id[repository["id"]]
+        ]
+
+    def _require_graphql_repository(self, repository: FixtureRepo) -> dict[str, Any]:
+        graphql_repository = self._graphql_repository(repository)
+        assert graphql_repository is not None
+        return graphql_repository
 
     def _add_repo_permission(self, variables: dict[str, object]) -> None:
         repository_id = self._repository_integer_id(variables["repo"])

@@ -2828,12 +2828,16 @@ def random_fixture_state(rng: random.Random, with_grants: bool) -> FixtureState:
         host = "github.com" if service_id == 1 else "bitbucket.test"
         organization = rng.choice(("acme", "lob1"))
         grants = [username for username in usernames if rng.random() < 0.25] if with_grants else []
+        # Pending grants (bindIDs without a matching user) appear on some
+        # repos so every randomized run exercises pending preservation.
+        pending = [f"pending_user{index:02d}"] if rng.random() < 0.3 else []
         repos.append(
             {
                 "id": 100 + index,
                 "name": f"{host}/{organization}/repo{index:02d}",
                 "externalServiceID": service_id,
                 "explicitPermissionsUsers": grants,
+                "pendingBindIDs": pending,
             }
         )
 
@@ -2845,7 +2849,6 @@ def random_fixture_state(rng: random.Random, with_grants: bool) -> FixtureState:
             "externalServices": services,
             "users": users,
             "repos": repos,
-            "pendingBindIDs": [],
         },
     )
 
@@ -2928,6 +2931,14 @@ def grant_pairs(state: FixtureState) -> set[tuple[int, str]]:
         (repository["id"], username)
         for repository in state["repos"]
         for username in repository["explicitPermissionsUsers"]
+    }
+
+
+def pending_pairs(state: FixtureState) -> set[tuple[int, str]]:
+    return {
+        (repository["id"], bind_id)
+        for repository in state["repos"]
+        for bind_id in repository.get("pendingBindIDs", [])
     }
 
 
@@ -3086,12 +3097,28 @@ def check_oracle_equivalence(rng: random.Random, maps_path: Path) -> str:
     return ""
 
 
+def check_pending_preservation(rng: random.Random, maps_path: Path) -> str:
+    state = random_fixture_state(rng, with_grants=True)
+    rules = [random_mapping_rule(rng, state, 1)]
+    final_state, _ = run_set_full_in_memory(state, rules, maps_path)
+    before_pending = pending_pairs(state)
+    after_pending = pending_pairs(final_state)
+    if after_pending != before_pending:
+        return (
+            "set --full changed pending grants: "
+            f"lost={sorted(before_pending - after_pending)[:5]} "
+            f"created={sorted(after_pending - before_pending)[:5]}"
+        )
+    return ""
+
+
 def run_property_checks(seed: int, iterations: int) -> list[PropertyCheckOutcome]:
     checks: list[tuple[str, Callable[[random.Random, Path], str]]] = [
         ("grants for combined rules union per-rule grants", check_union_across_rules),
         ("adding filters never widens the grant set", check_narrowing_monotonicity),
         ("apply is idempotent", check_apply_idempotency),
         ("grants match the mapping-layer oracle", check_oracle_equivalence),
+        ("set --full neither creates nor loses pending grants", check_pending_preservation),
     ]
     outcomes: list[PropertyCheckOutcome] = []
     with tempfile.TemporaryDirectory(prefix="src-auth-perms-sync-invariants-") as temporary:

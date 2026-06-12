@@ -1,0 +1,8 @@
+maps:
+  - name: test_user_09991 owns test-repo-49981
+    users:
+      usernames:
+        - test_user_09991
+    repos:
+      names:
+        - test-repo-49981

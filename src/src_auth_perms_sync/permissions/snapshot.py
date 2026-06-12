@@ -61,7 +61,9 @@ class Snapshot(TypedDict):
     bindID_mode: str  # "USERNAME" or "EMAIL", from the GraphQL enum
     config_file: str | None  # absolute path of the YAML, if known
     config_sha256: str | None  # sha256 of the YAML at capture time
-    pending_bindIDs: list[str]
+    # Explicit-API grants whose bindID has not resolved to a real user yet
+    # ("grant before first login"): bindID → repos it is pending on.
+    pending_users: dict[str, list[permission_types.Repository]]
     stats: SnapshotStats
     repos: dict[str, RepoSnapshot]
 
@@ -113,6 +115,8 @@ class SnapshotDiffSide(TypedDict):
 class SnapshotDiffPendingBindIDs(TypedDict):
     added: list[str]
     removed: list[str]
+    # Present on both sides but pending on a different set of repos.
+    changed: list[str]
 
 
 class SnapshotDiffSummary(TypedDict):
@@ -121,6 +125,7 @@ class SnapshotDiffSummary(TypedDict):
     grants_removed: int
     pending_bindIDs_added: int
     pending_bindIDs_removed: int
+    pending_bindIDs_changed: int
 
 
 class RepositoryPermissionDiffEntry(TypedDict):
@@ -171,9 +176,50 @@ class UserScopedSnapshotDiff(TypedDict):
     users: list[UserScopedSnapshotDiffEntry]
 
 
-SNAPSHOT_SCHEMA_VERSION: int = 5
+SNAPSHOT_SCHEMA_VERSION: int = 6
 USER_SCOPED_SNAPSHOT_KIND = "user_scope"
-SNAPSHOT_DIFF_SCHEMA_VERSION: int = 1
+SNAPSHOT_DIFF_SCHEMA_VERSION: int = 2
+
+
+def pending_bind_ids_by_repository_id(
+    pending_users: dict[str, list[permission_types.Repository]],
+) -> dict[str, list[str]]:
+    """Invert bindID → repos into repo ID → sorted pending bindIDs."""
+    bind_ids_by_repository_id: dict[str, list[str]] = {}
+    for bind_id, repositories in pending_users.items():
+        for repository in repositories:
+            bind_ids_by_repository_id.setdefault(repository["id"], []).append(bind_id)
+    for bind_ids in bind_ids_by_repository_id.values():
+        bind_ids.sort()
+    return bind_ids_by_repository_id
+
+
+def pending_repository_names_by_id(
+    pending_users: dict[str, list[permission_types.Repository]],
+) -> dict[str, str]:
+    """Return repo ID → name for every repo referenced by pending grants."""
+    return {
+        repository["id"]: repository["name"]
+        for repositories in pending_users.values()
+        for repository in repositories
+    }
+
+
+def _filter_pending_users(
+    pending_users: dict[str, list[permission_types.Repository]],
+    selected_repository_ids: set[str] | None,
+) -> dict[str, list[permission_types.Repository]]:
+    """Keep only pending grants on selected repos; drop emptied bindIDs."""
+    if selected_repository_ids is None:
+        return pending_users
+    filtered: dict[str, list[permission_types.Repository]] = {}
+    for bind_id, repositories in pending_users.items():
+        selected = [
+            repository for repository in repositories if repository["id"] in selected_repository_ids
+        ]
+        if selected:
+            filtered[bind_id] = selected
+    return filtered
 
 
 def capture_explicit_grants(
@@ -494,7 +540,10 @@ def build_snapshot(
             worker_pool=worker_pool,
             selected_repository_ids=selected_repository_ids,
         )
-        pending = permissions_sourcegraph.list_pending_bind_ids(client)
+        pending_users = _filter_pending_users(
+            permissions_sourcegraph.list_pending_users_with_repos(client),
+            selected_repository_ids,
+        )
 
         config_sha: str | None = None
         if config_path is not None and config_path.exists():
@@ -510,8 +559,11 @@ def build_snapshot(
         build_event["repos_with_explicit_grants"] = len(repos)
         build_event["users_with_explicit_grants"] = len(distinct_users)
         build_event["total_grants"] = total_grants
-        if pending:
-            build_event["pending_bindIDs_count"] = len(pending)
+        if pending_users:
+            build_event["pending_bindIDs_count"] = len(pending_users)
+            build_event["pending_grant_count"] = sum(
+                len(repositories) for repositories in pending_users.values()
+            )
 
         return {
             "schema_version": SNAPSHOT_SCHEMA_VERSION,
@@ -520,7 +572,7 @@ def build_snapshot(
             "bindID_mode": bind_id_mode,
             "config_file": str(config_path.resolve()) if config_path else None,
             "config_sha256": config_sha,
-            "pending_bindIDs": sorted(pending),
+            "pending_users": pending_users,
             "stats": {
                 "total_users_scanned": scanned_user_count,
                 "users_with_explicit_grants": len(distinct_users),
@@ -541,6 +593,7 @@ def snapshot_with_repository_filter(
         for repository_id, repo in snapshot["repos"].items()
         if repository_id in selected_repository_ids
     }
+    pending_users = _filter_pending_users(snapshot["pending_users"], selected_repository_ids)
     distinct_users: set[str] = set()
     total_grants = 0
     for repo in repos.values():
@@ -553,7 +606,7 @@ def snapshot_with_repository_filter(
         "bindID_mode": snapshot["bindID_mode"],
         "config_file": snapshot["config_file"],
         "config_sha256": snapshot["config_sha256"],
-        "pending_bindIDs": list(snapshot["pending_bindIDs"]),
+        "pending_users": pending_users,
         "stats": {
             "total_users_scanned": snapshot["stats"]["total_users_scanned"],
             "users_with_explicit_grants": len(distinct_users),
@@ -800,6 +853,27 @@ def _write_user_scoped_snapshot_value(
     output.write("\n" + " " * indent + "}")
 
 
+def _write_pending_users_value(
+    output: TextIO,
+    pending_users: dict[str, list[permission_types.Repository]],
+) -> None:
+    """Write the pending-users map with decoded integer repo IDs."""
+    if not pending_users:
+        output.write("{}")
+        return
+    output.write("{")
+    first = True
+    for bind_id, repositories in sorted(pending_users.items()):
+        if not first:
+            output.write(",")
+        output.write("\n    ")
+        json.dump(bind_id, output)
+        output.write(": ")
+        _write_repository_list(output, repositories, 4)
+        first = False
+    output.write("\n  }")
+
+
 def _write_snapshot_json(
     path: Path,
     snapshot: Snapshot,
@@ -816,8 +890,6 @@ def _write_snapshot_json(
             ("bindID_mode", snapshot["bindID_mode"]),
             ("config_file", snapshot["config_file"]),
             ("config_sha256", snapshot["config_sha256"]),
-            ("pending_bindIDs", snapshot["pending_bindIDs"]),
-            ("stats", snapshot["stats"]),
         )
         for field_name, value in fields:
             _write_top_level_json_field(
@@ -827,6 +899,10 @@ def _write_snapshot_json(
                 first=first,
             )
             first = False
+
+        output.write(',\n  "pending_users": ')
+        _write_pending_users_value(output, snapshot["pending_users"])
+        _write_top_level_json_field(output, "stats", snapshot["stats"], first=False)
 
         output.write(',\n  "repos": {')
         wrote_repo = False
@@ -968,6 +1044,17 @@ def _encode_full_snapshot_raw(path: Path, raw: dict[str, Any]) -> Snapshot:
         src.encode_repository_id(int(repo_id)): _encode_repo_snapshot_raw(path, repo_id, repo)
         for repo_id, repo in on_disk_repos.items()
     }
+    on_disk_pending = cast(dict[str, list[dict[str, Any]]], raw.get("pending_users", {}))
+    raw["pending_users"] = {
+        bind_id: [
+            {
+                "id": src.encode_repository_id(int(repository["id"])),
+                "name": cast(str, repository["name"]),
+            }
+            for repository in repositories
+        ]
+        for bind_id, repositories in on_disk_pending.items()
+    }
     return cast(Snapshot, raw)
 
 
@@ -1033,6 +1120,16 @@ class _SnapshotDiffPlan:
     grants_removed: int
     pending_added: list[str]
     pending_removed: list[str]
+    pending_changed: list[str]
+
+    @property
+    def has_changes(self) -> bool:
+        return bool(
+            self.changed_repo_ids
+            or self.pending_added
+            or self.pending_removed
+            or self.pending_changed
+        )
 
 
 def _sorted_usernames(values: Sequence[str]) -> Sequence[str]:
@@ -1170,14 +1267,21 @@ def _plan_snapshot_diff(
     changed_repo_ids.sort(
         key=lambda repo_id: _snapshot_diff_repo_name(before, after_repo_for_id, repo_id)
     )
-    before_pending = set(before["pending_bindIDs"])
-    after_pending = set(after["pending_bindIDs"])
+    before_pending = before["pending_users"]
+    after_pending = after["pending_users"]
+    pending_changed = [
+        bind_id
+        for bind_id in sorted(set(before_pending) & set(after_pending))
+        if {repository["id"] for repository in before_pending[bind_id]}
+        != {repository["id"] for repository in after_pending[bind_id]}
+    ]
     return _SnapshotDiffPlan(
         changed_repo_ids=changed_repo_ids,
         grants_added=grants_added,
         grants_removed=grants_removed,
-        pending_added=sorted(after_pending - before_pending),
-        pending_removed=sorted(before_pending - after_pending),
+        pending_added=sorted(set(after_pending) - set(before_pending)),
+        pending_removed=sorted(set(before_pending) - set(after_pending)),
+        pending_changed=pending_changed,
     )
 
 
@@ -1209,13 +1313,18 @@ def _snapshot_diff_summary(plan: _SnapshotDiffPlan) -> SnapshotDiffSummary:
         "grants_removed": plan.grants_removed,
         "pending_bindIDs_added": len(plan.pending_added),
         "pending_bindIDs_removed": len(plan.pending_removed),
+        "pending_bindIDs_changed": len(plan.pending_changed),
     }
 
 
 def _snapshot_diff_pending_bind_ids(
     plan: _SnapshotDiffPlan,
 ) -> SnapshotDiffPendingBindIDs:
-    return {"added": plan.pending_added, "removed": plan.pending_removed}
+    return {
+        "added": plan.pending_added,
+        "removed": plan.pending_removed,
+        "changed": plan.pending_changed,
+    }
 
 
 def build_snapshot_diff(before: Snapshot, after: Snapshot) -> SnapshotDiff:
@@ -1504,7 +1613,7 @@ def render_snapshot_diff_from_snapshot_parts(
 ) -> str:
     """Format a capped human diff without materializing the full diff."""
     plan = _plan_snapshot_diff(before, after, repo_ids, after_repo_for_id)
-    if not plan.changed_repo_ids:
+    if not plan.has_changes:
         return "No changes."
 
     lines: list[str] = []
@@ -1537,6 +1646,14 @@ def render_snapshot_diff_from_snapshot_parts(
             f"... {omitted_repos} more repo(s) omitted from log output; "
             "see diff.json for full added/removed lists."
         )
+    for label, bind_ids in (
+        ("added", plan.pending_added),
+        ("removed", plan.pending_removed),
+        ("changed", plan.pending_changed),
+    ):
+        if bind_ids:
+            rendered_bind_ids = _render_limited_values(bind_ids, max_usernames_per_section)
+            lines.append(f"Pending bindIDs {label} ({len(bind_ids)}): {rendered_bind_ids}")
     lines.append("")
     lines.append(
         f"Summary: {len(plan.changed_repo_ids)} repo(s) changed; "

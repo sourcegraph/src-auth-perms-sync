@@ -528,6 +528,49 @@ def _filter_full_set_plans(
     )
 
 
+def _overwrites_with_preserved_pending(
+    overwrites: list[permission_types.RepositoryUsernameOverwrite],
+    pending_bind_ids_by_repository_id: dict[str, list[str]],
+) -> list[permission_types.RepositoryUsernameOverwrite]:
+    """Resend each repo's pending bindIDs so overwrites don't delete them.
+
+    `setRepositoryPermissionsForUsers` replaces a repo's whole explicit
+    list — real grants AND pending ones. Appending the repo's current
+    pending bindIDs to the payload re-creates the same pending rows in the
+    same transaction, so the script neither creates nor loses them.
+    """
+    if not pending_bind_ids_by_repository_id:
+        return overwrites
+    preserved_overwrites: list[permission_types.RepositoryUsernameOverwrite] = []
+    preserved_repo_count = 0
+    preserved_grant_count = 0
+    for overwrite in overwrites:
+        pending_bind_ids = [
+            bind_id
+            for bind_id in pending_bind_ids_by_repository_id.get(overwrite.repository_id, [])
+            if bind_id not in overwrite.usernames
+        ]
+        if not pending_bind_ids:
+            preserved_overwrites.append(overwrite)
+            continue
+        preserved_repo_count += 1
+        preserved_grant_count += len(pending_bind_ids)
+        preserved_overwrites.append(
+            permission_types.RepositoryUsernameOverwrite(
+                repository_id=overwrite.repository_id,
+                repository_name=overwrite.repository_name,
+                usernames=overwrite.usernames + tuple(pending_bind_ids),
+            )
+        )
+    if preserved_repo_count:
+        log.info(
+            "Preserving %d pending bindID grant(s) across %d repo(s) in overwrite payloads.",
+            preserved_grant_count,
+            preserved_repo_count,
+        )
+    return preserved_overwrites
+
+
 def _write_full_set_before_snapshot(
     input_path: Path,
     timestamp: str,
@@ -663,7 +706,12 @@ def _finish_full_set_apply_with_backup(
         permission_snapshot.render_snapshot_diff(before_snapshot, after_snapshot),
     )
 
-    validate_post_apply(after_snapshot, plan.expected_users, set(plan.expected_users))
+    validate_post_apply(
+        after_snapshot,
+        plan.expected_users,
+        set(plan.expected_users),
+        expected_pending_users=before_snapshot["pending_users"],
+    )
     log.info(
         "To roll back the explicit-permissions state captured in "
         "the before-snapshot, run:\n"
@@ -939,9 +987,21 @@ def _run_full_set_apply(
     else:
         before_timestamp = backups.backup_timestamp()
 
+    # The before-snapshot's pending grants are already scoped to any repo
+    # selection; without one (--no-backup), fetch the live pending state so
+    # the overwrites still preserve it.
+    if snapshot_state.before_snapshot is not None:
+        pending_users = snapshot_state.before_snapshot["pending_users"]
+    else:
+        pending_users = permissions_sourcegraph.list_pending_users_with_repos(client)
+    overwrites = _overwrites_with_preserved_pending(
+        filtered_plans.overwrites,
+        permission_snapshot.pending_bind_ids_by_repository_id(pending_users),
+    )
+
     apply_result = _apply_full_set_plans(
         client,
-        filtered_plans.overwrites,
+        overwrites,
         filtered_plans.skipped_repo_ids,
         parallelism,
         worker_pool,
