@@ -53,15 +53,24 @@ USER_ACCOUNT_DATA_FIELD = """          # accountData is the parsed gosaml2
           accountData
 """
 
+# Inlining the user's org memberships into the same user query saves a
+# separate per-user lookup when scoped org sync needs them.
+USER_ORGANIZATIONS_FIELD = """      organizations {
+        nodes { id name }
+      }
+"""
+
 
 def query_users(
     *,
     include_emails: bool = False,
     include_account_data: bool = True,
+    include_organizations: bool = False,
 ) -> str:
     """Return the users page query, adding heavier fields only when requested."""
     email_fields = USER_EMAIL_FIELDS if include_emails else ""
     account_data_field = USER_ACCOUNT_DATA_FIELD if include_account_data else ""
+    organizations_field = USER_ORGANIZATIONS_FIELD if include_organizations else ""
     return f"""
 query ListUsers($first: Int!, $after: String) {{
   users(first: $first, after: $after) {{
@@ -69,7 +78,7 @@ query ListUsers($first: Int!, $after: String) {{
       id
       username
       builtinAuth
-{email_fields}      externalAccounts(first: 50) {{
+{email_fields}{organizations_field}      externalAccounts(first: 50) {{
         nodes {{
           serviceType
           serviceID

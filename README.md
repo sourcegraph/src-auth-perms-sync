@@ -284,6 +284,23 @@ snapshots that make `--apply` reversible.
     - Creates the orgs if they don't exist, and sync the members from the SAML groups to the orgs
     - `--sync-saml-orgs` can also be added to a `set` run, to run both at the same time
 
+### Org sync behavior
+
+- Org names are `synced-<configID>-<group name>` (non-alphanumeric characters
+  become `-`). The `synced-` prefix marks tool ownership: the sync only ever
+  modifies orgs whose name carries it, so manually created orgs are never touched.
+- The org sync mode follows the permission sync mode of the same run — no surprises:
+  - **Full** (standalone `sync-saml-orgs`, or `set --full` / `--repos*`
+    `--sync-saml-orgs`): converges every synced org against all users. A synced
+    org whose SAML group disappeared has all members removed, but the org itself
+    is kept (its settings survive in case the group comes back).
+  - **Scoped** (`set --users` / `--users-without-explicit-perms` /
+    `--created-after` with `--sync-saml-orgs`): syncs org membership for exactly
+    the users the set run selected — per-user additions AND removals, computed
+    from each user's own SAML assertion and org list. Other users' memberships
+    never change, and no full user scan or org member listing is needed, so API
+    traffic stays proportional to the selection.
+
 ## Options
 
 Run `src-auth-perms-sync --help` for options

@@ -8,6 +8,9 @@ from typing import Literal, TypeAlias, TypedDict
 from ..shared import types as shared_types
 
 OrganizationChangeKind: TypeAlias = Literal["add", "remove"]
+# "full": converge whole orgs against the complete user population.
+# "users": per-user sync covering only the run's selected users.
+OrganizationSyncScope: TypeAlias = Literal["full", "users"]
 
 
 class OrgMember(TypedDict):
@@ -39,6 +42,9 @@ class OrganizationSnapshot(TypedDict):
     schema_version: int
     captured_at: str
     endpoint: str
+    # "users"-scoped snapshots record only the scoped users' memberships
+    # per org, not each org's full member list.
+    scope: OrganizationSyncScope
     stats: OrganizationSnapshotStats
     organizations: dict[str, OrganizationSnapshotEntry]
 

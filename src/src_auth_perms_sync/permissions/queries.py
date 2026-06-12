@@ -159,11 +159,20 @@ emails {
 }
 """
 
+# Inlining org memberships into user hydration saves a separate per-user
+# lookup when scoped org sync needs them.
+USER_ORGANIZATIONS_FIELDS = """
+organizations {
+  nodes { id name }
+}
+"""
+
 
 def user_fields(
     *,
     include_emails: bool = False,
     include_account_data: bool = True,
+    include_organizations: bool = False,
 ) -> str:
     """Return user fields, adding heavier fields only when downstream needs them."""
     fields = USER_BASE_FIELDS.replace(
@@ -171,7 +180,9 @@ def user_fields(
         USER_ACCOUNT_DATA_FIELD if include_account_data else "",
     )
     if include_emails:
-        return f"{fields}\n{USER_EMAIL_FIELDS}"
+        fields = f"{fields}\n{USER_EMAIL_FIELDS}"
+    if include_organizations:
+        fields = f"{fields}\n{USER_ORGANIZATIONS_FIELDS}"
     return fields
 
 
@@ -179,11 +190,17 @@ def query_user_by_username(
     *,
     include_emails: bool = False,
     include_account_data: bool = True,
+    include_organizations: bool = False,
 ) -> str:
+    fields = user_fields(
+        include_emails=include_emails,
+        include_account_data=include_account_data,
+        include_organizations=include_organizations,
+    )
     return f"""
 query UserByUsername($username: String!) {{
   user(username: $username) {{
-    {user_fields(include_emails=include_emails, include_account_data=include_account_data)}
+    {fields}
   }}
 }}
 """
@@ -193,11 +210,17 @@ def query_user_by_email(
     *,
     include_emails: bool = False,
     include_account_data: bool = True,
+    include_organizations: bool = False,
 ) -> str:
+    fields = user_fields(
+        include_emails=include_emails,
+        include_account_data=include_account_data,
+        include_organizations=include_organizations,
+    )
     return f"""
 query UserByEmail($email: String!) {{
   user(email: $email) {{
-    {user_fields(include_emails=include_emails, include_account_data=include_account_data)}
+    {fields}
   }}
 }}
 """
@@ -207,12 +230,18 @@ def query_user_by_id(
     *,
     include_emails: bool = False,
     include_account_data: bool = True,
+    include_organizations: bool = False,
 ) -> str:
+    fields = user_fields(
+        include_emails=include_emails,
+        include_account_data=include_account_data,
+        include_organizations=include_organizations,
+    )
     return f"""
 query UserByID($id: ID!) {{
   node(id: $id) {{
     ... on User {{
-      {user_fields(include_emails=include_emails, include_account_data=include_account_data)}
+      {fields}
     }}
   }}
 }}
@@ -224,6 +253,7 @@ def users_by_ids_batch_query(
     *,
     include_emails: bool = False,
     include_account_data: bool = True,
+    include_organizations: bool = False,
 ) -> str:
     """Hydrate many users in one request via aliased `node()` lookups.
 
@@ -231,7 +261,11 @@ def users_by_ids_batch_query(
     dominates user hydration, so batching cuts request count by the batch
     size with the same per-user fields.
     """
-    fields = user_fields(include_emails=include_emails, include_account_data=include_account_data)
+    fields = user_fields(
+        include_emails=include_emails,
+        include_account_data=include_account_data,
+        include_organizations=include_organizations,
+    )
     variables = ", ".join(f"$user{index}: ID!" for index in range(batch_size))
     aliases = "".join(
         f"""

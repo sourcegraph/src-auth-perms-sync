@@ -26,10 +26,18 @@ class CommandData:
     `auth_provider_views` and `code_host_views` carry the same dicts the get
     command writes to `auth-providers.yaml` and `code-hosts.yaml`, so module
     callers receive discovery data without re-parsing files.
+
+    `saml_group_users` carries the complete user population (full set
+    modes); a subsequent org sync reuses it for a full sync. Additive set
+    modes instead carry their selected user subset in
+    `scoped_saml_group_users`; a subsequent org sync then runs scoped to
+    exactly those users (per-user additions and removals, nobody else
+    touched) without streaming all users again.
     """
 
     auth_providers: list[shared_types.AuthProvider] | None = None
     saml_group_users: list[shared_types.SamlGroupUser] | None = None
+    scoped_saml_group_users: list[shared_types.ScopedSamlGroupUser] | None = None
     auth_provider_views: list[dict[str, Any]] | None = None
     code_host_views: list[dict[str, Any]] | None = None
     maps_created: bool = False

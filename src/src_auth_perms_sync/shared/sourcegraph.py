@@ -37,6 +37,7 @@ def list_users_with_accounts(
     *,
     include_emails: bool = False,
     include_account_data: bool = True,
+    include_organizations: bool = False,
 ) -> list[shared_types.User]:
     return [
         cast(shared_types.User, node)
@@ -44,6 +45,7 @@ def list_users_with_accounts(
             queries.query_users(
                 include_emails=include_emails,
                 include_account_data=include_account_data,
+                include_organizations=include_organizations,
             ),
             connection_path=("users",),
             page_size=DEFAULT_PAGE_SIZE,
@@ -57,6 +59,7 @@ def list_users_streaming(
     *,
     include_emails: bool = False,
     include_account_data: bool = True,
+    include_organizations: bool = False,
 ) -> Iterator[shared_types.User]:
     """Stream ListUsers pages one at a time, yielding each User as it arrives.
 
@@ -73,6 +76,7 @@ def list_users_streaming(
         queries.query_users(
             include_emails=include_emails,
             include_account_data=include_account_data,
+            include_organizations=include_organizations,
         ),
         connection_path=("users",),
         page_size=DEFAULT_PAGE_SIZE,

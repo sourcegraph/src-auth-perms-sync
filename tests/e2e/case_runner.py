@@ -88,12 +88,22 @@ class FixtureRepo(TypedDict):
     createdAt: NotRequired[str]  # default: 2026-01-01T00:00:00Z
 
 
+class FixtureOrganization(TypedDict):
+    id: int
+    name: str
+    members: list[str]  # usernames
+
+
 class FixtureState(TypedDict):
     endpoint: str
     authProviders: list[shared_types.AuthProvider]
     externalServices: list[FixtureExternalService]
     users: list[FixtureUser]
     repos: list[FixtureRepo]
+    organizations: NotRequired[list[FixtureOrganization]]  # default: []
+    # The user behind the fixture token (createOrganization auto-adds it).
+    # Default: the first user.
+    currentUsername: NotRequired[str]
 
 
 class FixtureCase(TypedDict):
@@ -187,6 +197,18 @@ class FakeSourcegraphClient:
         self._external_services = list(state["externalServices"])
         self._users = list(state["users"])
         self._repos = list(state["repos"])
+        self._organizations: list[FixtureOrganization] = [
+            {
+                "id": organization["id"],
+                "name": organization["name"],
+                "members": list(organization["members"]),
+            }
+            for organization in state.get("organizations", [])
+        ]
+        self._organization_members_by_id: dict[int, set[str]] = {
+            organization["id"]: set(organization["members"]) for organization in self._organizations
+        }
+        self._current_username = state.get("currentUsername") or self._users[0]["username"]
         self._mutation_count = 0
 
         self._users_by_graphql_id = {
@@ -269,6 +291,42 @@ class FakeSourcegraphClient:
             return self._repository_names_by_id(variable_values)
         if "query PendingBindIDs" in query:
             return {"usersWithPendingPermissions": self._pending_bind_ids()}
+        if "query SamlOrganizationSyncCurrentUser" in query:
+            return {"currentUser": self._graphql_current_user()}
+        if "query SyncedOrganizations" in query:
+            return {
+                "currentUser": self._graphql_current_user(),
+                "organizations": self._search_organizations(
+                    variable_values["query"], variable_values["first"]
+                ),
+            }
+        if "query SamlOrganizationLookup" in query:
+            lookup_data: dict[str, Any] = {"currentUser": self._graphql_current_user()}
+            index = 0
+            while f"name{index}" in variable_values:
+                lookup_data[f"organization{index}"] = self._search_organizations(
+                    variable_values[f"name{index}"],
+                    variable_values["organizationFirst"],
+                )
+                index += 1
+            return lookup_data
+        if "query UsersOrganizationsBatch" in query:
+            organizations_data: dict[str, Any] = {}
+            index = 0
+            while f"user{index}" in variable_values:
+                organizations_data[f"user{index}"] = self._graphql_user_by_id(
+                    variable_values[f"user{index}"]
+                )
+                index += 1
+            return organizations_data
+        if "mutation CreateOrganization" in query:
+            return {"createOrganization": self._create_organization(variable_values["name"])}
+        if "mutation AddUserToOrganization" in query:
+            self._add_user_to_organization(variable_values)
+            return {"addUserToOrganization": {"alwaysNil": None}}
+        if "mutation RemoveUserFromOrganization" in query:
+            self._remove_user_from_organization(variable_values)
+            return {"removeUserFromOrganization": {"alwaysNil": None}}
         if "mutation SetRepoPerms" in query:
             self._set_repo_permissions(variable_values)
             return {"setRepositoryPermissionsForUsers": {"alwaysNil": None}}
@@ -307,6 +365,8 @@ class FakeSourcegraphClient:
             return iter(self._explicit_repository_nodes_for_user(variable_values["id"]))
         if path == ("authorizedUserRepositories",):
             return iter(self._authorized_user_repositories(variable_values["bindID"]))
+        if path == ("node", "members"):
+            return iter(self._organization_member_nodes(variable_values["id"]))
         raise AssertionError(f"Unhandled fixture connection path: {path}")
 
     def export_state(self) -> FixtureState:
@@ -331,6 +391,17 @@ class FakeSourcegraphClient:
             "externalServices": self._external_services,
             "users": self._users,
             "repos": repos,
+            "organizations": [
+                {
+                    "id": organization["id"],
+                    "name": organization["name"],
+                    "members": sorted(self._organization_members_by_id[organization["id"]]),
+                }
+                for organization in sorted(
+                    self._organizations, key=lambda organization: organization["name"]
+                )
+            ],
+            "currentUsername": self._current_username,
         }
 
     def _graphql_user_by_username(self, username_value: object) -> dict[str, Any] | None:
@@ -363,6 +434,13 @@ class FakeSourcegraphClient:
             "builtinAuth": user["builtinAuth"],
             "emails": list(user["emails"]),
             "externalAccounts": {"nodes": list(user["externalAccounts"])},
+            "organizations": {
+                "nodes": [
+                    self._graphql_organization_reference(organization)
+                    for organization in self._organizations
+                    if user["username"] in self._organization_members_by_id[organization["id"]]
+                ]
+            },
         }
 
     def _graphql_external_services(self) -> list[dict[str, Any]]:
@@ -564,6 +642,99 @@ class FakeSourcegraphClient:
         assert graphql_repository is not None
         return graphql_repository
 
+    def _graphql_current_user(self) -> dict[str, Any]:
+        user = self._users_by_username[self._current_username]
+        return {"id": self._user_graphql_id(user["id"]), "username": user["username"]}
+
+    def _graphql_organization_reference(self, organization: FixtureOrganization) -> dict[str, Any]:
+        return {
+            "id": self._organization_graphql_id(organization["id"]),
+            "name": organization["name"],
+        }
+
+    def _search_organizations(self, query_value: object, first_value: object) -> dict[str, Any]:
+        """Substring search over org names, like the real organizations(query:)."""
+        if not isinstance(query_value, str):
+            raise AssertionError("organizations query variable must be a string")
+        if not isinstance(first_value, int):
+            raise AssertionError("organizations first variable must be an integer")
+        matches = [
+            organization
+            for organization in self._organizations
+            if query_value in organization["name"]
+        ]
+        return {
+            "totalCount": len(matches),
+            "nodes": [
+                self._graphql_organization_reference(organization)
+                for organization in matches[:first_value]
+            ],
+        }
+
+    def _organization_member_nodes(self, organization_id_value: object) -> list[dict[str, Any]]:
+        organization = self._organization_by_graphql_id(organization_id_value)
+        return [
+            self._graphql_current_user_like(username)
+            for username in sorted(self._organization_members_by_id[organization["id"]])
+        ]
+
+    def _graphql_current_user_like(self, username: str) -> dict[str, Any]:
+        user = self._users_by_username[username]
+        return {"id": self._user_graphql_id(user["id"]), "username": username}
+
+    def _create_organization(self, name_value: object) -> dict[str, Any]:
+        if not isinstance(name_value, str):
+            raise AssertionError("organization name variable must be a string")
+        if any(organization["name"] == name_value for organization in self._organizations):
+            raise src.GraphQLError(
+                f"createOrganization: organization name is already taken: {name_value}"
+            )
+        organization_id = (
+            max((organization["id"] for organization in self._organizations), default=0) + 1
+        )
+        organization: FixtureOrganization = {
+            "id": organization_id,
+            "name": name_value,
+            "members": [],
+        }
+        self._organizations.append(organization)
+        # createOrganization adds the caller as the first member.
+        self._organization_members_by_id[organization_id] = {self._current_username}
+        self._mutation_count += 1
+        return self._graphql_organization_reference(organization)
+
+    def _add_user_to_organization(self, variables: dict[str, object]) -> None:
+        organization = self._organization_by_graphql_id(variables["organization"])
+        username_value = variables["username"]
+        if not isinstance(username_value, str):
+            raise AssertionError("username variable must be a string")
+        if username_value not in self._users_by_username:
+            raise src.GraphQLError(f"addUserToOrganization: no such user: {username_value}")
+        members = self._organization_members_by_id[organization["id"]]
+        if username_value in members:
+            raise src.GraphQLError(
+                "addUserToOrganization: user is already a member of the organization"
+            )
+        members.add(username_value)
+        self._mutation_count += 1
+
+    def _remove_user_from_organization(self, variables: dict[str, object]) -> None:
+        organization = self._organization_by_graphql_id(variables["organization"])
+        username = self._username_from_user_graphql_id(variables["user"])
+        self._organization_members_by_id[organization["id"]].discard(username)
+        self._mutation_count += 1
+
+    def _organization_by_graphql_id(self, organization_id_value: object) -> FixtureOrganization:
+        if not isinstance(organization_id_value, str):
+            raise AssertionError("organization variable must be a string")
+        for organization in self._organizations:
+            if self._organization_graphql_id(organization["id"]) == organization_id_value:
+                return organization
+        raise AssertionError(f"unknown organization GraphQL ID: {organization_id_value}")
+
+    def _organization_graphql_id(self, organization_id: int) -> str:
+        return src.encode_sourcegraph_node_id("Org", organization_id)
+
     def _add_repo_permission(self, variables: dict[str, object]) -> None:
         repository_id = self._repository_integer_id(variables["repo"])
         username = self._username_from_user_graphql_id(variables["user"])
@@ -664,7 +835,13 @@ def case_cli_arguments(case: FixtureCase, case_name: str) -> list[str]:
         argv = shlex.split(cli_command)
     else:
         flags = cli_flags_by_field_name()
-        argv = [cast(str, args["command"])]
+        # args carry the CommandName (e.g. sync_saml_orgs); the argv needs
+        # the CLI argument spelling (sync-saml-orgs).
+        argument_names = {
+            command.command_name: command.argument_name for command in cli.CLI_COMMANDS
+        }
+        command_name = cast(str, args["command"])
+        argv = [argument_names.get(command_name, command_name)]
         for field_name, value in args.items():
             if field_name == "command" or value is None or value is False:
                 continue
