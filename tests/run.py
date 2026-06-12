@@ -724,9 +724,9 @@ class ExternalProcessSampler:
 
 @dataclass(frozen=True)
 class RunLogSummary:
-    """Resource usage and the run end record from one CLI run's structured log."""
+    """Resource usage and the run-end event attributes from one CLI run's structured log."""
 
-    run_record: dict[str, Any] | None
+    run_end_attributes: dict[str, Any] | None
     sampled_peak_rss_mb: float | None
     resource_sample_count: int
     max_num_fds: int | None
@@ -749,12 +749,20 @@ def int_field(record: dict[str, Any], name: str) -> int | None:
     return None
 
 
+def record_attributes(record: dict[str, Any]) -> dict[str, Any]:
+    """Return one OTel log record's attributes mapping (empty when absent)."""
+    attributes = record.get("attributes")
+    if isinstance(attributes, dict):
+        return cast("dict[str, Any]", attributes)
+    return {}
+
+
 def read_run_log_summary(log_path: Path | None) -> RunLogSummary:
-    """Parse a CLI run's log.json for the run end record and resource samples."""
+    """Parse a CLI run's log.json for the run-end event and resource samples."""
     empty = RunLogSummary(None, None, 0, None, None, None)
     if log_path is None or not log_path.is_file():
         return empty
-    run_record: dict[str, Any] | None = None
+    run_end_attributes: dict[str, Any] | None = None
     sampled_peak_rss_mb: float | None = None
     resource_sample_count = 0
     max_num_fds: int | None = None
@@ -768,30 +776,31 @@ def read_run_log_summary(log_path: Path | None) -> RunLogSummary:
                 record = cast("dict[str, Any]", json.loads(line))
             except json.JSONDecodeError:
                 continue
-            if record.get("event") == "resource_sample":
+            attributes = record_attributes(record)
+            if record.get("event_name") == "resource_sample":
                 resource_sample_count += 1
-                sample_rss = float_field(record, "peak_rss_mb", "rss_mb", "process_rss_mb")
+                sample_rss = float_field(attributes, "peak_rss_mb", "rss_mb", "process_rss_mb")
                 if sample_rss is not None and (
                     sampled_peak_rss_mb is None or sample_rss > sampled_peak_rss_mb
                 ):
                     sampled_peak_rss_mb = sample_rss
-                sample_fds = int_field(record, "num_fds")
+                sample_fds = int_field(attributes, "num_fds")
                 if sample_fds is not None and (max_num_fds is None or sample_fds > max_num_fds):
                     max_num_fds = sample_fds
-                sample_threads = int_field(record, "num_threads")
+                sample_threads = int_field(attributes, "num_threads")
                 if sample_threads is not None and (
                     max_num_threads is None or sample_threads > max_num_threads
                 ):
                     max_num_threads = sample_threads
-                sample_cpu = float_field(record, "process_cpu_percent", "cpu_percent")
+                sample_cpu = float_field(attributes, "process_cpu_percent", "cpu_percent")
                 if sample_cpu is not None and (
                     max_process_cpu_percent is None or sample_cpu > max_process_cpu_percent
                 ):
                     max_process_cpu_percent = sample_cpu
-            if record.get("event") == "run" and record.get("phase") == "end":
-                run_record = record
+            if record.get("event_name") == "run" and attributes.get("phase") == "end":
+                run_end_attributes = attributes
     return RunLogSummary(
-        run_record=run_record,
+        run_end_attributes=run_end_attributes,
         sampled_peak_rss_mb=sampled_peak_rss_mb,
         resource_sample_count=resource_sample_count,
         max_num_fds=max_num_fds,
@@ -2727,9 +2736,9 @@ class TestSuite:
         summary = read_run_log_summary(result.log_path)
         duration_ms: float | None = None
         peak_rss_mb: float | None = None
-        if summary.run_record is not None:
-            duration_ms = float_field(summary.run_record, "duration_ms")
-            peak_rss_mb = float_field(summary.run_record, "peak_rss_mb")
+        if summary.run_end_attributes is not None:
+            duration_ms = float_field(summary.run_end_attributes, "duration_ms")
+            peak_rss_mb = float_field(summary.run_end_attributes, "peak_rss_mb")
         return {
             "case": strip_iteration_suffix(case_name),
             "variant": variant_name,
@@ -3046,11 +3055,17 @@ def run_set_full_in_memory(
     )
     command = cli.resolve_command("set", config)
     artifacts_directory = maps_path.parent / f"artifacts-{time.monotonic_ns()}"
-    with (
-        backups.run_artifacts_context(artifacts_directory, backups.backup_timestamp()),
-        ThreadPoolExecutor(max_workers=1) as worker_pool,
-    ):
-        cli.run_command(config, command, cast("src.SourcegraphClient", client), worker_pool)
+    run_paths = backups.resolve_run_paths(
+        endpoint=state["endpoint"],
+        command_artifact_name=command.artifact_name,
+        artifacts_dir=artifacts_directory,
+        maps_path=maps_path,
+        write_files=True,
+    )
+    with ThreadPoolExecutor(max_workers=1) as worker_pool:
+        cli.run_command(
+            config, command, cast("src.SourcegraphClient", client), run_paths, worker_pool
+        )
     return client.export_state(), client.mutation_count
 
 
@@ -3373,7 +3388,7 @@ def mutations_succeeded_from_log(log_path: Path | None) -> int | None:
                 record = cast("dict[str, Any]", json.loads(line))
             except json.JSONDecodeError:
                 continue
-            value = record.get("mutations_succeeded")
+            value = record_attributes(record).get("mutations_succeeded")
             if isinstance(value, int):
                 succeeded = value
     return succeeded
@@ -3452,12 +3467,13 @@ def graphql_trace_request_from_record(record: dict[str, Any]) -> dict[str, Any] 
     import src_py_lib as src
     from src_py_lib.clients.sourcegraph import sourcegraph_trace_from_headers
 
-    if record.get("event") != "http_request" or record.get("phase") != "end":
+    attributes = record_attributes(record)
+    if record.get("event_name") != "http_request" or attributes.get("phase") != "end":
         return None
-    if not str(record.get("url", "")).endswith("/.api/graphql"):
+    if not str(attributes.get("url", "")).endswith("/.api/graphql"):
         return None
-    request_headers = string_headers(record.get("request_headers"))
-    response_headers = string_headers(record.get("response_headers"))
+    request_headers = string_headers(attributes.get("request_headers"))
+    response_headers = string_headers(attributes.get("response_headers"))
     trace = sourcegraph_trace_from_headers(response_headers, request_headers)
     if trace is None:
         trace_id = trace_id_from_traceparent(header_value(request_headers, "traceparent"))
@@ -3468,11 +3484,11 @@ def graphql_trace_request_from_record(record: dict[str, Any]) -> dict[str, Any] 
             trace_url=header_value(response_headers, "x-trace-url"),
         )
     return trace.to_json() | {
-        "duration_ms": float_field(record, "duration_ms") or 0.0,
-        "timestamp": record.get("ts"),
-        "status": record.get("status"),
-        "status_code": record.get("status_code"),
-        "error_type": record.get("error_type"),
+        "duration_ms": float_field(attributes, "duration_ms") or 0.0,
+        "timestamp": record.get("time_unix_nano"),
+        "status": attributes.get("status"),
+        "status_code": attributes.get("status_code"),
+        "error_type": attributes.get("error.type"),
     }
 
 

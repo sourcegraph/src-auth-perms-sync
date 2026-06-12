@@ -93,6 +93,31 @@ class LocalCaseTests(unittest.TestCase):
             with self.subTest(case=case_name):
                 self.assertEqual("", run_local_replay_case(case_name))
 
+    def test_no_files_set_dry_run_matches_files_enabled(self) -> None:
+        """no_files must not change a set dry-run's decisions, and writes nothing.
+
+        The same fixture case runs twice through the import API — once with
+        files enabled and once with no_files — and must plan identical
+        mutations and end in identical instance state, while the no_files
+        run's temporary artifacts directory stays completely empty.
+        """
+        case_name = "full-overwrite-dry-run"
+        with_files = run_fixture_case(case_name, "import")
+        without_files = run_fixture_case(case_name, "import", no_files=True)
+        self.assertIsNone(with_files.failure)
+        self.assertIsNone(without_files.failure)
+        self.assertEqual(with_files.actual_mutations, without_files.actual_mutations)
+        self.assertEqual(with_files.actual_state, without_files.actual_state)
+        self.assertTrue(
+            with_files.artifact_file_names,
+            "the files-enabled run should write run artifacts (maps copy / snapshots)",
+        )
+        self.assertEqual(
+            (),
+            without_files.artifact_file_names,
+            "no_files run must leave its artifacts directory empty",
+        )
+
     def test_local_state_cases(self) -> None:
         for case_name, case in load_e2e_cases().items():
             if "local" not in case_modes(case) or is_replay_case(case):

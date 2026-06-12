@@ -276,53 +276,25 @@ def load_repository_candidates_created_on_or_after(
     return candidates
 
 
-def snapshot_path(
-    input_path: Path,
-    timestamp: str,
-    endpoint: str,
-    command: str,
-    state: str | None = None,
-) -> Path:
-    """Return a path inside the run's artifact directory.
-
-    Example: maps.yaml + endpoint + timestamp + set-apply + before →
-    src-auth-perms-sync-runs/sourcegraph.example.com/runs/2026-04-27-01-54-23-set-apply/before.json.
-    """
-    return backups.backup_path(input_path.name, timestamp, endpoint, command, state)
-
-
 def write_snapshot_pair(
-    input_path: Path,
-    timestamp: str,
-    endpoint: str,
-    command: str,
+    run_paths: backups.RunPaths,
     before_snapshot: permission_snapshot.Snapshot,
     after_snapshot: permission_snapshot.Snapshot,
 ) -> tuple[Path, Path, Path]:
-    before_path = snapshot_path(input_path, timestamp, endpoint, command, "before")
-    after_path = snapshot_path(input_path, timestamp, endpoint, command, "after")
+    before_path = run_paths.artifact_path("before")
+    after_path = run_paths.artifact_path("after")
     permission_snapshot.write_snapshot(before_path, before_snapshot)
     permission_snapshot.write_snapshot(after_path, after_snapshot)
-    diff_path = write_snapshot_diff_file(
-        input_path,
-        timestamp,
-        endpoint,
-        command,
-        before_snapshot,
-        after_snapshot,
-    )
+    diff_path = write_snapshot_diff_file(run_paths, before_snapshot, after_snapshot)
     return before_path, after_path, diff_path
 
 
 def write_snapshot_diff_file(
-    input_path: Path,
-    timestamp: str,
-    endpoint: str,
-    command: str,
+    run_paths: backups.RunPaths,
     before_snapshot: permission_snapshot.Snapshot,
     after_snapshot: permission_snapshot.Snapshot,
 ) -> Path:
-    diff_path = snapshot_path(input_path, timestamp, endpoint, command, "diff")
+    diff_path = run_paths.artifact_path("diff")
     permission_snapshot.write_snapshot_diff_from_snapshots(
         diff_path,
         before_snapshot,
@@ -332,14 +304,11 @@ def write_snapshot_diff_file(
 
 
 def write_user_scoped_snapshot_diff_file(
-    input_path: Path,
-    timestamp: str,
-    endpoint: str,
-    command: str,
+    run_paths: backups.RunPaths,
     before_snapshot: permission_snapshot.UserScopedSnapshot,
     after_snapshot: permission_snapshot.UserScopedSnapshot,
 ) -> Path:
-    diff_path = snapshot_path(input_path, timestamp, endpoint, command, "diff")
+    diff_path = run_paths.artifact_path("diff")
     permission_snapshot.write_user_scoped_snapshot_diff(
         diff_path,
         permission_snapshot.build_user_scoped_snapshot_diff(before_snapshot, after_snapshot),
@@ -347,28 +316,15 @@ def write_user_scoped_snapshot_diff_file(
     return diff_path
 
 
-def maps_backup_path(
-    input_path: Path,
-    timestamp: str,
-    endpoint: str,
-    command: str,
-) -> Path:
-    """Path for the companion copy of the maps YAML used for a backup run."""
-    return backups.backup_path(input_path.name, timestamp, endpoint, command, suffix="yaml")
-
-
-def write_maps_backup(
-    input_path: Path,
-    timestamp: str,
-    endpoint: str,
-    command: str,
-) -> Path | None:
-    """Copy the active maps YAML next to the JSON snapshots for auditability."""
+def write_maps_backup(input_path: Path, run_paths: backups.RunPaths) -> Path | None:
+    """Copy the run's input file next to the JSON snapshots for auditability."""
+    if not run_paths.write_files:
+        return None
     if not input_path.exists():
         log.warning("Could not back up maps file %s because it does not exist.", input_path)
         return None
 
-    output_path = maps_backup_path(input_path, timestamp, endpoint, command)
+    output_path = run_paths.input_copy_path(input_path.name)
     with src.span(
         "disk_io",
         level="DEBUG",
@@ -493,17 +449,14 @@ def write_projected_snapshot(
 
 
 def write_projected_snapshot_diff_file(
-    input_path: Path,
-    timestamp: str,
-    endpoint: str,
-    command: str,
+    run_paths: backups.RunPaths,
     before_snapshot: permission_snapshot.Snapshot,
     after_snapshot: permission_snapshot.Snapshot,
     expected_users: dict[str, tuple[str, ...]],
     repo_names: dict[str, str],
 ) -> Path:
     """Write a diff for a projected full-set after snapshot."""
-    diff_path = snapshot_path(input_path, timestamp, endpoint, command, "diff")
+    diff_path = run_paths.artifact_path("diff")
     repo_ids = projected_snapshot_repo_ids(before_snapshot, expected_users)
     permission_snapshot.write_snapshot_diff_from_snapshot_parts(
         diff_path,

@@ -42,6 +42,18 @@ def load_config_from_env(**env: str) -> cli.Config:
     )
 
 
+def make_run_paths() -> backups.RunPaths:
+    return backups.RunPaths(
+        timestamp="2026-06-12-00-00-00",
+        artifacts_dir=Path("artifacts"),
+        endpoint_directory=Path("artifacts/sourcegraph.example.com"),
+        maps_path=Path("maps.yaml"),
+        code_hosts_path=Path("code-hosts.yaml"),
+        auth_providers_path=Path("auth-providers.yaml"),
+        run_directory=Path("artifacts/sourcegraph.example.com/runs/run"),
+    )
+
+
 class CliConfigTests(unittest.TestCase):
     def test_resolve_command_uses_explicit_command_name(self) -> None:
         command = cli.resolve_command("get", make_config())
@@ -310,6 +322,113 @@ class CliConfigTests(unittest.TestCase):
     def test_validate_config_allows_get_no_backup(self) -> None:
         cli.validate_config("get", make_config(no_backup=True))
 
+    def test_validate_config_rejects_no_files_apply_without_no_backup(self) -> None:
+        expected_message = "--no-files with --apply also requires --no-backup"
+        self.assert_config_error(
+            "set",
+            make_config(full=True, no_files=True, apply=True),
+            expected_message,
+        )
+        self.assert_config_error(
+            "restore",
+            make_config(restore_path=Path("snapshot.json"), no_files=True, apply=True),
+            expected_message,
+        )
+
+    def test_validate_config_allows_no_files_apply_with_no_backup(self) -> None:
+        cli.validate_config(
+            "set",
+            make_config(full=True, no_files=True, apply=True, no_backup=True),
+        )
+        cli.validate_config(
+            "restore",
+            make_config(
+                restore_path=Path("snapshot.json"),
+                no_files=True,
+                apply=True,
+                no_backup=True,
+            ),
+        )
+
+    def test_validate_config_allows_no_files_without_apply(self) -> None:
+        cli.validate_config("get", make_config(no_files=True))
+        cli.validate_config("set", make_config(full=True, no_files=True))
+        cli.validate_config(
+            "restore",
+            make_config(restore_path=Path("snapshot.json"), no_files=True),
+        )
+        cli.validate_config("sync_saml_orgs", make_config(no_files=True))
+
+    def test_validate_config_rejects_maps_path_outside_get_and_set(self) -> None:
+        expected_message = "--maps-path requires the get or set command"
+        self.assert_config_error(
+            "restore",
+            make_config(restore_path=Path("snapshot.json"), maps_path=Path("maps.yaml")),
+            expected_message,
+        )
+        self.assert_config_error(
+            "sync_saml_orgs",
+            make_config(maps_path=Path("maps.yaml")),
+            expected_message,
+        )
+
+    def test_validate_config_allows_maps_path_with_get_and_set(self) -> None:
+        cli.validate_config("get", make_config(maps_path=Path("maps.yaml")))
+        cli.validate_config("set", make_config(maps_path=Path("maps.yaml"), full=True))
+
+    def test_artifacts_dir_flag_is_accepted_on_every_command(self) -> None:
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            mock.patch.dict(
+                os.environ,
+                {
+                    "SRC_ENDPOINT": "https://sourcegraph.example.com",
+                    "SRC_ACCESS_TOKEN": "secret",
+                },
+                clear=True,
+            ),
+        ):
+            env_file = Path(directory) / ".env"
+            env_file.write_text("")
+            snapshot_path = Path(directory) / "before.json"
+            snapshot_path.write_text("{}")
+            artifacts_dir = Path(directory) / "artifact-output"
+            extra_arguments_by_command = {
+                "get": [],
+                "set": ["--full"],
+                "restore": ["--restore-path", str(snapshot_path)],
+                "sync-saml-orgs": [],
+            }
+
+            for command_argument, extra_arguments in extra_arguments_by_command.items():
+                with self.subTest(command=command_argument):
+                    cli_input = cli.load_cli(
+                        [
+                            command_argument,
+                            "--env-file",
+                            str(env_file),
+                            "--artifacts-dir",
+                            str(artifacts_dir),
+                            *extra_arguments,
+                        ]
+                    )
+                    self.assertEqual(artifacts_dir, cli_input.config.artifacts_dir)
+
+    def test_get_help_lists_artifact_options(self) -> None:
+        captured_stdout = io.StringIO()
+
+        with (
+            contextlib.redirect_stdout(captured_stdout),
+            self.assertRaises(SystemExit) as exit_context,
+        ):
+            cli.load_cli(["get", "--help"])
+
+        self.assertEqual(0, exit_context.exception.code)
+        help_text = captured_stdout.getvalue()
+        self.assertIn("--maps-path", help_text)
+        self.assertIn("--artifacts-dir", help_text)
+        self.assertIn("--no-files", help_text)
+
     def test_validate_config_rejects_restore_without_restore_path(self) -> None:
         self.assert_config_error("restore", make_config(), "restore requires --restore-path")
 
@@ -439,6 +558,7 @@ class CliConfigTests(unittest.TestCase):
             _config: cli.Config,
             _command: cli.ResolvedCommand,
             client: src.SourcegraphClient,
+            _run_paths: backups.RunPaths,
             _worker_pool: ThreadPoolExecutor,
         ) -> None:
             captured_clients.append(client)
@@ -451,6 +571,7 @@ class CliConfigTests(unittest.TestCase):
                 configuration,
                 command,
                 "https://sourcegraph.example.com",
+                make_run_paths(),
                 worker_pool,
             )
 
@@ -466,6 +587,7 @@ class CliConfigTests(unittest.TestCase):
             _config: cli.Config,
             _command: cli.ResolvedCommand,
             client: src.SourcegraphClient,
+            _run_paths: backups.RunPaths,
             _worker_pool: ThreadPoolExecutor,
         ) -> None:
             captured_clients.append(client)
@@ -478,6 +600,7 @@ class CliConfigTests(unittest.TestCase):
                 configuration,
                 command,
                 "https://sourcegraph.example.com",
+                make_run_paths(),
                 worker_pool,
             )
 
@@ -518,30 +641,6 @@ class CliConfigTests(unittest.TestCase):
                 cli.require_restore_input_file(Path(directory) / "missing.json")
             self.assertIn("restore snapshot file does not exist", str(exit_context.exception))
 
-    def test_config_with_default_paths_only_defaults_omitted_maps_path(self) -> None:
-        endpoint_directory = Path.cwd() / backups.ARTIFACTS_DIR_NAME / "sourcegraph.example.com"
-
-        defaulted_set_config = cli.config_with_default_paths(
-            "set",
-            make_config(),
-            "https://sourcegraph.example.com",
-        )
-        self.assertEqual(endpoint_directory / "maps.yaml", defaulted_set_config.maps_path)
-
-        explicit_set_config = cli.config_with_default_paths(
-            "set",
-            make_config(maps_path=Path("maps.yaml")),
-            "https://sourcegraph.example.com",
-        )
-        self.assertEqual(Path("maps.yaml"), explicit_set_config.maps_path)
-
-        restore_config = cli.config_with_default_paths(
-            "restore",
-            make_config(restore_path=Path("snapshot.json")),
-            "https://sourcegraph.example.com",
-        )
-        self.assertEqual(Path("snapshot.json"), restore_config.restore_path)
-
     def test_run_fields_include_command_arguments_without_command_duplicates(self) -> None:
         configuration = make_config(
             maps_path=Path("maps.yaml"),
@@ -550,7 +649,12 @@ class CliConfigTests(unittest.TestCase):
         )
         command = cli.resolve_command("set", configuration)
 
-        fields = cli.run_fields(configuration, command, "https://sourcegraph.example.com")
+        fields = cli.run_fields(
+            configuration,
+            command,
+            "https://sourcegraph.example.com",
+            make_run_paths(),
+        )
 
         self.assertEqual("users", fields["set_mode"])
         self.assertEqual(True, fields["apply"])
@@ -565,7 +669,12 @@ class CliConfigTests(unittest.TestCase):
         configuration = make_config()
         command = cli.resolve_command("get", configuration)
 
-        fields = cli.run_fields(configuration, command, "https://sourcegraph.example.com")
+        fields = cli.run_fields(
+            configuration,
+            command,
+            "https://sourcegraph.example.com",
+            make_run_paths(),
+        )
 
         self.assertNotIn("apply", fields)
         self.assertNotIn("no_backup", fields)
@@ -577,7 +686,12 @@ class CliConfigTests(unittest.TestCase):
         configuration = make_config(no_backup=True)
         command = cli.resolve_command("get", configuration)
 
-        fields = cli.run_fields(configuration, command, "https://sourcegraph.example.com")
+        fields = cli.run_fields(
+            configuration,
+            command,
+            "https://sourcegraph.example.com",
+            make_run_paths(),
+        )
 
         self.assertEqual(True, fields["no_backup"])
 
@@ -592,6 +706,7 @@ class CliConfigTests(unittest.TestCase):
             auth_providers_by_config_id={},
             saml_groups_attribute_name_by_config_id={},
         )
+        run_paths = make_run_paths()
         worker_pool = cast(ThreadPoolExecutor, object())
 
         with (
@@ -604,7 +719,7 @@ class CliConfigTests(unittest.TestCase):
                 return_value=cli.run_context.CommandData(),
             ) as cmd_get,
         ):
-            cli.run_get(configuration, client, sourcegraph_site_config, worker_pool)
+            cli.run_get(configuration, client, sourcegraph_site_config, run_paths, worker_pool)
 
         self.assertFalse(cmd_get.call_args.kwargs["do_backup"])
 
@@ -626,9 +741,7 @@ class CliConfigTests(unittest.TestCase):
         ):
             permissions_command.cmd_get(
                 client,
-                Path("code-hosts.yaml"),
-                Path("auth-providers.yaml"),
-                Path("maps.yaml"),
+                make_run_paths(),
                 user_identifiers=(),
                 users_without_explicit_perms=False,
                 user_created_after=None,
@@ -660,7 +773,7 @@ class CliConfigTests(unittest.TestCase):
         ) as cmd_set_full:
             permissions_command.cmd_set(
                 client,
-                Path("maps.yaml"),
+                make_run_paths(),
                 options,
                 dry_run=True,
                 parallelism=1,
@@ -683,6 +796,7 @@ class CliConfigTests(unittest.TestCase):
         client = cast(src.SourcegraphClient, object())
         sourcegraph_site_config = object()
         command_data = cli.run_context.CommandData()
+        run_paths = make_run_paths()
 
         with (
             ThreadPoolExecutor(max_workers=1) as worker_pool,
@@ -694,13 +808,14 @@ class CliConfigTests(unittest.TestCase):
             mock.patch.object(cli, "run_set", return_value=command_data) as run_set,
             mock.patch.object(cli, "run_sync_saml_organizations") as run_sync_saml_orgs,
         ):
-            cli.run_command(configuration, command, client, worker_pool)
+            cli.run_command(configuration, command, client, run_paths, worker_pool)
 
         run_set.assert_called_once_with(
             configuration,
             command,
             client,
             sourcegraph_site_config,
+            run_paths,
             worker_pool,
         )
         run_sync_saml_orgs.assert_called_once_with(
@@ -708,6 +823,7 @@ class CliConfigTests(unittest.TestCase):
             client,
             sourcegraph_site_config,
             command_data,
+            run_paths,
             worker_pool,
         )
 
@@ -717,32 +833,46 @@ class CliConfigTests(unittest.TestCase):
         self.assertIs(src_auth_perms_sync.Set, cli.Set)
         self.assertIs(src_auth_perms_sync.Restore, cli.Restore)
         self.assertIs(src_auth_perms_sync.SyncSamlOrgs, cli.SyncSamlOrgs)
+        self.assertIs(src_auth_perms_sync.GetResult, cli.GetResult)
+        self.assertIs(src_auth_perms_sync.CommandResult, cli.CommandResult)
+        self.assertIs(src_auth_perms_sync.RunPaths, backups.RunPaths)
+        self.assertIs(src_auth_perms_sync.EventSink, src.EventSink)
+        self.assertIs(src_auth_perms_sync.InMemoryEventSink, src.InMemoryEventSink)
         self.assertEqual(
-            ["Config", "Get", "Restore", "Set", "SyncSamlOrgs"],
+            [
+                "CallbackEventSink",
+                "CommandResult",
+                "CompositeEventSink",
+                "Config",
+                "EventSink",
+                "Get",
+                "GetResult",
+                "InMemoryEventSink",
+                "JSONLEventSink",
+                "NullEventSink",
+                "Restore",
+                "RunPaths",
+                "Set",
+                "SyncSamlOrgs",
+            ],
             src_auth_perms_sync.__all__,
         )
 
     def test_programmatic_runner_uses_supplied_config(self) -> None:
-        configuration = make_config(parallelism=1, sample_interval=0)
+        configuration = make_config(parallelism=1, sample_interval=0, no_files=True)
         captured: list[tuple[cli.Config, cli.ResolvedCommand, str]] = []
 
         def capture_run(
             scoped_config: cli.Config,
             command: cli.ResolvedCommand,
             endpoint: str,
+            _run_paths: backups.RunPaths,
             _worker_pool: ThreadPoolExecutor,
-        ) -> None:
+        ) -> cli.run_context.CommandData:
             captured.append((scoped_config, command, endpoint))
+            return cli.run_context.CommandData()
 
-        with (
-            mock.patch.object(cli, "run_with_client", side_effect=capture_run),
-            mock.patch.object(
-                cli.src,
-                "logging_settings_from_config",
-                return_value=object(),
-            ),
-            mock.patch.object(cli.src, "logging", return_value=contextlib.nullcontext(None)),
-        ):
+        with mock.patch.object(cli, "run_with_client", side_effect=capture_run):
             self.assertTrue(src_auth_perms_sync.Get(configuration))
 
         self.assertEqual(1, len(captured))
@@ -752,17 +882,9 @@ class CliConfigTests(unittest.TestCase):
         self.assertEqual("https://sourcegraph.example.com", endpoint)
 
     def test_programmatic_runner_returns_false_on_failure(self) -> None:
-        configuration = make_config(parallelism=1, sample_interval=0)
+        configuration = make_config(parallelism=1, sample_interval=0, no_files=True)
 
-        with (
-            mock.patch.object(cli, "run_with_client", side_effect=SystemExit(1)),
-            mock.patch.object(
-                cli.src,
-                "logging_settings_from_config",
-                return_value=object(),
-            ),
-            mock.patch.object(cli.src, "logging", return_value=contextlib.nullcontext(None)),
-        ):
+        with mock.patch.object(cli, "run_with_client", side_effect=SystemExit(1)):
             self.assertFalse(src_auth_perms_sync.Get(configuration))
 
     def assert_config_error(

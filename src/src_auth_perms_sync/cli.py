@@ -10,14 +10,16 @@ See https://github.com/sourcegraph/src-auth-perms-sync/blob/main/README.md for u
 from __future__ import annotations
 
 import argparse
+import contextlib
+import dataclasses
+import importlib.metadata
 import logging
-import os
 import sys
 from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, NoReturn, TypeAlias, cast
+from typing import Any, Literal, NoReturn, TypeAlias, cast
 
 import src_py_lib as src
 from src_py_lib.utils import config as config_utils
@@ -32,7 +34,6 @@ log = logging.getLogger(__name__)
 
 
 CommandName: TypeAlias = Literal["get", "set", "restore", "sync_saml_orgs"]
-DEFAULT_MAPS_FILE_NAME = "maps.yaml"
 COMMON_CONFIG_FIELDS_BEFORE = src.config_field_names(
     src.SourcegraphClientConfig,
 )
@@ -47,6 +48,7 @@ COMMON_CONFIG_FIELDS_AFTER = src.config_field_names(
 )
 GET_CONFIG_FIELDS = src.config_field_names(
     *COMMON_CONFIG_FIELDS_BEFORE,
+    "maps_path",
     "users",
     "users_without_explicit_perms",
     "created_after",
@@ -54,6 +56,8 @@ GET_CONFIG_FIELDS = src.config_field_names(
     "repos_without_explicit_perms",
     "repos_created_after",
     "no_backup",
+    "artifacts_dir",
+    "no_files",
     "explicit_permissions_batch_size",
     *COMMON_CONFIG_FIELDS_AFTER,
 )
@@ -70,6 +74,8 @@ SET_CONFIG_FIELDS = src.config_field_names(
     "sync_saml_organizations",
     "apply",
     "no_backup",
+    "artifacts_dir",
+    "no_files",
     "explicit_permissions_batch_size",
     *COMMON_CONFIG_FIELDS_AFTER,
 )
@@ -78,6 +84,8 @@ RESTORE_CONFIG_FIELDS = src.config_field_names(
     "restore_path",
     "apply",
     "no_backup",
+    "artifacts_dir",
+    "no_files",
     "explicit_permissions_batch_size",
     *COMMON_CONFIG_FIELDS_AFTER,
 )
@@ -85,6 +93,8 @@ SYNC_SAML_ORGS_CONFIG_FIELDS = src.config_field_names(
     *COMMON_CONFIG_FIELDS_BEFORE,
     "apply",
     "no_backup",
+    "artifacts_dir",
+    "no_files",
     "parallelism",
     *COMMON_CONFIG_FIELDS_AFTER,
 )
@@ -194,11 +204,34 @@ class Config(src.SourcegraphClientConfig, src.LoggingConfig, src.OpenTelemetryCo
         cli_flag="--maps-path",
         metavar="FILE",
         help=(
-            "Maps YAML file for the set command\n"
-            "(default: ./src-auth-perms-sync-runs/<src-endpoint>/maps.yaml)\n"
+            "Maps YAML file for the get and set commands\n"
+            "(default: <artifacts-dir>/<src-endpoint>/maps.yaml)\n"
             "Relative paths are resolved from the current working directory"
         ),
         help_group="Permission sync",
+    )
+    artifacts_dir: Path | None = src.config_field(
+        default=None,
+        env_var="SRC_AUTH_PERMS_SYNC_ARTIFACTS_DIR",
+        cli_flag="--artifacts-dir",
+        metavar="DIR",
+        help=(
+            "Directory containing per-endpoint artifact directories\n"
+            "(default: ./src-auth-perms-sync-runs)\n"
+            "Relative paths are resolved from the current working directory"
+        ),
+        help_group="Artifacts",
+    )
+    no_files: bool = src.config_field(
+        default=False,
+        env_var="SRC_AUTH_PERMS_SYNC_NO_FILES",
+        cli_flag="--no-files",
+        cli_action="store_true",
+        help=(
+            "Write nothing to disk: no generated YAML, snapshots, or log file\n"
+            "With --apply, also requires --no-backup (explicitly giving up restore)"
+        ),
+        help_group="Artifacts",
     )
     restore_path: Path | None = src.config_field(
         default=None,
@@ -409,6 +442,14 @@ def validate_command_options(command_name: CommandName, config: Config) -> None:
         config_error("restore requires --restore-path")
     if config.restore_path is not None and command_name != "restore":
         config_error("--restore-path requires the restore command")
+    if config.maps_path is not None and command_name not in {"get", "set"}:
+        config_error("--maps-path requires the get or set command")
+    if config.no_files and config.apply and not config.no_backup:
+        config_error(
+            "--no-files with --apply also requires --no-backup: without files there "
+            "are no before/after snapshots, so say explicitly that you are giving "
+            "up the restore path"
+        )
 
 
 def validate_user_filter_selection(command_name: CommandName, config: Config) -> None:
@@ -631,18 +672,6 @@ def load_cli(argv: Sequence[str] | None = None) -> CliInput:
     return CliInput(command_name=command_name, config=config)
 
 
-def default_maps_path(endpoint: str) -> Path:
-    """Return the generated maps path for a Sourcegraph endpoint."""
-    return backups.endpoint_artifacts_directory(endpoint) / DEFAULT_MAPS_FILE_NAME
-
-
-def config_with_default_paths(command_name: CommandName, config: Config, endpoint: str) -> Config:
-    """Return config with omitted file paths filled from generated defaults."""
-    if command_name != "set" or config.maps_path is not None:
-        return config
-    return config.model_copy(update={"maps_path": default_maps_path(endpoint)})
-
-
 def require_set_input_file(maps_path: Path) -> None:
     """Exit with a clear error if the selected maps file is missing."""
     if maps_path.is_file():
@@ -666,7 +695,12 @@ def require_restore_input_file(restore_path: Path) -> None:
     raise SystemExit(f"restore snapshot file does not exist: {restore_path}")
 
 
-def run_fields(config: Config, command: ResolvedCommand, endpoint: str) -> dict[str, object]:
+def run_fields(
+    config: Config,
+    command: ResolvedCommand,
+    endpoint: str,
+    run_paths: backups.RunPaths,
+) -> dict[str, object]:
     """Return run-level fields for structured logging."""
     fields: dict[str, object] = {
         "endpoint": endpoint,
@@ -677,14 +711,15 @@ def run_fields(config: Config, command: ResolvedCommand, endpoint: str) -> dict[
         "max_attempts": config.max_attempts,
         "http_timeout_seconds": config.http_timeout_seconds,
         "sample_interval": config.sample_interval,
-        "artifacts_dir": str(backups.endpoint_artifacts_directory(endpoint)),
-        "python_version": sys.version.split()[0],
-        "pid": os.getpid(),
+        "artifacts_dir": str(run_paths.endpoint_directory),
+        "run_directory": str(run_paths.run_directory),
     }
     if command.name != "get":
         fields["apply"] = config.apply
     if config.no_backup:
         fields["no_backup"] = True
+    if config.no_files:
+        fields["no_files"] = True
     if command.set_mode is not None:
         fields["set_mode"] = command.set_mode
     if command.sync_saml_organizations:
@@ -704,8 +739,9 @@ def run_with_client(
     config: Config,
     command: ResolvedCommand,
     endpoint: str,
+    run_paths: backups.RunPaths,
     worker_pool: ThreadPoolExecutor,
-) -> None:
+) -> run_context.CommandData:
     """Create a client, run the selected command, and always close HTTP resources."""
     http = src.HTTPClient(
         timeout=config.http_timeout_seconds,
@@ -720,7 +756,7 @@ def run_with_client(
         fetch_sg_traces=config.fetch_sg_traces,
     )
     try:
-        run_command(config, command, client, worker_pool)
+        return run_command(config, command, client, run_paths, worker_pool)
     finally:
         client.http.close()
 
@@ -729,26 +765,31 @@ def run_command(
     config: Config,
     command: ResolvedCommand,
     client: src.SourcegraphClient,
+    run_paths: backups.RunPaths,
     worker_pool: ThreadPoolExecutor,
-) -> None:
+) -> run_context.CommandData:
     """Dispatch the selected command."""
     sourcegraph_site_config = site_config.validate_site_config(client)
     command_data = run_context.CommandData()
     if command.name == "get":
-        command_data = run_get(config, client, sourcegraph_site_config, worker_pool)
+        command_data = run_get(config, client, sourcegraph_site_config, run_paths, worker_pool)
     elif command.name == "set":
-        command_data = run_set(config, command, client, sourcegraph_site_config, worker_pool)
+        command_data = run_set(
+            config, command, client, sourcegraph_site_config, run_paths, worker_pool
+        )
     elif command.name == "restore":
-        run_restore(config, client, sourcegraph_site_config, worker_pool)
+        run_restore(config, client, sourcegraph_site_config, run_paths, worker_pool)
+        return command_data
     else:
         run_sync_saml_organizations(
             config,
             client,
             sourcegraph_site_config,
             command_data,
+            run_paths,
             worker_pool,
         )
-        return
+        return command_data
 
     if command.sync_saml_organizations:
         run_sync_saml_organizations(
@@ -756,8 +797,10 @@ def run_command(
             client,
             sourcegraph_site_config,
             command_data,
+            run_paths,
             worker_pool,
         )
+    return command_data
 
 
 def run_set(
@@ -765,17 +808,15 @@ def run_set(
     command: ResolvedCommand,
     client: src.SourcegraphClient,
     sourcegraph_site_config: site_config.SiteConfig,
+    run_paths: backups.RunPaths,
     worker_pool: ThreadPoolExecutor,
 ) -> run_context.CommandData:
     """Run the selected repo-permission sync command."""
     assert command.set_options is not None
-    maps_path = config.maps_path
-    if maps_path is None:
-        raise SystemExit("set requires a maps file path")
-    require_set_input_file(maps_path)
+    require_set_input_file(run_paths.maps_path)
     return permissions_command.cmd_set(
         client,
-        maps_path,
+        run_paths,
         command.set_options,
         dry_run=not config.apply,
         parallelism=config.parallelism,
@@ -794,6 +835,7 @@ def run_restore(
     config: Config,
     client: src.SourcegraphClient,
     sourcegraph_site_config: site_config.SiteConfig,
+    run_paths: backups.RunPaths,
     worker_pool: ThreadPoolExecutor,
 ) -> None:
     """Run the selected repo-permission restore command."""
@@ -802,6 +844,7 @@ def run_restore(
     permissions_command.cmd_restore(
         client,
         config.restore_path,
+        run_paths,
         dry_run=not config.apply,
         parallelism=config.parallelism,
         explicit_permissions_batch_size=config.explicit_permissions_batch_size,
@@ -816,11 +859,13 @@ def run_sync_saml_organizations(
     client: src.SourcegraphClient,
     sourcegraph_site_config: site_config.SiteConfig,
     command_data: run_context.CommandData,
+    run_paths: backups.RunPaths,
     worker_pool: ThreadPoolExecutor,
 ) -> None:
     """Run the selected SAML organization sync command."""
     organizations_command.cmd_sync_saml_organizations(
         client,
+        run_paths,
         dry_run=not config.apply,
         parallelism=config.parallelism,
         saml_groups_attribute_name_by_config_id=(
@@ -836,22 +881,23 @@ def run_get(
     config: Config,
     client: src.SourcegraphClient,
     sourcegraph_site_config: site_config.SiteConfig,
+    run_paths: backups.RunPaths,
     worker_pool: ThreadPoolExecutor,
 ) -> run_context.CommandData:
     """Run the default read-only discovery command."""
-    artifacts_directory = backups.endpoint_artifacts_directory(client.endpoint)
-    maps_path = default_maps_path(client.endpoint)
-    maps_created = permissions_maps.create_maps_yaml_if_missing(maps_path)
-    if maps_created:
-        log.info("maps.yaml missing, created %s with an empty maps list.", maps_path)
+    maps_created = False
+    if run_paths.write_files:
+        maps_created = permissions_maps.create_maps_yaml_if_missing(run_paths.maps_path)
+        if maps_created:
+            log.info("maps.yaml missing, created %s with an empty maps list.", run_paths.maps_path)
+        else:
+            log.info("Left existing %s unchanged.", run_paths.maps_path)
     else:
-        log.info("Left existing %s unchanged.", maps_path)
+        log.info("Skipping maps.yaml creation because --no-files is set.")
 
-    return permissions_command.cmd_get(
+    command_data = permissions_command.cmd_get(
         client,
-        artifacts_directory / "code-hosts.yaml",
-        artifacts_directory / "auth-providers.yaml",
-        maps_path,
+        run_paths,
         user_identifiers=config.users,
         users_without_explicit_perms=config.users_without_explicit_perms,
         user_created_after=config.created_after,
@@ -869,6 +915,7 @@ def run_get(
         retain_saml_group_users=False,
         worker_pool=worker_pool,
     )
+    return dataclasses.replace(command_data, maps_created=maps_created)
 
 
 def reraise_system_exit_with_logged_error(exception: SystemExit) -> NoReturn:
@@ -879,83 +926,188 @@ def reraise_system_exit_with_logged_error(exception: SystemExit) -> NoReturn:
     raise exception
 
 
-def Get(config: Config) -> bool:
-    """Run repository permission discovery and return whether it succeeded."""
-    return _run("get", config)
+@dataclass(frozen=True)
+class CommandResult:
+    """Outcome of one module-mode command run."""
+
+    succeeded: bool
+    paths: backups.RunPaths | None = None
+
+    def __bool__(self) -> bool:
+        return self.succeeded
 
 
-def Set(config: Config) -> bool:
-    """Run repository permission reconciliation and return whether it succeeded."""
-    return _run("set", config)
+@dataclass(frozen=True)
+class GetResult:
+    """Outcome of one discovery run, carrying the discovered data in memory.
+
+    `auth_providers` and `code_hosts` hold the same dicts written to
+    `auth-providers.yaml` and `code-hosts.yaml`, so module callers can
+    assemble mapping rules without re-parsing files.
+    """
+
+    succeeded: bool
+    paths: backups.RunPaths | None = None
+    auth_providers: tuple[dict[str, Any], ...] = ()
+    code_hosts: tuple[dict[str, Any], ...] = ()
+    maps_created: bool = False
+
+    def __bool__(self) -> bool:
+        return self.succeeded
 
 
-def Restore(config: Config) -> bool:
-    """Run repository permission restore and return whether it succeeded."""
-    return _run("restore", config)
+def Get(config: Config, *, event_sink: src.EventSink | None = None) -> GetResult:
+    """Run repository permission discovery; returns data and paths in memory."""
+    succeeded, command_data, run_paths = _run("get", config, event_sink)
+    if not succeeded or command_data is None:
+        return GetResult(succeeded=succeeded, paths=run_paths)
+    return GetResult(
+        succeeded=True,
+        paths=run_paths,
+        auth_providers=tuple(command_data.auth_provider_views or ()),
+        code_hosts=tuple(command_data.code_host_views or ()),
+        maps_created=command_data.maps_created,
+    )
 
 
-def SyncSamlOrgs(config: Config) -> bool:
-    """Run SAML organization sync and return whether it succeeded."""
-    return _run("sync_saml_orgs", config)
+def Set(config: Config, *, event_sink: src.EventSink | None = None) -> CommandResult:
+    """Run repository permission reconciliation."""
+    succeeded, _, run_paths = _run("set", config, event_sink)
+    return CommandResult(succeeded=succeeded, paths=run_paths)
 
 
-def _run(command_name: CommandName, config: Config) -> bool:
-    """Run a command and return whether it completed successfully."""
+def Restore(config: Config, *, event_sink: src.EventSink | None = None) -> CommandResult:
+    """Run repository permission restore."""
+    succeeded, _, run_paths = _run("restore", config, event_sink)
+    return CommandResult(succeeded=succeeded, paths=run_paths)
+
+
+def SyncSamlOrgs(config: Config, *, event_sink: src.EventSink | None = None) -> CommandResult:
+    """Run SAML organization sync."""
+    succeeded, _, run_paths = _run("sync_saml_orgs", config, event_sink)
+    return CommandResult(succeeded=succeeded, paths=run_paths)
+
+
+def _run(
+    command_name: CommandName,
+    config: Config,
+    event_sink: src.EventSink | None,
+) -> tuple[bool, run_context.CommandData | None, backups.RunPaths | None]:
+    """Run a module-mode command, reporting success instead of raising."""
     try:
-        _run_or_raise(command_name, config)
+        command_data, run_paths = _run_or_raise(command_name, config, event_sink=event_sink)
     except SystemExit as exception:
-        return exception.code in (None, 0)
+        return exception.code in (None, 0), None, None
     except Exception:
         log.exception("src-auth-perms-sync run failed.")
-        return False
-    return True
+        return False, None, None
+    return True, command_data, run_paths
 
 
-def _run_or_raise(command_name: CommandName, config: Config) -> None:
-    """Run src-auth-perms-sync, preserving CLI-style exceptions."""
+def _package_version() -> str:
+    try:
+        return importlib.metadata.version("src-auth-perms-sync")
+    except importlib.metadata.PackageNotFoundError:
+        return "unknown"
+
+
+def _module_event_sink(
+    stack: contextlib.ExitStack,
+    run_paths: backups.RunPaths,
+    event_sink: src.EventSink | None,
+) -> src.EventSink | None:
+    """Compose the module-mode sink: JSONL run log plus optional caller sink."""
+    sinks: list[src.EventSink] = []
+    if run_paths.write_files:
+        sinks.append(stack.enter_context(src.JSONLEventSink(run_paths.log_path)))
+    if event_sink is not None:
+        sinks.append(event_sink)
+    if not sinks:
+        return None
+    if len(sinks) == 1:
+        return sinks[0]
+    return src.CompositeEventSink(tuple(sinks))
+
+
+def _run_or_raise(
+    command_name: CommandName,
+    config: Config,
+    *,
+    cli_mode: bool = False,
+    event_sink: src.EventSink | None = None,
+) -> tuple[run_context.CommandData, backups.RunPaths]:
+    """Run src-auth-perms-sync, preserving CLI-style exceptions.
+
+    CLI mode installs terminal and event-bridge handlers on this package's
+    loggers; module mode never touches stdlib logging handlers, so the host
+    application's logging configuration stays in charge.
+    """
     validate_config(command_name, config)
     command = resolve_command(command_name, config)
     try:
         endpoint = src.normalize_sourcegraph_endpoint(config.src_endpoint)
     except ValueError as error:
         config_error(str(error))
-    config = config_with_default_paths(command_name, config, endpoint)
-    run_timestamp = backups.backup_timestamp()
-    run_directory = backups.artifact_run_directory(
-        run_timestamp,
-        endpoint,
-        command.artifact_name,
+    run_paths = backups.resolve_run_paths(
+        endpoint=endpoint,
+        command_artifact_name=command.artifact_name,
+        artifacts_dir=config.artifacts_dir,
+        maps_path=config.maps_path,
+        write_files=not config.no_files,
     )
-
-    logging_settings = src.logging_settings_from_config(
+    fields = run_fields(config, command, endpoint, run_paths)
+    resource = {
+        "service.name": "src-auth-perms-sync",
+        "service.version": _package_version(),
+    }
+    open_telemetry_settings = src.open_telemetry_settings_from_config(
         config,
-        log_file=backups.run_log_path(run_directory),
-        logs_dir=None,
-        resource_sample_interval_seconds=config.sample_interval,
-        open_telemetry=src.open_telemetry_settings_from_config(
-            config,
-            force_traces=config.fetch_sg_traces,
-            service_name="src-auth-perms-sync",
-        ),
+        force_traces=config.fetch_sg_traces,
+        service_name="src-auth-perms-sync",
     )
 
-    with (
-        backups.run_artifacts_context(run_directory, run_timestamp),
-        src.logging(
-            config,
-            command=command.name,
-            git_cwd=__file__,
-            logging_config=logging_settings,
-            run_fields=run_fields(config, command, endpoint),
-        ),
-        run_context.thread_pool(config.parallelism) as worker_pool,
-    ):
+    with contextlib.ExitStack() as stack:
+        if cli_mode:
+            logging_settings = src.logging_settings_from_config(
+                config,
+                logger_names=("src_auth_perms_sync", "src_py_lib"),
+                log_file=run_paths.log_path if run_paths.write_files else None,
+                logs_dir=None,
+                resource_sample_interval_seconds=config.sample_interval,
+                open_telemetry=open_telemetry_settings,
+            )
+            stack.enter_context(
+                src.logging(
+                    config,
+                    command=command.name,
+                    git_cwd=__file__,
+                    logging_config=logging_settings,
+                    run_fields=fields,
+                    resource=resource,
+                )
+            )
+        else:
+            stack.enter_context(
+                src.observability_context(
+                    command.name,
+                    config,
+                    sink=_module_event_sink(stack, run_paths, event_sink),
+                    git_cwd=__file__,
+                    run_fields=fields,
+                    resource=resource,
+                    open_telemetry=open_telemetry_settings,
+                    resource_sample_interval_seconds=config.sample_interval,
+                    log_file=run_paths.log_path if run_paths.write_files else None,
+                )
+            )
+        worker_pool = stack.enter_context(run_context.thread_pool(config.parallelism))
         try:
-            run_with_client(config, command, endpoint, worker_pool)
+            command_data = run_with_client(config, command, endpoint, run_paths, worker_pool)
         except SystemExit as exception:
             reraise_system_exit_with_logged_error(exception)
+        return command_data, run_paths
 
 
 def main() -> None:
     cli_input = load_cli()
-    _run_or_raise(cli_input.command_name, cli_input.config)
+    _run_or_raise(cli_input.command_name, cli_input.config, cli_mode=True)

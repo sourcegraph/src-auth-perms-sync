@@ -25,8 +25,8 @@ from .workflow import (
     load_repository_candidates_by_names,
     load_repository_candidates_created_on_or_after,
     mapping_context_with_repository_candidates,
+    projected_snapshot_shell,
     render_projected_snapshot_diff,
-    snapshot_path,
     user_ids_created_on_or_after,
     validate_post_apply,
     write_maps_backup,
@@ -45,7 +45,6 @@ class _FullSetUserState:
 
     users: list[shared_types.User]
     before_snapshot: permission_snapshot.Snapshot | None = None
-    before_timestamp: str | None = None
 
 
 @dataclass(frozen=True)
@@ -54,7 +53,6 @@ class _FullSetSnapshotState:
 
     users: list[permission_snapshot.SnapshotUser]
     before_snapshot: permission_snapshot.Snapshot | None = None
-    before_timestamp: str | None = None
     selected_repository_ids: set[str] | None = None
 
 
@@ -93,10 +91,6 @@ class _FullSetApplyResult:
     full_short_circuit: bool
 
 
-def _set_full_command_name(dry_run: bool) -> str:
-    return "set-dry-run" if dry_run else "set-apply"
-
-
 def _capture_full_set_snapshot_state(
     client: src.SourcegraphClient,
     input_path: Path,
@@ -116,7 +110,6 @@ def _capture_full_set_snapshot_state(
         expected_user_count,
         client.endpoint,
     )
-    before_timestamp = backups.backup_timestamp()
     before_snapshot = permission_snapshot.build_snapshot(
         client,
         shared_sourcegraph.list_users_streaming(
@@ -143,7 +136,6 @@ def _capture_full_set_snapshot_state(
     return _FullSetUserState(
         users=users,
         before_snapshot=before_snapshot,
-        before_timestamp=before_timestamp,
     )
 
 
@@ -260,7 +252,6 @@ def _filter_full_set_user_state_snapshot(
             snapshot_state.before_snapshot,
             selected_repository_ids,
         ),
-        before_timestamp=snapshot_state.before_timestamp,
     )
 
 
@@ -273,75 +264,22 @@ def _compact_full_set_snapshot_state(
     return _FullSetSnapshotState(
         users=permission_snapshot.compact_snapshot_users(users),
         before_snapshot=snapshot_state.before_snapshot,
-        before_timestamp=snapshot_state.before_timestamp,
         selected_repository_ids=selected_repository_ids,
     )
 
 
 def _require_before_snapshot(
     snapshot_state: _FullSetUserState | _FullSetSnapshotState,
-) -> tuple[permission_snapshot.Snapshot, str]:
+) -> permission_snapshot.Snapshot:
     assert snapshot_state.before_snapshot is not None, (
         "snapshot writes require a prefetched before snapshot"
     )
-    assert snapshot_state.before_timestamp is not None, (
-        "snapshot writes require a prefetched before timestamp"
-    )
-    return snapshot_state.before_snapshot, snapshot_state.before_timestamp
-
-
-def _write_full_set_snapshot_pair(
-    input_path: Path,
-    timestamp: str,
-    endpoint: str,
-    command_name: str,
-    before_snapshot: permission_snapshot.Snapshot,
-    after_snapshot: permission_snapshot.Snapshot,
-) -> tuple[Path, Path, Path, Path | None]:
-    """Write before/after/diff snapshots and the companion maps backup."""
-    before_path, after_path, diff_path = write_snapshot_pair(
-        input_path,
-        timestamp,
-        endpoint,
-        command_name,
-        before_snapshot,
-        after_snapshot,
-    )
-    maps_backup_path = write_maps_backup(input_path, timestamp, endpoint, command_name)
-    return before_path, after_path, diff_path, maps_backup_path
+    return snapshot_state.before_snapshot
 
 
 def _recordmaps_backup_path(command_event: dict[str, Any], maps_backup_path: Path | None) -> None:
     if maps_backup_path is not None:
         command_event["maps_backup_path"] = str(maps_backup_path)
-
-
-def _write_noop_full_set_snapshots(
-    input_path: Path,
-    timestamp: str,
-    endpoint: str,
-    command_name: str,
-    before_snapshot: permission_snapshot.Snapshot,
-    dry_run: bool,
-) -> tuple[Path, Path, Path, Path | None]:
-    """Write identical before/after snapshots for a no-op full-set run."""
-    before_path, after_path, diff_path, maps_backup_path = _write_full_set_snapshot_pair(
-        input_path,
-        timestamp,
-        endpoint,
-        command_name,
-        before_snapshot,
-        before_snapshot,
-    )
-    run_mode = "dry-run" if dry_run else "apply"
-    log.info(
-        "Wrote %s snapshots: before=%s after=%s diff=%s.",
-        run_mode,
-        before_path,
-        after_path,
-        diff_path,
-    )
-    return before_path, after_path, diff_path, maps_backup_path
 
 
 def plan_full_set_permissions(
@@ -434,38 +372,37 @@ def _full_set_username_overwrites(
 
 
 def _finish_full_set_dry_run(
-    input_path: Path,
-    endpoint: str,
+    run_paths: backups.RunPaths,
     snapshot_state: _FullSetSnapshotState,
     plan: _FullSetPlan,
     command_event: dict[str, Any],
 ) -> None:
     """Write dry-run artifacts and log the planned mutations."""
-    before_snapshot, timestamp = _require_before_snapshot(snapshot_state)
-    before_path = snapshot_path(input_path, timestamp, endpoint, "set-dry-run", "before")
-    after_path = snapshot_path(input_path, timestamp, endpoint, "set-dry-run", "after")
-    after_snapshot = write_projected_snapshot(
-        after_path,
-        before_snapshot,
-        plan.expected_users,
-        plan.repo_names,
-    )
-    diff_path = write_projected_snapshot_diff_file(
-        input_path,
-        timestamp,
-        endpoint,
-        "set-dry-run",
-        before_snapshot,
-        after_snapshot,
-        plan.expected_users,
-        plan.repo_names,
-    )
-    log.info(
-        "Wrote dry-run snapshots: before=%s after=%s diff=%s.",
-        before_path,
-        after_path,
-        diff_path,
-    )
+    before_snapshot = _require_before_snapshot(snapshot_state)
+    if run_paths.write_files:
+        after_path = run_paths.artifact_path("after")
+        after_snapshot = write_projected_snapshot(
+            after_path,
+            before_snapshot,
+            plan.expected_users,
+            plan.repo_names,
+        )
+        diff_path = write_projected_snapshot_diff_file(
+            run_paths,
+            before_snapshot,
+            after_snapshot,
+            plan.expected_users,
+            plan.repo_names,
+        )
+        log.info(
+            "Wrote dry-run snapshots: before=%s after=%s diff=%s.",
+            run_paths.artifact_path("before"),
+            after_path,
+            diff_path,
+        )
+    else:
+        after_snapshot = projected_snapshot_shell(before_snapshot, plan.expected_users)
+        log.info("Skipping dry-run snapshot files because --no-files is set.")
     log.info(
         "Diff (before → dry-run after):\n%s",
         render_projected_snapshot_diff(
@@ -572,17 +509,17 @@ def _overwrites_with_preserved_pending(
 
 
 def _write_full_set_before_snapshot(
-    input_path: Path,
-    timestamp: str,
-    endpoint: str,
-    command_name: str,
+    run_paths: backups.RunPaths,
     before_snapshot: permission_snapshot.Snapshot,
     command_event: dict[str, Any],
 ) -> Path:
     """Persist the before-snapshot and maps backup before planning mutations."""
-    before_path = snapshot_path(input_path, timestamp, endpoint, command_name, "before")
+    before_path = run_paths.artifact_path("before")
+    if not run_paths.write_files:
+        log.info("Skipping before-snapshot and maps backup files because --no-files is set.")
+        return before_path
     permission_snapshot.write_snapshot(before_path, before_snapshot)
-    maps_backup_path = write_maps_backup(input_path, timestamp, endpoint, command_name)
+    maps_backup_path = write_maps_backup(run_paths.maps_path, run_paths)
     _recordmaps_backup_path(command_event, maps_backup_path)
     log.info(
         "Wrote before-snapshot: %s (%d repo(s) with explicit grants, %d total grant(s)).",
@@ -655,8 +592,7 @@ def _record_full_set_event_fields(
 
 def _finish_full_set_apply_with_backup(
     client: src.SourcegraphClient,
-    input_path: Path,
-    timestamp: str,
+    run_paths: backups.RunPaths,
     before_path: Path,
     before_snapshot: permission_snapshot.Snapshot,
     snapshot_state: _FullSetSnapshotState,
@@ -677,30 +613,27 @@ def _finish_full_set_apply_with_backup(
             snapshot_state.users,
             parallelism,
             bind_id_mode,
-            input_path,
+            run_paths.maps_path,
             expected_user_count=len(snapshot_state.users),
             explicit_permissions_batch_size=explicit_permissions_batch_size,
             worker_pool=worker_pool,
             selected_repository_ids=snapshot_state.selected_repository_ids,
         )
 
-    after_path = snapshot_path(input_path, timestamp, client.endpoint, "set-apply", "after")
-    permission_snapshot.write_snapshot(after_path, after_snapshot)
-    diff_path = write_snapshot_diff_file(
-        input_path,
-        timestamp,
-        client.endpoint,
-        "set-apply",
-        before_snapshot,
-        after_snapshot,
-    )
-    log.info(
-        "Wrote after-snapshot: %s diff=%s (%d repo(s) with explicit grants, %d total grant(s)).",
-        after_path,
-        diff_path,
-        after_snapshot["stats"]["repos_with_explicit_grants"],
-        after_snapshot["stats"]["total_grants"],
-    )
+    if run_paths.write_files:
+        after_path = run_paths.artifact_path("after")
+        permission_snapshot.write_snapshot(after_path, after_snapshot)
+        diff_path = write_snapshot_diff_file(run_paths, before_snapshot, after_snapshot)
+        log.info(
+            "Wrote after-snapshot: %s diff=%s "
+            "(%d repo(s) with explicit grants, %d total grant(s)).",
+            after_path,
+            diff_path,
+            after_snapshot["stats"]["repos_with_explicit_grants"],
+            after_snapshot["stats"]["total_grants"],
+        )
+    else:
+        log.info("Skipping after-snapshot and diff files because --no-files is set.")
     log.info(
         "Diff (before → after):\n%s",
         permission_snapshot.render_snapshot_diff(before_snapshot, after_snapshot),
@@ -712,12 +645,13 @@ def _finish_full_set_apply_with_backup(
         set(plan.expected_users),
         expected_pending_users=before_snapshot["pending_users"],
     )
-    log.info(
-        "To roll back the explicit-permissions state captured in "
-        "the before-snapshot, run:\n"
-        "  uv run src-auth-perms-sync restore --restore-path %s --apply",
-        before_path,
-    )
+    if run_paths.write_files:
+        log.info(
+            "To roll back the explicit-permissions state captured in "
+            "the before-snapshot, run:\n"
+            "  uv run src-auth-perms-sync restore --restore-path %s --apply",
+            before_path,
+        )
 
 
 def _raise_for_failed_full_set_apply(
@@ -740,30 +674,35 @@ def _raise_for_failed_full_set_apply(
 
 
 def _write_noop_full_set_artifacts(
-    input_path: Path,
-    endpoint: str,
-    command_name: str,
+    run_paths: backups.RunPaths,
     snapshot_state: _FullSetUserState | _FullSetSnapshotState,
     dry_run: bool,
     command_event: dict[str, Any],
 ) -> None:
     """Write no-op before/after snapshots for an empty full-set run."""
-    before_snapshot, timestamp = _require_before_snapshot(snapshot_state)
-    *_, maps_backup_path = _write_noop_full_set_snapshots(
-        input_path,
-        timestamp,
-        endpoint,
-        command_name,
+    before_snapshot = _require_before_snapshot(snapshot_state)
+    if not run_paths.write_files:
+        log.info("Skipping no-op snapshot files because --no-files is set.")
+        return
+    before_path, after_path, diff_path = write_snapshot_pair(
+        run_paths,
         before_snapshot,
-        dry_run,
+        before_snapshot,
     )
+    maps_backup_path = write_maps_backup(run_paths.maps_path, run_paths)
     _recordmaps_backup_path(command_event, maps_backup_path)
+    log.info(
+        "Wrote %s snapshots: before=%s after=%s diff=%s.",
+        "dry-run" if dry_run else "apply",
+        before_path,
+        after_path,
+        diff_path,
+    )
 
 
 def _finish_empty_full_set_mapping_rules(
     client: src.SourcegraphClient,
-    input_path: Path,
-    command_name: str,
+    run_paths: backups.RunPaths,
     dry_run: bool,
     repository_names: tuple[str, ...],
     repositories_without_explicit_perms: bool,
@@ -775,7 +714,7 @@ def _finish_empty_full_set_mapping_rules(
     command_event: dict[str, Any],
     worker_pool: ThreadPoolExecutor | None = None,
 ) -> None:
-    log.warning("No maps defined in %s — nothing to do.", input_path)
+    log.warning("No maps defined in %s — nothing to do.", run_paths.maps_path)
     if not (dry_run or do_backup):
         return
 
@@ -791,7 +730,7 @@ def _finish_empty_full_set_mapping_rules(
     )
     snapshot_state = _capture_full_set_snapshot_state(
         client,
-        input_path,
+        run_paths.maps_path,
         parallelism,
         explicit_permissions_batch_size,
         bind_id_mode,
@@ -800,7 +739,7 @@ def _finish_empty_full_set_mapping_rules(
         selected_repository_ids=selected_repository_ids,
     )
     if repositories_without_explicit_perms:
-        before_snapshot, _ = _require_before_snapshot(snapshot_state)
+        before_snapshot = _require_before_snapshot(snapshot_state)
         selected_repository_candidates = _load_repositories_without_explicit_permissions(
             client,
             before_snapshot,
@@ -810,9 +749,7 @@ def _finish_empty_full_set_mapping_rules(
             _repository_ids(selected_repository_candidates),
         )
     _write_noop_full_set_artifacts(
-        input_path,
-        client.endpoint,
-        command_name,
+        run_paths,
         snapshot_state,
         dry_run,
         command_event,
@@ -821,7 +758,7 @@ def _finish_empty_full_set_mapping_rules(
 
 def _load_full_set_plan(
     client: src.SourcegraphClient,
-    input_path: Path,
+    run_paths: backups.RunPaths,
     mapping_rules: list[permission_types.MappingRule],
     user_created_after: str | None,
     repository_names: tuple[str, ...],
@@ -833,7 +770,6 @@ def _load_full_set_plan(
     saml_groups_attribute_name_by_config_id: dict[str, str],
     capture_before: bool,
     write_before_snapshot: bool,
-    command_name: str,
     command_event: dict[str, Any],
     retain_saml_group_users: bool,
     worker_pool: ThreadPoolExecutor | None = None,
@@ -855,7 +791,7 @@ def _load_full_set_plan(
     )
     user_state = _load_full_set_snapshot_state(
         client,
-        input_path,
+        run_paths.maps_path,
         parallelism,
         explicit_permissions_batch_size,
         bind_id_mode,
@@ -866,7 +802,7 @@ def _load_full_set_plan(
         selected_repository_ids=selected_repository_ids,
     )
     if repositories_without_explicit_perms:
-        before_snapshot, _ = _require_before_snapshot(user_state)
+        before_snapshot = _require_before_snapshot(user_state)
         selected_repository_candidates = _load_repositories_without_explicit_permissions(
             client,
             before_snapshot,
@@ -879,12 +815,9 @@ def _load_full_set_plan(
 
     before_path: Path | None = None
     if write_before_snapshot:
-        before_snapshot, before_timestamp = _require_before_snapshot(user_state)
+        before_snapshot = _require_before_snapshot(user_state)
         before_path = _write_full_set_before_snapshot(
-            input_path,
-            before_timestamp,
-            client.endpoint,
-            command_name,
+            run_paths,
             before_snapshot,
             command_event,
         )
@@ -940,9 +873,7 @@ def _load_full_set_plan(
 
 
 def _finish_empty_full_set_plan(
-    input_path: Path,
-    endpoint: str,
-    command_name: str,
+    run_paths: backups.RunPaths,
     snapshot_state: _FullSetSnapshotState,
     dry_run: bool,
     do_backup: bool,
@@ -951,9 +882,7 @@ def _finish_empty_full_set_plan(
     log.warning("No repos resolved across any mapping — nothing to do.")
     if dry_run or do_backup:
         _write_noop_full_set_artifacts(
-            input_path,
-            endpoint,
-            command_name,
+            run_paths,
             snapshot_state,
             dry_run,
             command_event,
@@ -962,7 +891,7 @@ def _finish_empty_full_set_plan(
 
 def _run_full_set_apply(
     client: src.SourcegraphClient,
-    input_path: Path,
+    run_paths: backups.RunPaths,
     snapshot_state: _FullSetSnapshotState,
     plan: _FullSetPlan,
     mapping_count: int,
@@ -982,10 +911,8 @@ def _run_full_set_apply(
     )
     before_snapshot: permission_snapshot.Snapshot | None = None
     if do_backup:
-        before_snapshot, before_timestamp = _require_before_snapshot(snapshot_state)
+        before_snapshot = _require_before_snapshot(snapshot_state)
         assert before_path is not None
-    else:
-        before_timestamp = backups.backup_timestamp()
 
     # The before-snapshot's pending grants are already scoped to any repo
     # selection; without one (--no-backup), fetch the live pending state so
@@ -1011,8 +938,7 @@ def _run_full_set_apply(
         assert before_path is not None and before_snapshot is not None
         _finish_full_set_apply_with_backup(
             client,
-            input_path,
-            before_timestamp,
+            run_paths,
             before_path,
             before_snapshot,
             snapshot_state,
@@ -1029,7 +955,7 @@ def _run_full_set_apply(
 
 def cmd_set_full(
     client: src.SourcegraphClient,
-    input_path: Path,
+    run_paths: backups.RunPaths,
     user_created_after: str | None,
     repository_names: tuple[str, ...],
     repositories_without_explicit_perms: bool,
@@ -1046,7 +972,7 @@ def cmd_set_full(
     """Overwrite each mapped repo with the union of users from all rules."""
     with src.span(
         "cmd_set",
-        input_path=str(input_path),
+        input_path=str(run_paths.maps_path),
         user_created_after=user_created_after,
         repository_names=repository_names or None,
         repositories_without_explicit_perms=(True if repositories_without_explicit_perms else None),
@@ -1055,13 +981,11 @@ def cmd_set_full(
         parallelism=parallelism,
         do_backup=do_backup,
     ) as command_event:
-        mapping_rules = load_mapping_rules(input_path)
-        command_name = _set_full_command_name(dry_run)
+        mapping_rules = load_mapping_rules(run_paths.maps_path)
         if not mapping_rules:
             _finish_empty_full_set_mapping_rules(
                 client,
-                input_path,
-                command_name,
+                run_paths,
                 dry_run,
                 repository_names,
                 repositories_without_explicit_perms,
@@ -1077,7 +1001,7 @@ def cmd_set_full(
 
         loaded_plan = _load_full_set_plan(
             client,
-            input_path,
+            run_paths,
             mapping_rules,
             user_created_after,
             repository_names,
@@ -1089,7 +1013,6 @@ def cmd_set_full(
             saml_groups_attribute_name_by_config_id,
             capture_before=dry_run or do_backup or repositories_without_explicit_perms,
             write_before_snapshot=dry_run or do_backup,
-            command_name=command_name,
             command_event=command_event,
             retain_saml_group_users=retain_saml_group_users,
             worker_pool=worker_pool,
@@ -1098,9 +1021,7 @@ def cmd_set_full(
         plan = loaded_plan.plan
         if not plan.expected_users:
             _finish_empty_full_set_plan(
-                input_path,
-                client.endpoint,
-                command_name,
+                run_paths,
                 snapshot_state,
                 dry_run,
                 do_backup,
@@ -1110,8 +1031,7 @@ def cmd_set_full(
 
         if dry_run:
             _finish_full_set_dry_run(
-                input_path,
-                client.endpoint,
+                run_paths,
                 snapshot_state,
                 plan,
                 command_event,
@@ -1120,7 +1040,7 @@ def cmd_set_full(
 
         _run_full_set_apply(
             client,
-            input_path,
+            run_paths,
             snapshot_state,
             plan,
             len(mapping_rules),
