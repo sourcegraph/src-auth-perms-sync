@@ -678,6 +678,8 @@ def cmd_sync_saml_organizations(
                 worker_pool,
             )
         if sync_state is None:
+            if dry_run:
+                log.info("Dry run complete. Nothing to sync, so --apply would make no changes.")
             return
 
         _log_organization_sync_plan(sync_state)
