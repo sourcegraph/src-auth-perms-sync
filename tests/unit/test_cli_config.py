@@ -357,7 +357,7 @@ class CliConfigTests(unittest.TestCase):
             "restore",
             make_config(restore_path=Path("snapshot.json"), no_files=True),
         )
-        cli.validate_config("sync_saml_orgs", make_config(no_files=True))
+        cli.validate_config("sync_saml_orgs", make_config(full=True, no_files=True))
 
     def test_validate_config_rejects_maps_path_outside_get_and_set(self) -> None:
         expected_message = "--maps-path requires the get or set command"
@@ -397,7 +397,7 @@ class CliConfigTests(unittest.TestCase):
                 "get": [],
                 "set": ["--full"],
                 "restore": ["--restore-path", str(snapshot_path)],
-                "sync-saml-orgs": [],
+                "sync-saml-orgs": ["--full"],
             }
 
             for command_argument, extra_arguments in extra_arguments_by_command.items():
@@ -440,7 +440,9 @@ class CliConfigTests(unittest.TestCase):
         )
 
     def test_validate_config_rejects_set_modes_without_set(self) -> None:
-        self.assert_config_error("get", make_config(full=True), "requires the set command")
+        self.assert_config_error(
+            "get", make_config(full=True), "requires the set or sync-saml-orgs command"
+        )
 
     def test_validate_config_allows_get_user_filters_without_set(self) -> None:
         cli.validate_config("get", make_config(users=("alice", "bob@example.com")))
@@ -463,7 +465,7 @@ class CliConfigTests(unittest.TestCase):
         self.assert_config_error(
             "restore",
             make_config(restore_path=Path("snapshot.json"), users=("alice",)),
-            "require get or set",
+            "require get, set, or sync-saml-orgs",
         )
 
     def test_validate_config_rejects_repo_filter_conflicts(self) -> None:
@@ -496,6 +498,49 @@ class CliConfigTests(unittest.TestCase):
             "set",
             make_config(maps_path=Path("maps.yaml")),
             "set requires one of --full",
+        )
+
+    def test_validate_config_rejects_sync_saml_orgs_without_explicit_mode(self) -> None:
+        self.assert_config_error(
+            "sync_saml_orgs",
+            make_config(),
+            "sync-saml-orgs requires one of --full, --users",
+        )
+
+    def test_validate_config_rejects_sync_saml_orgs_full_with_user_filters(self) -> None:
+        self.assert_config_error(
+            "sync_saml_orgs",
+            make_config(full=True, users=("alice",)),
+            "choose at most one of --full, --users",
+        )
+        self.assert_config_error(
+            "sync_saml_orgs",
+            make_config(full=True, created_after="2099-01-01"),
+            "--full cannot be combined with --created-after",
+        )
+
+    def test_validate_config_allows_sync_saml_orgs_modes(self) -> None:
+        cli.validate_config("sync_saml_orgs", make_config(full=True))
+        cli.validate_config("sync_saml_orgs", make_config(users=("alice",)))
+        cli.validate_config("sync_saml_orgs", make_config(users_without_explicit_perms=True))
+        cli.validate_config("sync_saml_orgs", make_config(created_after="2026-01-01"))
+
+    def test_resolve_command_names_sync_saml_orgs_artifacts_by_mode(self) -> None:
+        self.assertEqual(
+            "sync-saml-orgs-full-dry-run",
+            cli.resolve_command("sync_saml_orgs", make_config(full=True)).artifact_name,
+        )
+        self.assertEqual(
+            "sync-saml-orgs-users-apply",
+            cli.resolve_command(
+                "sync_saml_orgs", make_config(users=("alice",), apply=True)
+            ).artifact_name,
+        )
+        self.assertEqual(
+            "sync-saml-orgs-created-after-dry-run",
+            cli.resolve_command(
+                "sync_saml_orgs", make_config(created_after="2026-01-01")
+            ).artifact_name,
         )
 
     def test_created_after_config_accepts_yyyy_mm_dd_date_arguments(self) -> None:
@@ -733,7 +778,7 @@ class CliConfigTests(unittest.TestCase):
 
         with (
             mock.patch.object(permissions_command, "load_discovery", return_value=([], [], {})),
-            mock.patch.object(permissions_command, "_load_get_users", return_value=[]),
+            mock.patch.object(permissions_command, "load_selected_users", return_value=[]),
             mock.patch.object(permissions_command.permissions_maps, "dump_code_hosts_yaml"),
             mock.patch.object(permissions_command.permissions_maps, "dump_auth_providers_yaml"),
             mock.patch.object(

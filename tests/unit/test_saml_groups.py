@@ -240,3 +240,89 @@ class SamlGroupTests(unittest.TestCase):
             ],
             compact_users,
         )
+
+    def test_organization_name_for_saml_group_uses_synced_prefix_and_sanitizes(self) -> None:
+        self.assertEqual(
+            "synced-okta-eng-team",
+            saml_groups.organization_name_for_saml_group("okta", "eng team!"),
+        )
+        self.assertTrue(
+            saml_groups.is_synced_organization_name("synced-okta-eng-team"),
+        )
+        self.assertFalse(saml_groups.is_synced_organization_name("okta-eng-team"))
+
+    def test_organization_name_for_saml_group_rejects_unconvertible_parts(self) -> None:
+        with self.assertRaises(SystemExit):
+            saml_groups.organization_name_for_saml_group("okta", "!!!")
+
+    def test_compact_scoped_saml_group_users_keeps_users_without_groups(self) -> None:
+        providers: list[shared_types.AuthProvider] = [
+            {
+                "serviceType": "saml",
+                "serviceID": "https://idp.example.com",
+                "clientID": "sourcegraph",
+                "displayName": "SAML",
+                "isBuiltin": False,
+                "configID": "okta",
+            },
+        ]
+        users: list[shared_types.User] = [
+            {
+                "id": "user-1",
+                "username": "alice",
+                "builtinAuth": False,
+                "externalAccounts": {
+                    "nodes": [
+                        {
+                            "serviceType": "saml",
+                            "serviceID": "https://idp.example.com",
+                            "clientID": "sourcegraph",
+                            "accountData": {
+                                "Values": {"groups": {"Values": [{"Value": "engineering"}]}}
+                            },
+                        },
+                    ]
+                },
+                "organizations": {
+                    "nodes": [
+                        {"id": "org-1", "name": "synced-okta-stale"},
+                        {"id": "org-2", "name": "manually-created-org"},
+                    ]
+                },
+            },
+            {
+                "id": "user-2",
+                "username": "bob",
+                "builtinAuth": True,
+                "externalAccounts": {"nodes": []},
+                "organizations": {"nodes": [{"id": "org-1", "name": "synced-okta-stale"}]},
+            },
+        ]
+
+        scoped_users = saml_groups.compact_scoped_saml_group_users(users, providers, {})
+
+        self.assertEqual(
+            [
+                shared_types.ScopedSamlGroupUser(
+                    user_id="user-1",
+                    username="alice",
+                    saml_group_memberships=(
+                        shared_types.SamlGroupMembership(
+                            provider_config_id="okta", group_name="engineering"
+                        ),
+                    ),
+                    # The manually created org is NOT tool-managed: it must
+                    # never appear as a removal candidate.
+                    synced_organizations=({"id": "org-1", "name": "synced-okta-stale"},),
+                ),
+                # Users with zero group memberships are kept: scoped org
+                # sync must still remove them from synced orgs they left.
+                shared_types.ScopedSamlGroupUser(
+                    user_id="user-2",
+                    username="bob",
+                    saml_group_memberships=(),
+                    synced_organizations=({"id": "org-1", "name": "synced-okta-stale"},),
+                ),
+            ],
+            scoped_users,
+        )

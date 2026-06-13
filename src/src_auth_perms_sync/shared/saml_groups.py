@@ -22,6 +22,7 @@ Either form yields the same flat list of group-name strings.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable
 from typing import Any, cast
 
@@ -29,6 +30,48 @@ from . import types as shared_types
 
 DEFAULT_GROUPS_ATTRIBUTE_NAME: str = "groups"
 SAML_SERVICE_TYPE: str = "saml"
+
+# Every organization this tool creates gets this name prefix. No human
+# would name an org `synced-...`, so the prefix doubles as the ownership
+# marker: an org is tool-managed if and only if its name starts with it.
+SYNCED_ORGANIZATION_NAME_PREFIX: str = "synced-"
+ORGANIZATION_NAME_MAX_LENGTH: int = 255
+
+_ORGANIZATION_NAME_PART_RE = re.compile(r"[^A-Za-z0-9]+")
+_ORGANIZATION_NAME_DASH_RUN_RE = re.compile(r"-+")
+
+
+def organization_name_for_saml_group(provider_config_id: str, group_name: str) -> str:
+    """Return the deterministic synced org name for one SAML group.
+
+    Shape: `synced-<sanitized configID>-<sanitized group name>`.
+    """
+    provider_part = _organization_name_part(provider_config_id, "auth provider configID")
+    group_part = _organization_name_part(group_name, "SAML group name")
+    organization_name = f"{SYNCED_ORGANIZATION_NAME_PREFIX}{provider_part}-{group_part}"
+    if len(organization_name) > ORGANIZATION_NAME_MAX_LENGTH:
+        raise SystemExit(
+            f"FATAL: generated org name for configID={provider_config_id!r} "
+            f"group={group_name!r} is {len(organization_name)} characters; "
+            f"Sourcegraph org names must be <= {ORGANIZATION_NAME_MAX_LENGTH}."
+        )
+    return organization_name
+
+
+def _organization_name_part(value: str, label: str) -> str:
+    normalized = _ORGANIZATION_NAME_PART_RE.sub("-", value.strip())
+    normalized = _ORGANIZATION_NAME_DASH_RUN_RE.sub("-", normalized).strip("-")
+    if not normalized:
+        raise SystemExit(
+            f"FATAL: {label} {value!r} cannot be converted to a Sourcegraph org-name part."
+        )
+    return normalized
+
+
+def is_synced_organization_name(organization_name: str) -> bool:
+    """Return whether an org name marks the org as managed by this tool."""
+    return organization_name.startswith(SYNCED_ORGANIZATION_NAME_PREFIX)
+
 
 # Per-(serviceID, clientID) override of the SAML groups attribute name.
 # `None` or a missing key means "use DEFAULT_GROUPS_ATTRIBUTE_NAME for
@@ -150,12 +193,12 @@ def _dict_items(value: Any) -> list[dict[str, Any]]:
     return [cast(dict[str, Any], item) for item in items if isinstance(item, dict)]
 
 
-def compact_saml_group_user(
+def saml_group_memberships_for_user(
     user: shared_types.User,
     providers_by_account_key: dict[tuple[str, str], shared_types.AuthProvider],
     attribute_names_by_provider: SamlGroupsAttributeNameByProvider,
-) -> shared_types.SamlGroupUser | None:
-    """Return only the user fields org sync needs from one full user row."""
+) -> tuple[shared_types.SamlGroupMembership, ...]:
+    """Extract one user's distinct (configID, group) SAML memberships."""
     memberships: list[shared_types.SamlGroupMembership] = []
     seen: set[tuple[str, str]] = set()
     for account in user["externalAccounts"]["nodes"]:
@@ -180,12 +223,24 @@ def compact_saml_group_user(
                 )
             )
             seen.add(membership_key)
+    return tuple(memberships)
+
+
+def compact_saml_group_user(
+    user: shared_types.User,
+    providers_by_account_key: dict[tuple[str, str], shared_types.AuthProvider],
+    attribute_names_by_provider: SamlGroupsAttributeNameByProvider,
+) -> shared_types.SamlGroupUser | None:
+    """Return only the user fields org sync needs from one full user row."""
+    memberships = saml_group_memberships_for_user(
+        user, providers_by_account_key, attribute_names_by_provider
+    )
     if not memberships:
         return None
     return shared_types.SamlGroupUser(
         user_id=user["id"],
         username=user["username"],
-        saml_group_memberships=tuple(memberships),
+        saml_group_memberships=memberships,
     )
 
 
@@ -204,6 +259,39 @@ def compact_saml_group_users(
         if compact_user is not None:
             compact_users.append(compact_user)
     return compact_users
+
+
+def compact_scoped_saml_group_users(
+    users: Iterable[shared_types.User],
+    providers: Iterable[shared_types.AuthProvider],
+    attribute_names_by_provider: SamlGroupsAttributeNameByProvider,
+) -> list[shared_types.ScopedSamlGroupUser]:
+    """Compact in-scope users for a scoped (per-user) organization sync.
+
+    Every user is kept — even with zero SAML group memberships — because
+    scoped org sync also removes users from synced orgs they left. Each
+    user's row must have been fetched with `include_organizations=True`;
+    only `synced-` prefixed org memberships are retained.
+    """
+    providers_by_account_key = saml_providers_by_account_key(providers)
+    scoped_users: list[shared_types.ScopedSamlGroupUser] = []
+    for user in users:
+        synced_organizations = tuple(
+            organization
+            for organization in user.get("organizations", {"nodes": []})["nodes"]
+            if is_synced_organization_name(organization["name"])
+        )
+        scoped_users.append(
+            shared_types.ScopedSamlGroupUser(
+                user_id=user["id"],
+                username=user["username"],
+                saml_group_memberships=saml_group_memberships_for_user(
+                    user, providers_by_account_key, attribute_names_by_provider
+                ),
+                synced_organizations=synced_organizations,
+            )
+        )
+    return scoped_users
 
 
 def count_users_per_saml_group(

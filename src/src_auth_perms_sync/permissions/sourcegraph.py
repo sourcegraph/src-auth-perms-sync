@@ -153,6 +153,7 @@ def get_user_by_username(
     *,
     include_emails: bool = False,
     include_account_data: bool = True,
+    include_organizations: bool = False,
 ) -> shared_types.User | None:
     """Return the exact Sourcegraph user for `username`, if it exists."""
     data = cast(
@@ -161,6 +162,7 @@ def get_user_by_username(
             queries.query_user_by_username(
                 include_emails=include_emails,
                 include_account_data=include_account_data,
+                include_organizations=include_organizations,
             ),
             cast(src.JSONDict, {"username": username}),
         ),
@@ -174,6 +176,7 @@ def get_user_by_email(
     *,
     include_emails: bool = False,
     include_account_data: bool = True,
+    include_organizations: bool = False,
 ) -> shared_types.User | None:
     """Return the user owning the verified email address, if it exists."""
     data = cast(
@@ -182,6 +185,7 @@ def get_user_by_email(
             queries.query_user_by_email(
                 include_emails=include_emails,
                 include_account_data=include_account_data,
+                include_organizations=include_organizations,
             ),
             cast(src.JSONDict, {"email": email}),
         ),
@@ -216,6 +220,7 @@ def get_users_by_ids(
     *,
     include_emails: bool = False,
     include_account_data: bool = True,
+    include_organizations: bool = False,
     parallelism: int = 1,
     worker_pool: ThreadPoolExecutor | None = None,
     progress_label: str | None = None,
@@ -232,6 +237,7 @@ def get_users_by_ids(
                 len(batch),
                 include_emails=include_emails,
                 include_account_data=include_account_data,
+                include_organizations=include_organizations,
             ),
             cast(src.JSONDict, {f"user{index}": user_id for index, user_id in enumerate(batch)}),
             follow_pages=False,

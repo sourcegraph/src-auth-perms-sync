@@ -35,12 +35,22 @@ class UserEmail(TypedDict):
     verified: bool
 
 
+class OrganizationReference(TypedDict):
+    id: str
+    name: str
+
+
+class OrganizationReferenceConnection(TypedDict):
+    nodes: list[OrganizationReference]
+
+
 class User(TypedDict):
     id: str
     username: str
     builtinAuth: bool
     externalAccounts: ExternalAccountConnection
     emails: NotRequired[list[UserEmail]]
+    organizations: NotRequired[OrganizationReferenceConnection]
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,6 +76,20 @@ class SamlGroupMembership:
 @dataclass(frozen=True, slots=True)
 class SamlGroupUser(UserIdentity):
     saml_group_memberships: tuple[SamlGroupMembership, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ScopedSamlGroupUser(UserIdentity):
+    """One in-scope user for a scoped (per-user) SAML organization sync.
+
+    Unlike `SamlGroupUser`, users with zero group memberships are kept:
+    scoped org sync must still remove them from synced orgs they no
+    longer belong to. `synced_organizations` carries the user's current
+    memberships in tool-managed (`synced-` prefixed) organizations.
+    """
+
+    saml_group_memberships: tuple[SamlGroupMembership, ...]
+    synced_organizations: tuple[OrganizationReference, ...]
 
 
 class SiteUserCandidate(TypedDict):

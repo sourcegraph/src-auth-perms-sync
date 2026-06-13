@@ -1,0 +1,106 @@
+{
+  "endpoint": "https://fixture.sourcegraph.test",
+  "currentUsername": "org_admin_09990",
+  "authProviders": [
+    {
+      "serviceType": "builtin",
+      "serviceID": "",
+      "clientID": "",
+      "displayName": "Builtin username/password",
+      "isBuiltin": true,
+      "configID": ""
+    },
+    {
+      "serviceType": "saml",
+      "serviceID": "http://www.okta.com/test123",
+      "clientID": "https://sourcegraph.test/.auth/saml/metadata",
+      "displayName": "Okta",
+      "isBuiltin": false,
+      "configID": "okta"
+    }
+  ],
+  "externalServices": [
+    {
+      "id": 1,
+      "kind": "GITHUB",
+      "displayName": "GitHub",
+      "url": "https://github.com/",
+      "config": "{}"
+    }
+  ],
+  "users": [
+    {
+      "id": 1,
+      "username": "org_admin_09990",
+      "builtinAuth": true,
+      "createdAt": "2026-01-01T00:00:00Z",
+      "emails": [
+        {
+          "email": "org_admin_09990@perms-sync.test",
+          "verified": true
+        }
+      ],
+      "externalAccounts": []
+    },
+    {
+      "id": 2,
+      "username": "test_user_09991",
+      "builtinAuth": false,
+      "createdAt": "2026-01-01T00:00:00Z",
+      "emails": [
+        {
+          "email": "test_user_09991@perms-sync.test",
+          "verified": true
+        }
+      ],
+      "externalAccounts": [
+        {
+          "serviceType": "saml",
+          "serviceID": "http://www.okta.com/test123",
+          "clientID": "https://sourcegraph.test/.auth/saml/metadata",
+          "accountData": {
+            "Values": {
+              "groups": {
+                "Values": [
+                  {
+                    "Value": "engineering"
+                  }
+                ]
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "username": "test_user_09992",
+      "builtinAuth": true,
+      "createdAt": "2026-01-01T00:00:00Z",
+      "emails": [
+        {
+          "email": "test_user_09992@perms-sync.test",
+          "verified": true
+        }
+      ],
+      "externalAccounts": []
+    }
+  ],
+  "repos": [
+    {
+      "id": 101,
+      "name": "test-repo-49981",
+      "externalServiceID": 1,
+      "explicitPermissionsUsers": []
+    }
+  ],
+  "organizations": [
+    {
+      "id": 1,
+      "name": "synced-okta-stale",
+      "members": [
+        "test_user_09992"
+      ]
+    }
+  ]
+}

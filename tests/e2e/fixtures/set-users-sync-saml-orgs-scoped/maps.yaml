@@ -1,0 +1,8 @@
+maps:
+  - name: Grant the app repo to the selected user
+    users:
+      usernames:
+        - test_user_09991
+    repos:
+      names:
+        - test-repo-49981

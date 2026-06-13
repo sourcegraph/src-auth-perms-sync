@@ -5,7 +5,6 @@ from __future__ import annotations
 import datetime
 import json
 import logging
-import re
 import time
 from collections.abc import Iterable
 from concurrent.futures import CancelledError, ThreadPoolExecutor
@@ -16,6 +15,7 @@ from typing import Any, cast
 import src_py_lib as src
 
 from ..permissions import apply as permissions_apply
+from ..permissions import command as permissions_command
 from ..shared import backups, run_context, saml_groups
 from ..shared import sourcegraph as shared_sourcegraph
 from ..shared import types as shared_types
@@ -27,14 +27,20 @@ log = logging.getLogger(__name__)
 ORGANIZATION_LOOKUP_BATCH_SIZE: int = 50
 ORGANIZATION_SEARCH_RESULT_LIMIT: int = 100
 ORGANIZATION_MEMBER_PAGE_SIZE: int = 1000
-ORGANIZATION_NAME_MAX_LENGTH: int = 255
-ORGANIZATION_SNAPSHOT_SCHEMA_VERSION: int = 1
+ORGANIZATION_SNAPSHOT_SCHEMA_VERSION: int = 2
 ORGANIZATION_SNAPSHOT_DIFF_SCHEMA_VERSION: int = 1
+# One `organizations(query: "synced-")` search discovers every tool-managed
+# org in a single request. Sourcegraph caps `first:` at 5000 on most
+# connections; when an instance exceeds the returned page we fall back to
+# per-name lookups (and skip orphaned-org cleanup) rather than miss orgs.
+SYNCED_ORGANIZATION_SEARCH_LIMIT: int = 5000
 
-_ORGANIZATION_NAME_PART_RE = re.compile(r"[^A-Za-z0-9]+")
-_ORGANIZATION_NAME_DASH_RUN_RE = re.compile(r"-+")
 _ALREADY_MEMBER_TEXT = "user is already a member of the organization"
 _ORGANIZATION_EXISTS_TEXT = "organization name is already taken"
+
+# Re-exported here for callers that think in org-sync terms; the naming
+# rule lives in shared.saml_groups so user compaction can share it.
+organization_name_for_saml_group = saml_groups.organization_name_for_saml_group
 
 
 @dataclass(frozen=True)
@@ -92,19 +98,61 @@ def _load_organization_sync_state(
         client,
         command_data.saml_group_users,
     )
+
+    discovered = _discover_synced_organization_states(client)
+    if discovered is None:
+        # Truncated discovery: resolve target names individually and skip
+        # orphaned-org cleanup this run.
+        if not targets:
+            log.warning("No SAML group memberships found in user accountData — nothing to sync.")
+            return None
+        current_user, current_states = _load_current_organization_states(
+            client,
+            sorted(targets),
+            parallelism,
+            worker_pool,
+        )
+    else:
+        current_user, synced_states = discovered
+        for organization_name in sorted(set(synced_states) - set(targets)):
+            # The SAML group behind this synced org is gone (or lost its
+            # last member): remove every member but keep the org so admin
+            # settings survive if the group comes back.
+            targets[organization_name] = organization_types.TargetOrganization(
+                name=organization_name,
+                provider_config_id="",
+                saml_group="",
+            )
+            log.info(
+                "Synced org %s no longer matches any SAML group: "
+                "removing all members, keeping the org.",
+                organization_name,
+            )
+        if not targets:
+            log.warning(
+                "No SAML group memberships found in user accountData "
+                "and no synced orgs exist — nothing to sync."
+            )
+            return None
+        current_states = {
+            organization_name: synced_states.get(organization_name)
+            or organization_types.OrganizationState(
+                id=None,
+                name=organization_name,
+                members_by_id={},
+            )
+            for organization_name in targets
+        }
+        with src.span(
+            "load_current_organization_states",
+            organization_count=len(targets),
+            member_page_size=ORGANIZATION_MEMBER_PAGE_SIZE,
+        ) as load_event:
+            _fetch_members_into_states(client, current_states, parallelism, worker_pool, load_event)
+
     command_event["target_organizations"] = len(targets)
     command_event["desired_memberships"] = sum(
         len(target.desired_members_by_id) for target in targets.values()
-    )
-    if not targets:
-        log.warning("No SAML group memberships found in user accountData — nothing to sync.")
-        return None
-
-    current_user, current_states = _load_current_organization_states(
-        client,
-        sorted(targets),
-        parallelism,
-        worker_pool,
     )
     before_snapshot = _snapshot_from_states(client.endpoint, targets, current_states)
     plan = _plan_organization_sync(targets, current_states, current_user)
@@ -117,6 +165,137 @@ def _load_organization_sync_state(
         before_snapshot=before_snapshot,
         plan=plan,
         expected_snapshot=expected_snapshot,
+    )
+
+
+def _load_scoped_organization_sync_state(
+    client: src.SourcegraphClient,
+    scoped_users: list[shared_types.ScopedSamlGroupUser],
+    parallelism: int,
+    command_event: dict[str, Any],
+    worker_pool: ThreadPoolExecutor | None = None,
+) -> _OrganizationSyncState | None:
+    """Plan a per-user org sync covering only the given users.
+
+    Each user's `accountData` is the complete truth for that user's SAML
+    groups, and their own org list is the complete truth for their current
+    synced-org memberships — so additions AND removals are both safe per
+    user. Users outside the scope are never touched, and neither full user
+    streams nor org member pages are loaded.
+    """
+    log.info(
+        "Scoped SAML org sync: planning membership for %d selected user(s) only; "
+        "no other users' org memberships will change.",
+        len(scoped_users),
+    )
+    command_event["scoped_user_count"] = len(scoped_users)
+    targets: dict[str, organization_types.TargetOrganization] = {}
+    collisions: set[str] = set()
+    for scoped_user in scoped_users:
+        _record_saml_group_user_memberships(targets, collisions, scoped_user)
+    _raise_for_target_collisions(collisions)
+
+    current_members_by_organization: dict[str, dict[str, organization_types.OrgMember]] = {}
+    organization_ids_by_name: dict[str, str] = {}
+    for scoped_user in scoped_users:
+        for organization in scoped_user.synced_organizations:
+            organization_ids_by_name[organization["name"]] = organization["id"]
+            current_members_by_organization.setdefault(organization["name"], {})[
+                scoped_user.user_id
+            ] = {"id": scoped_user.user_id, "username": scoped_user.username}
+    for organization_name in sorted(set(current_members_by_organization) - set(targets)):
+        # In-scope user(s) are members of a synced org that matches none of
+        # their SAML groups any more: plan their removal (org kept).
+        targets[organization_name] = organization_types.TargetOrganization(
+            name=organization_name,
+            provider_config_id="",
+            saml_group="",
+        )
+
+    command_event["target_organizations"] = len(targets)
+    command_event["desired_memberships"] = sum(
+        len(target.desired_members_by_id) for target in targets.values()
+    )
+    if not targets:
+        log.info("Selected user(s) hold no SAML group or synced org memberships — nothing to sync.")
+        return None
+
+    # Org IDs for orgs the scoped users belong to come from their own org
+    # lists; only the remaining target names need a lookup (also yielding
+    # currentUser for the create path). No member pages are fetched.
+    names_needing_lookup = sorted(set(targets) - set(organization_ids_by_name))
+    current_user, looked_up_states = _lookup_organization_states(
+        client,
+        names_needing_lookup,
+        parallelism,
+        worker_pool,
+    )
+    current_states: dict[str, organization_types.OrganizationState] = {}
+    for organization_name in targets:
+        known_id = organization_ids_by_name.get(organization_name)
+        if known_id is not None:
+            state = organization_types.OrganizationState(
+                id=known_id,
+                name=organization_name,
+                members_by_id={},
+            )
+        else:
+            state = looked_up_states[organization_name]
+        state.members_by_id = dict(current_members_by_organization.get(organization_name, {}))
+        current_states[organization_name] = state
+
+    before_snapshot = _snapshot_from_states(client.endpoint, targets, current_states, scope="users")
+    plan = _plan_organization_sync(targets, current_states, current_user)
+    expected_states = _expected_states_from_targets(targets, current_states)
+    expected_snapshot = _snapshot_from_states(
+        client.endpoint, targets, expected_states, scope="users"
+    )
+    return _OrganizationSyncState(
+        targets=targets,
+        current_user=current_user,
+        current_states=current_states,
+        before_snapshot=before_snapshot,
+        plan=plan,
+        expected_snapshot=expected_snapshot,
+    )
+
+
+def _load_scoped_users_for_filters(
+    client: src.SourcegraphClient,
+    *,
+    user_identifiers: tuple[str, ...],
+    users_without_explicit_perms: bool,
+    user_created_after: str | None,
+    parallelism: int,
+    explicit_permissions_batch_size: int,
+    saml_groups_attribute_name_by_config_id: dict[str, str],
+    worker_pool: ThreadPoolExecutor | None = None,
+) -> list[shared_types.ScopedSamlGroupUser]:
+    """Load and compact the users a standalone scoped org sync covers.
+
+    Reuses the get/set user-selection pipeline; accountData and each
+    user's org memberships ride along in the same queries.
+    """
+    users = permissions_command.load_selected_users(
+        client,
+        user_identifiers=user_identifiers,
+        users_without_explicit_perms=users_without_explicit_perms,
+        user_created_after=user_created_after,
+        parallelism=parallelism,
+        explicit_permissions_batch_size=explicit_permissions_batch_size,
+        include_account_data=True,
+        include_organizations=True,
+        worker_pool=worker_pool,
+    )
+    log.info("Querying auth providers from %s ...", client.endpoint)
+    providers = shared_sourcegraph.list_auth_providers(client)
+    attribute_names_by_provider = saml_groups.attribute_names_by_provider_key(
+        providers, saml_groups_attribute_name_by_config_id
+    )
+    return saml_groups.compact_scoped_saml_group_users(
+        users,
+        providers,
+        attribute_names_by_provider,
     )
 
 
@@ -288,6 +467,113 @@ def _finish_organization_apply_with_backup(
         log.info("To inspect the pre-sync org membership state, read:\n  %s", before_path)
 
 
+def _finish_scoped_organization_apply_with_backup(
+    client: src.SourcegraphClient,
+    run_paths: backups.RunPaths,
+    sync_state: _OrganizationSyncState,
+    scoped_users: list[shared_types.ScopedSamlGroupUser],
+    before_path: Path | None,
+    parallelism: int,
+    worker_pool: ThreadPoolExecutor | None = None,
+) -> None:
+    """Validate a scoped apply by re-reading only the scoped users' org lists."""
+    after_states = _load_scoped_after_states(
+        client,
+        sync_state,
+        scoped_users,
+        parallelism,
+        worker_pool,
+    )
+    after_snapshot = _snapshot_from_states(
+        client.endpoint, sync_state.targets, after_states, scope="users"
+    )
+    if run_paths.write_files:
+        after_path, diff_path = _write_organization_after_snapshot(
+            run_paths,
+            sync_state.before_snapshot,
+            after_snapshot,
+        )
+        log.info("Wrote after org snapshot: %s diff=%s.", after_path, diff_path)
+    else:
+        log.info("Skipping after and diff org snapshots because --no-files is set.")
+    _validate_organization_sync(after_snapshot, sync_state.expected_snapshot)
+    if before_path is not None:
+        log.info("To inspect the pre-sync org membership state, read:\n  %s", before_path)
+
+
+def _load_scoped_after_states(
+    client: src.SourcegraphClient,
+    sync_state: _OrganizationSyncState,
+    scoped_users: list[shared_types.ScopedSamlGroupUser],
+    parallelism: int,
+    worker_pool: ThreadPoolExecutor | None = None,
+) -> dict[str, organization_types.OrganizationState]:
+    """Rebuild target org states from the scoped users' refreshed org lists."""
+    organizations_by_user_id = _fetch_users_organizations(
+        client,
+        [scoped_user.user_id for scoped_user in scoped_users],
+        parallelism,
+        worker_pool,
+    )
+    after_states = {
+        organization_name: organization_types.OrganizationState(
+            id=sync_state.current_states[organization_name].id,
+            name=organization_name,
+            members_by_id={},
+        )
+        for organization_name in sync_state.targets
+    }
+    for scoped_user in scoped_users:
+        for organization in organizations_by_user_id.get(scoped_user.user_id, []):
+            state = after_states.get(organization["name"])
+            if state is not None:
+                state.members_by_id[scoped_user.user_id] = {
+                    "id": scoped_user.user_id,
+                    "username": scoped_user.username,
+                }
+    return after_states
+
+
+def _fetch_users_organizations(
+    client: src.SourcegraphClient,
+    user_ids: list[str],
+    parallelism: int,
+    worker_pool: ThreadPoolExecutor | None = None,
+) -> dict[str, list[shared_types.OrganizationReference]]:
+    """Fetch many users' org memberships via aliased batch lookups."""
+
+    def fetch_batch(
+        batch: list[str],
+    ) -> list[tuple[str, list[shared_types.OrganizationReference]]]:
+        data = client.graphql(
+            queries.users_organizations_batch_query(len(batch)),
+            cast(src.JSONDict, {f"user{index}": user_id for index, user_id in enumerate(batch)}),
+            follow_pages=False,
+        )
+        batch_organizations: list[tuple[str, list[shared_types.OrganizationReference]]] = []
+        for index, user_id in enumerate(batch):
+            node = cast(dict[str, Any] | None, data.get(f"user{index}"))
+            organizations: list[shared_types.OrganizationReference] = []
+            if node:
+                organizations = cast(
+                    list[shared_types.OrganizationReference],
+                    node["organizations"]["nodes"],
+                )
+            batch_organizations.append((user_id, organizations))
+        return batch_organizations
+
+    organizations_by_user_id: dict[str, list[shared_types.OrganizationReference]] = {}
+    for batch_results in run_context.parallel_map(
+        fetch_batch,
+        list(_chunks(user_ids, ORGANIZATION_LOOKUP_BATCH_SIZE)),
+        parallelism=parallelism,
+        worker_pool=worker_pool,
+    ):
+        for user_id, organizations in batch_results:
+            organizations_by_user_id[user_id] = organizations
+    return organizations_by_user_id
+
+
 def _write_organization_after_snapshot(
     run_paths: backups.RunPaths,
     before_snapshot: organization_types.OrganizationSnapshot,
@@ -323,30 +609,77 @@ def cmd_sync_saml_organizations(
     saml_groups_attribute_name_by_config_id: dict[str, str],
     do_backup: bool,
     command_data: run_context.CommandData | None = None,
+    user_identifiers: tuple[str, ...] = (),
+    users_without_explicit_perms: bool = False,
+    user_created_after: str | None = None,
+    explicit_permissions_batch_size: int = 50,
     worker_pool: ThreadPoolExecutor | None = None,
 ) -> None:
-    """Create/update Sourcegraph orgs from every discovered SAML group.
+    """Create/update Sourcegraph orgs from discovered SAML groups.
 
     Org names are deterministic and config-free: the Sourcegraph-safe form
-    of `<auth provider configID>-<group name>`. Invalid org-name
+    of `synced-<auth provider configID>-<group name>`. Invalid org-name
     characters are converted to `-`; any resulting name collision fails
     before mutation so we never merge unrelated SAML groups accidentally.
+    The `synced-` prefix marks tool ownership: only orgs carrying it are
+    ever modified.
+
+    Two modes:
+
+    - Full (`sync-saml-orgs --full`, or after a full-overwrite set):
+      converges every synced org to the complete user population,
+      including emptying (but never deleting) synced orgs whose SAML
+      group disappeared.
+    - Scoped: per-user additions and removals for exactly the selected
+      users; no other users or orgs are touched and no full user stream
+      or member pages are loaded. The scope comes either from a preceding
+      additive set (`command_data.scoped_saml_group_users`) or from this
+      command's own user filters (`user_identifiers`,
+      `users_without_explicit_perms`, `user_created_after`).
     """
+    resolved_command_data = command_data or run_context.CommandData()
+    scoped_users = resolved_command_data.scoped_saml_group_users
+    user_filters_selected = (
+        bool(user_identifiers) or users_without_explicit_perms or user_created_after is not None
+    )
     with src.span(
         "cmd_sync_saml_organizations",
         dry_run=dry_run,
         parallelism=parallelism,
         do_backup=do_backup,
+        scoped=scoped_users is not None or user_filters_selected,
     ) as command_event:
-        sync_state = _load_organization_sync_state(
-            client,
-            saml_groups_attribute_name_by_config_id,
-            parallelism,
-            command_event,
-            command_data or run_context.CommandData(),
-            worker_pool,
-        )
+        if scoped_users is None and user_filters_selected:
+            scoped_users = _load_scoped_users_for_filters(
+                client,
+                user_identifiers=user_identifiers,
+                users_without_explicit_perms=users_without_explicit_perms,
+                user_created_after=user_created_after,
+                parallelism=parallelism,
+                explicit_permissions_batch_size=explicit_permissions_batch_size,
+                saml_groups_attribute_name_by_config_id=(saml_groups_attribute_name_by_config_id),
+                worker_pool=worker_pool,
+            )
+        if scoped_users is not None:
+            sync_state = _load_scoped_organization_sync_state(
+                client,
+                scoped_users,
+                parallelism,
+                command_event,
+                worker_pool,
+            )
+        else:
+            sync_state = _load_organization_sync_state(
+                client,
+                saml_groups_attribute_name_by_config_id,
+                parallelism,
+                command_event,
+                resolved_command_data,
+                worker_pool,
+            )
         if sync_state is None:
+            if dry_run:
+                log.info("Dry run complete. Nothing to sync, so --apply would make no changes.")
             return
 
         _log_organization_sync_plan(sync_state)
@@ -372,14 +705,25 @@ def cmd_sync_saml_organizations(
         _record_organization_apply_event(command_event, apply_result)
 
         if do_backup:
-            _finish_organization_apply_with_backup(
-                client,
-                run_paths,
-                sync_state,
-                before_path,
-                parallelism,
-                worker_pool,
-            )
+            if scoped_users is not None:
+                _finish_scoped_organization_apply_with_backup(
+                    client,
+                    run_paths,
+                    sync_state,
+                    scoped_users,
+                    before_path,
+                    parallelism,
+                    worker_pool,
+                )
+            else:
+                _finish_organization_apply_with_backup(
+                    client,
+                    run_paths,
+                    sync_state,
+                    before_path,
+                    parallelism,
+                    worker_pool,
+                )
 
         _raise_for_failed_organization_sync(apply_result)
 
@@ -427,7 +771,7 @@ def _collect_target_organizations(
 def _record_saml_group_user_memberships(
     targets: dict[str, organization_types.TargetOrganization],
     collisions: set[str],
-    user: shared_types.SamlGroupUser,
+    user: shared_types.SamlGroupUser | shared_types.ScopedSamlGroupUser,
 ) -> None:
     for membership in user.saml_group_memberships:
         _record_target_organization_membership(
@@ -444,7 +788,7 @@ def _record_target_organization_membership(
     collisions: set[str],
     provider_config_id: str,
     group_name: str,
-    user: shared_types.SamlGroupUser,
+    user: shared_types.SamlGroupUser | shared_types.ScopedSamlGroupUser,
 ) -> None:
     organization_name = organization_name_for_saml_group(provider_config_id, group_name)
     existing_target = targets.get(organization_name)
@@ -509,89 +853,145 @@ def _log_target_collection_summary(
     )
 
 
-def organization_name_for_saml_group(provider_config_id: str, group_name: str) -> str:
-    provider_part = _organization_name_part(provider_config_id, "auth provider configID")
-    group_part = _organization_name_part(group_name, "SAML group name")
-    organization_name = f"{provider_part}-{group_part}"
-    if len(organization_name) > ORGANIZATION_NAME_MAX_LENGTH:
-        raise SystemExit(
-            f"FATAL: generated org name for configID={provider_config_id!r} "
-            f"group={group_name!r} is {len(organization_name)} characters; "
-            f"Sourcegraph org names must be <= {ORGANIZATION_NAME_MAX_LENGTH}."
-        )
-    return organization_name
-
-
-def _organization_name_part(value: str, label: str) -> str:
-    normalized = _ORGANIZATION_NAME_PART_RE.sub("-", value.strip())
-    normalized = _ORGANIZATION_NAME_DASH_RUN_RE.sub("-", normalized).strip("-")
-    if not normalized:
-        raise SystemExit(
-            f"FATAL: {label} {value!r} cannot be converted to a Sourcegraph org-name part."
-        )
-    return normalized
-
-
 def _load_current_organization_states(
     client: src.SourcegraphClient,
     organization_names: list[str],
     parallelism: int,
     worker_pool: ThreadPoolExecutor | None = None,
 ) -> tuple[organization_types.OrgMember, dict[str, organization_types.OrganizationState]]:
-    states: dict[str, organization_types.OrganizationState] = {}
-    current_user: organization_types.OrgMember | None = None
-    name_batches = list(_chunks(organization_names, ORGANIZATION_LOOKUP_BATCH_SIZE))
+    """Resolve target org IDs and load their full member lists."""
     with src.span(
         "load_current_organization_states",
         organization_count=len(organization_names),
-        lookup_batch_count=len(name_batches),
         member_page_size=ORGANIZATION_MEMBER_PAGE_SIZE,
     ) as load_event:
-
-        def fetch_organization_batch(
-            batch: list[str],
-        ) -> organization_types.OrganizationBatchLookup:
-            return _fetch_organization_batch(client, batch)
-
-        for result in run_context.parallel_map(
-            fetch_organization_batch,
-            name_batches,
-            parallelism=parallelism,
-            worker_pool=worker_pool,
-        ):
-            batch_current_user = result["current_user"]
-            if current_user is None:
-                current_user = batch_current_user
-            elif current_user["id"] != batch_current_user["id"]:
-                raise RuntimeError(
-                    "currentUser changed between organization lookup batches "
-                    f"({current_user['username']} vs {batch_current_user['username']})"
-                )
-            states.update(result["states"])
-
-        existing_states = [state for state in states.values() if state.id is not None]
-        load_event["existing_organizations_needing_member_pages"] = len(existing_states)
-
-        def fetch_members(
-            state: organization_types.OrganizationState,
-        ) -> tuple[organization_types.OrganizationState, list[organization_types.OrgMember]]:
-            return state, _fetch_all_members(client, state)
-
-        for state, members in run_context.parallel_map(
-            fetch_members,
-            existing_states,
-            parallelism=parallelism,
-            worker_pool=worker_pool,
-        ):
-            for member in members:
-                state.members_by_id[member["id"]] = member
-        load_event["existing_organizations"] = sum(1 for state in states.values() if state.id)
-        load_event["total_current_members"] = sum(
-            len(state.members_by_id) for state in states.values()
+        current_user, states = _lookup_organization_states(
+            client,
+            organization_names,
+            parallelism,
+            worker_pool,
         )
+        _fetch_members_into_states(client, states, parallelism, worker_pool, load_event)
+    return current_user, states
+
+
+def _lookup_organization_states(
+    client: src.SourcegraphClient,
+    organization_names: list[str],
+    parallelism: int,
+    worker_pool: ThreadPoolExecutor | None = None,
+) -> tuple[organization_types.OrgMember, dict[str, organization_types.OrganizationState]]:
+    """Resolve org names to IDs (no member pages) via aliased batch lookups."""
+    states: dict[str, organization_types.OrganizationState] = {}
+    current_user: organization_types.OrgMember | None = None
+    name_batches = list(_chunks(organization_names, ORGANIZATION_LOOKUP_BATCH_SIZE))
+
+    def fetch_organization_batch(
+        batch: list[str],
+    ) -> organization_types.OrganizationBatchLookup:
+        return _fetch_organization_batch(client, batch)
+
+    for result in run_context.parallel_map(
+        fetch_organization_batch,
+        name_batches,
+        parallelism=parallelism,
+        worker_pool=worker_pool,
+    ):
+        batch_current_user = result["current_user"]
+        if current_user is None:
+            current_user = batch_current_user
+        elif current_user["id"] != batch_current_user["id"]:
+            raise RuntimeError(
+                "currentUser changed between organization lookup batches "
+                f"({current_user['username']} vs {batch_current_user['username']})"
+            )
+        states.update(result["states"])
 
     if current_user is None:
-        raise RuntimeError("currentUser was not returned while loading organizations")
+        current_user = _fetch_current_user(client)
+    return current_user, states
+
+
+def _fetch_members_into_states(
+    client: src.SourcegraphClient,
+    states: dict[str, organization_types.OrganizationState],
+    parallelism: int,
+    worker_pool: ThreadPoolExecutor | None,
+    load_event: dict[str, Any],
+) -> None:
+    """Page every existing org's full member list into its state."""
+    existing_states = [state for state in states.values() if state.id is not None]
+    load_event["existing_organizations_needing_member_pages"] = len(existing_states)
+
+    def fetch_members(
+        state: organization_types.OrganizationState,
+    ) -> tuple[organization_types.OrganizationState, list[organization_types.OrgMember]]:
+        return state, _fetch_all_members(client, state)
+
+    for state, members in run_context.parallel_map(
+        fetch_members,
+        existing_states,
+        parallelism=parallelism,
+        worker_pool=worker_pool,
+    ):
+        for member in members:
+            state.members_by_id[member["id"]] = member
+    load_event["existing_organizations"] = len(existing_states)
+    load_event["total_current_members"] = sum(len(state.members_by_id) for state in states.values())
+
+
+def _fetch_current_user(client: src.SourcegraphClient) -> organization_types.OrgMember:
+    data = client.graphql(queries.QUERY_CURRENT_USER)
+    current_user = cast(organization_types.OrgMember | None, data.get("currentUser"))
+    if current_user is None:
+        raise RuntimeError("currentUser is null; SAML org sync requires an authenticated token")
+    return current_user
+
+
+def _discover_synced_organization_states(
+    client: src.SourcegraphClient,
+) -> tuple[organization_types.OrgMember, dict[str, organization_types.OrganizationState]] | None:
+    """Find every existing `synced-` org (ID + name) in one search request.
+
+    Returns None when the search result was truncated (more matches than
+    `SYNCED_ORGANIZATION_SEARCH_LIMIT`); callers must then fall back to
+    per-name lookups and skip orphaned-org cleanup.
+    """
+    with src.span("discover_synced_organizations") as discovery_event:
+        data = client.graphql(
+            queries.QUERY_SYNCED_ORGANIZATIONS,
+            {
+                "first": SYNCED_ORGANIZATION_SEARCH_LIMIT,
+                "query": saml_groups.SYNCED_ORGANIZATION_NAME_PREFIX,
+            },
+        )
+        current_user = cast(organization_types.OrgMember | None, data.get("currentUser"))
+        if current_user is None:
+            raise RuntimeError("currentUser is null; SAML org sync requires an authenticated token")
+        connection = cast(dict[str, Any], data["organizations"])
+        raw_organizations = cast(list[dict[str, Any]], connection["nodes"])
+        total_count = cast(int, connection["totalCount"])
+        discovery_event["total_count"] = total_count
+        discovery_event["returned_count"] = len(raw_organizations)
+        if total_count > len(raw_organizations):
+            log.warning(
+                "Synced-org discovery returned %d of %d matches; falling back to "
+                "per-name lookups and skipping orphaned synced-org cleanup this run.",
+                len(raw_organizations),
+                total_count,
+            )
+            return None
+        # The search also matches display names; keep only true synced- names.
+        states = {
+            raw_organization["name"]: organization_types.OrganizationState(
+                id=cast(str, raw_organization["id"]),
+                name=cast(str, raw_organization["name"]),
+                members_by_id={},
+            )
+            for raw_organization in raw_organizations
+            if saml_groups.is_synced_organization_name(cast(str, raw_organization["name"]))
+        }
+        discovery_event["synced_organizations"] = len(states)
     return current_user, states
 
 
@@ -990,6 +1390,8 @@ def _snapshot_from_states(
     endpoint: str,
     targets: dict[str, organization_types.TargetOrganization],
     states: dict[str, organization_types.OrganizationState],
+    *,
+    scope: organization_types.OrganizationSyncScope = "full",
 ) -> organization_types.OrganizationSnapshot:
     organizations: dict[str, organization_types.OrganizationSnapshotEntry] = {}
     for organization_name, target in sorted(targets.items()):
@@ -1005,6 +1407,9 @@ def _snapshot_from_states(
         "schema_version": ORGANIZATION_SNAPSHOT_SCHEMA_VERSION,
         "captured_at": datetime.datetime.now(datetime.UTC).isoformat(timespec="seconds"),
         "endpoint": endpoint,
+        # "users" snapshots cover only the scoped users' memberships per
+        # org, not each org's full member list.
+        "scope": scope,
         "stats": {
             "target_organizations": len(organizations),
             "existing_organizations": sum(

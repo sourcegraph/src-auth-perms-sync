@@ -274,7 +274,7 @@ def cmd_get(
         cmd_event["external_service_count"] = len(services)
         include_user_account_data = _providers_need_saml_account_data(raw_providers)
 
-        users = _load_get_users(
+        users = load_selected_users(
             client,
             user_identifiers=user_identifiers,
             users_without_explicit_perms=users_without_explicit_perms,
@@ -394,7 +394,7 @@ def cmd_get(
         )
 
 
-def _load_get_users(
+def load_selected_users(
     client: src.SourcegraphClient,
     *,
     user_identifiers: tuple[str, ...],
@@ -403,14 +403,21 @@ def _load_get_users(
     parallelism: int,
     explicit_permissions_batch_size: int,
     include_account_data: bool,
+    include_organizations: bool = False,
     worker_pool: ThreadPoolExecutor | None,
 ) -> list[shared_types.User]:
-    """Load the Sourcegraph users selected by get/set-compatible user filters."""
+    """Load the Sourcegraph users selected by the shared user filters.
+
+    Used by the get command and by the standalone scoped sync-saml-orgs
+    modes; `include_organizations` rides the users' org memberships along
+    in the same queries for scoped org sync.
+    """
     if user_identifiers:
         users = _resolve_user_identifiers(
             client,
             user_identifiers,
             include_account_data=include_account_data,
+            include_organizations=include_organizations,
         )
         if user_created_after is None:
             return users
@@ -463,19 +470,25 @@ def _load_get_users(
             client,
             candidates,
             include_account_data=include_account_data,
+            include_organizations=include_organizations,
             parallelism=parallelism,
             worker_pool=worker_pool,
         )
         log.info("Selected %d user(s) for get output.", len(users))
         return users
 
-    return _load_all_get_users(client, include_account_data=include_account_data)
+    return _load_all_get_users(
+        client,
+        include_account_data=include_account_data,
+        include_organizations=include_organizations,
+    )
 
 
 def _load_all_get_users(
     client: src.SourcegraphClient,
     *,
     include_account_data: bool,
+    include_organizations: bool = False,
 ) -> list[shared_types.User]:
     """Load all users for get output, with progress logs for large instances."""
     total_users = shared_sourcegraph.count_users(client)
@@ -495,6 +508,7 @@ def _load_all_get_users(
         shared_sourcegraph.list_users_streaming(
             client,
             include_account_data=include_account_data,
+            include_organizations=include_organizations,
         ),
         start=1,
     ):
@@ -523,6 +537,7 @@ def _hydrate_site_user_candidates(
     *,
     include_emails: bool = False,
     include_account_data: bool = True,
+    include_organizations: bool = False,
     parallelism: int,
     worker_pool: ThreadPoolExecutor | None,
 ) -> list[shared_types.User]:
@@ -542,6 +557,7 @@ def _hydrate_site_user_candidates(
         [candidate["id"] for candidate in candidates],
         include_emails=include_emails,
         include_account_data=include_account_data,
+        include_organizations=include_organizations,
         parallelism=parallelism,
         worker_pool=worker_pool,
         progress_label="Hydrated selected Sourcegraph user metadata",
@@ -578,6 +594,32 @@ def _log_user_planning_progress(
         rate,
         eta_seconds,
         grant_count,
+    )
+
+
+def _additive_command_data(
+    context: permission_types.MappingContext | None,
+    selected_users: list[shared_types.User],
+    retain_saml_group_users: bool,
+) -> run_context.CommandData:
+    """Build an additive set command's result data.
+
+    When `retain_saml_group_users` is set, the selected users are compacted
+    into `scoped_saml_group_users` so a subsequent `--sync-saml-orgs` phase
+    syncs org membership for exactly these users — per-user additions and
+    removals — without streaming all users again. An empty selection yields
+    an empty scope (org sync no-ops), never a full-instance sync.
+    """
+    providers = context.providers if context is not None else None
+    if not retain_saml_group_users:
+        return run_context.CommandData(auth_providers=providers)
+    return run_context.CommandData(
+        auth_providers=providers,
+        scoped_saml_group_users=saml_groups.compact_scoped_saml_group_users(
+            selected_users,
+            providers or [],
+            context.saml_groups_attribute_names if context is not None else {},
+        ),
     )
 
 
@@ -688,7 +730,8 @@ def cmd_set(
             bind_id_mode,
             saml_groups_attribute_name_by_config_id,
             do_backup,
-            worker_pool,
+            retain_saml_group_users=retain_saml_group_users,
+            worker_pool=worker_pool,
             mapping_rules=mapping_rules,
         )
     if options.mode == "users_without_explicit_perms":
@@ -702,7 +745,8 @@ def cmd_set(
             bind_id_mode,
             saml_groups_attribute_name_by_config_id,
             do_backup,
-            worker_pool,
+            retain_saml_group_users=retain_saml_group_users,
+            worker_pool=worker_pool,
             mapping_rules=mapping_rules,
         )
     if options.mode == "created_after":
@@ -716,7 +760,8 @@ def cmd_set(
             bind_id_mode,
             saml_groups_attribute_name_by_config_id,
             do_backup,
-            worker_pool,
+            retain_saml_group_users=retain_saml_group_users,
+            worker_pool=worker_pool,
             mapping_rules=mapping_rules,
         )
     return run_context.CommandData()
@@ -732,6 +777,7 @@ def cmd_set_additive_users(
     bind_id_mode: str,
     saml_groups_attribute_name_by_config_id: dict[str, str],
     do_backup: bool,
+    retain_saml_group_users: bool = False,
     worker_pool: ThreadPoolExecutor | None = None,
     mapping_rules: list[permission_types.MappingRule] | None = None,
 ) -> run_context.CommandData:
@@ -748,16 +794,18 @@ def cmd_set_additive_users(
         mapping_rules = resolve_mapping_rules(mapping_rules, run_paths.maps_path)
         if not mapping_rules:
             log.warning("No maps defined in %s — nothing to do.", run_paths.maps_path)
-            return run_context.CommandData()
+            return _additive_command_data(None, [], retain_saml_group_users)
         include_user_emails = permissions_mapping.mapping_rules_need_user_emails(mapping_rules)
-        include_user_account_data = permissions_mapping.mapping_rules_need_saml_account_data(
-            mapping_rules
+        include_user_account_data = (
+            permissions_mapping.mapping_rules_need_saml_account_data(mapping_rules)
+            or retain_saml_group_users
         )
         users = _resolve_user_identifiers(
             client,
             user_identifiers,
             include_emails=include_user_emails,
             include_account_data=include_user_account_data,
+            include_organizations=retain_saml_group_users,
         )
         context = load_mapping_context_discovery(
             client,
@@ -778,7 +826,7 @@ def cmd_set_additive_users(
                 )
             users = selected_users
             if not users:
-                return run_context.CommandData(auth_providers=context.providers)
+                return _additive_command_data(context, users, retain_saml_group_users)
 
         matching_rules = _mapping_rules_matching_selected_users(context, users)
         log.info(
@@ -798,7 +846,7 @@ def cmd_set_additive_users(
                 do_backup=do_backup,
                 worker_pool=worker_pool,
             )
-            return run_context.CommandData(auth_providers=context.providers)
+            return _additive_command_data(context, users, retain_saml_group_users)
 
         service_ids = _service_ids_required_by_mapping_rules(context, matching_rules)
         log.info(
@@ -843,7 +891,7 @@ def cmd_set_additive_users(
             existing_repos_by_user_id=existing_repos_by_user_id,
             worker_pool=worker_pool,
         )
-        return run_context.CommandData(auth_providers=context.providers)
+        return _additive_command_data(context, users, retain_saml_group_users)
 
 
 def cmd_set_additive_users_without_explicit_perms(
@@ -856,6 +904,7 @@ def cmd_set_additive_users_without_explicit_perms(
     bind_id_mode: str,
     saml_groups_attribute_name_by_config_id: dict[str, str],
     do_backup: bool,
+    retain_saml_group_users: bool = False,
     worker_pool: ThreadPoolExecutor | None = None,
     mapping_rules: list[permission_types.MappingRule] | None = None,
 ) -> run_context.CommandData:
@@ -876,15 +925,16 @@ def cmd_set_additive_users_without_explicit_perms(
         mapping_rules = resolve_mapping_rules(mapping_rules, run_paths.maps_path)
         if not mapping_rules:
             log.warning("No maps defined in %s — nothing to do.", run_paths.maps_path)
-            return run_context.CommandData()
+            return _additive_command_data(None, [], retain_saml_group_users)
         context = load_mapping_context_discovery(
             client,
             mapping_rules,
             saml_groups_attribute_name_by_config_id,
         )
         include_user_emails = permissions_mapping.mapping_rules_need_user_emails(mapping_rules)
-        include_user_account_data = permissions_mapping.mapping_rules_need_saml_account_data(
-            mapping_rules
+        include_user_account_data = (
+            permissions_mapping.mapping_rules_need_saml_account_data(mapping_rules)
+            or retain_saml_group_users
         )
         # Match mapping rules BEFORE the explicit-permission check: the
         # per-user `permissionsInfo.repositories(source: API, first: 1)`
@@ -904,6 +954,7 @@ def cmd_set_additive_users_without_explicit_perms(
             candidates,
             include_emails=include_user_emails,
             include_account_data=include_user_account_data,
+            include_organizations=retain_saml_group_users,
             parallelism=parallelism,
             worker_pool=worker_pool,
         )
@@ -947,7 +998,7 @@ def cmd_set_additive_users_without_explicit_perms(
                 do_backup=do_backup,
                 worker_pool=worker_pool,
             )
-            return run_context.CommandData(auth_providers=context.providers)
+            return _additive_command_data(context, users, retain_saml_group_users)
 
         matching_rules = _mapping_rules_matching_selected_users(context, users)
         log.info(
@@ -967,7 +1018,7 @@ def cmd_set_additive_users_without_explicit_perms(
                 do_backup=do_backup,
                 worker_pool=worker_pool,
             )
-            return run_context.CommandData(auth_providers=context.providers)
+            return _additive_command_data(context, users, retain_saml_group_users)
 
         service_ids = _service_ids_required_by_mapping_rules(context, matching_rules)
         log.info(
@@ -1020,7 +1071,7 @@ def cmd_set_additive_users_without_explicit_perms(
             do_backup=do_backup,
             worker_pool=worker_pool,
         )
-        return run_context.CommandData(auth_providers=context.providers)
+        return _additive_command_data(context, users, retain_saml_group_users)
 
 
 def cmd_set_additive_created_after(
@@ -1032,6 +1083,7 @@ def cmd_set_additive_created_after(
     bind_id_mode: str,
     saml_groups_attribute_name_by_config_id: dict[str, str],
     do_backup: bool,
+    retain_saml_group_users: bool = False,
     worker_pool: ThreadPoolExecutor | None = None,
     mapping_rules: list[permission_types.MappingRule] | None = None,
 ) -> run_context.CommandData:
@@ -1050,15 +1102,16 @@ def cmd_set_additive_created_after(
         mapping_rules = resolve_mapping_rules(mapping_rules, run_paths.maps_path)
         if not mapping_rules:
             log.warning("No maps defined in %s — nothing to do.", run_paths.maps_path)
-            return run_context.CommandData()
+            return _additive_command_data(None, [], retain_saml_group_users)
         context = load_mapping_context_discovery(
             client,
             mapping_rules,
             saml_groups_attribute_name_by_config_id,
         )
         include_user_emails = permissions_mapping.mapping_rules_need_user_emails(mapping_rules)
-        include_user_account_data = permissions_mapping.mapping_rules_need_saml_account_data(
-            mapping_rules
+        include_user_account_data = (
+            permissions_mapping.mapping_rules_need_saml_account_data(mapping_rules)
+            or retain_saml_group_users
         )
         candidates = permissions_sourcegraph.list_site_user_candidates(
             client,
@@ -1076,6 +1129,7 @@ def cmd_set_additive_created_after(
             candidates,
             include_emails=include_user_emails,
             include_account_data=include_user_account_data,
+            include_organizations=retain_saml_group_users,
             parallelism=parallelism,
             worker_pool=worker_pool,
         )
@@ -1091,7 +1145,7 @@ def cmd_set_additive_created_after(
                 do_backup=do_backup,
                 worker_pool=worker_pool,
             )
-            return run_context.CommandData(auth_providers=context.providers)
+            return _additive_command_data(context, users, retain_saml_group_users)
 
         matching_rules = _mapping_rules_matching_selected_users(context, users)
         log.info(
@@ -1111,7 +1165,7 @@ def cmd_set_additive_created_after(
                 do_backup=do_backup,
                 worker_pool=worker_pool,
             )
-            return run_context.CommandData(auth_providers=context.providers)
+            return _additive_command_data(context, users, retain_saml_group_users)
 
         service_ids = _service_ids_required_by_mapping_rules(context, matching_rules)
         log.info(
@@ -1156,7 +1210,7 @@ def cmd_set_additive_created_after(
             existing_repos_by_user_id=existing_repos_by_user_id,
             worker_pool=worker_pool,
         )
-        return run_context.CommandData(auth_providers=context.providers)
+        return _additive_command_data(context, users, retain_saml_group_users)
 
 
 def _resolve_user_identifiers(
@@ -1165,6 +1219,7 @@ def _resolve_user_identifiers(
     *,
     include_emails: bool = False,
     include_account_data: bool = True,
+    include_organizations: bool = False,
 ) -> list[shared_types.User]:
     """Resolve username/email inputs to distinct Sourcegraph users in caller order."""
     users: list[shared_types.User] = []
@@ -1175,6 +1230,7 @@ def _resolve_user_identifiers(
             user_identifier,
             include_emails=include_emails,
             include_account_data=include_account_data,
+            include_organizations=include_organizations,
         )
         if user["id"] in seen_user_ids:
             continue
@@ -1189,6 +1245,7 @@ def _resolve_user_identifier(
     *,
     include_emails: bool = False,
     include_account_data: bool = True,
+    include_organizations: bool = False,
 ) -> shared_types.User:
     """Resolve username/email input to one Sourcegraph user."""
     user: shared_types.User | None
@@ -1198,11 +1255,13 @@ def _resolve_user_identifier(
             user_identifier,
             include_emails=include_emails,
             include_account_data=include_account_data,
+            include_organizations=include_organizations,
         ) or permissions_sourcegraph.get_user_by_username(
             client,
             user_identifier,
             include_emails=include_emails,
             include_account_data=include_account_data,
+            include_organizations=include_organizations,
         )
     else:
         user = permissions_sourcegraph.get_user_by_username(
@@ -1210,11 +1269,13 @@ def _resolve_user_identifier(
             user_identifier,
             include_emails=include_emails,
             include_account_data=include_account_data,
+            include_organizations=include_organizations,
         ) or permissions_sourcegraph.get_user_by_email(
             client,
             user_identifier,
             include_emails=include_emails,
             include_account_data=include_account_data,
+            include_organizations=include_organizations,
         )
     if user is None:
         raise SystemExit(f"No Sourcegraph user found for {user_identifier!r}.")

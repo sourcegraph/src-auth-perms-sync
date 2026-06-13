@@ -92,10 +92,15 @@ RESTORE_CONFIG_FIELDS = src.config_field_names(
 )
 SYNC_SAML_ORGS_CONFIG_FIELDS = src.config_field_names(
     *COMMON_CONFIG_FIELDS_BEFORE,
+    "full",
+    "users",
+    "users_without_explicit_perms",
+    "created_after",
     "apply",
     "no_backup",
     "artifacts_dir",
     "no_files",
+    "explicit_permissions_batch_size",
     "parallelism",
     *COMMON_CONFIG_FIELDS_AFTER,
 )
@@ -145,6 +150,12 @@ SYNC_SET_COMMAND_LOG_NAMES: dict[permission_types.SetCommandMode, LogCommandName
     "repos": "set_repos_sync_saml_orgs",
     "repos_without_explicit_perms": "set_repos_without_explicit_perms_sync_saml_orgs",
     "repos_created_after": "set_repos_created_after_sync_saml_orgs",
+}
+SYNC_SAML_ORGS_ARTIFACT_NAMES: dict[str, str] = {
+    "full": "sync-saml-orgs-full-{run_mode}",
+    "users": "sync-saml-orgs-users-{run_mode}",
+    "users_without_explicit_perms": "sync-saml-orgs-users-without-explicit-perms-{run_mode}",
+    "created_after": "sync-saml-orgs-created-after-{run_mode}",
 }
 SYNC_SET_COMMAND_ARTIFACT_NAMES: dict[permission_types.SetCommandMode, str] = {
     "full": "set-sync-saml-orgs-{run_mode}",
@@ -431,6 +442,7 @@ def validate_config(command_name: CommandName, config: Config) -> None:
     validate_user_filter_selection(command_name, config)
     validate_repository_filter_selection(command_name, config)
     validate_set_mode_selection(command_name, config)
+    validate_sync_saml_orgs_mode_selection(command_name, config)
 
 
 def validate_command_options(command_name: CommandName, config: Config) -> None:
@@ -460,10 +472,11 @@ def validate_user_filter_selection(command_name: CommandName, config: Config) ->
         config_error("choose only one of --users or --users-without-explicit-perms")
 
     user_filter_selected = user_scope_filter_count > 0 or config.created_after is not None
-    user_filter_allowed = command_name in {"get", "set"}
+    user_filter_allowed = command_name in {"get", "set", "sync_saml_orgs"}
     if user_filter_selected and not user_filter_allowed:
         config_error(
-            "--users, --users-without-explicit-perms, and --created-after require get or set"
+            "--users, --users-without-explicit-perms, and --created-after "
+            "require get, set, or sync-saml-orgs"
         )
 
 
@@ -495,10 +508,39 @@ def validate_repository_filter_selection(command_name: CommandName, config: Conf
         config_error("choose either user filters or repo filters, not both")
 
 
+def validate_sync_saml_orgs_mode_selection(command_name: CommandName, config: Config) -> None:
+    """Validate sync-saml-orgs command mode flags."""
+    if command_name != "sync_saml_orgs":
+        return
+
+    if config.full and config.created_after is not None:
+        config_error(
+            "--full cannot be combined with --created-after; full mode already syncs every user"
+        )
+    if config.full and (config.users or config.users_without_explicit_perms):
+        config_error(
+            "with sync-saml-orgs, choose at most one of --full, --users, "
+            "or --users-without-explicit-perms"
+        )
+    mode_selected = any(
+        (
+            config.full,
+            bool(config.users),
+            config.users_without_explicit_perms,
+            config.created_after is not None,
+        )
+    )
+    if not mode_selected:
+        config_error(
+            "sync-saml-orgs requires one of --full, --users, "
+            "--users-without-explicit-perms, or --created-after"
+        )
+
+
 def validate_set_mode_selection(command_name: CommandName, config: Config) -> None:
     """Validate set command mode flags."""
-    if config.full and command_name != "set":
-        config_error("--full requires the set command")
+    if config.full and command_name not in {"set", "sync_saml_orgs"}:
+        config_error("--full requires the set or sync-saml-orgs command")
 
     if command_name != "set":
         return
@@ -600,9 +642,22 @@ def resolve_command(command_name: CommandName, config: Config) -> ResolvedComman
     return ResolvedCommand(
         name="sync_saml_orgs",
         log_name="sync_saml_orgs",
-        artifact_name=f"sync-saml-orgs-{run_mode}",
+        artifact_name=SYNC_SAML_ORGS_ARTIFACT_NAMES[sync_saml_orgs_mode(config)].format(
+            run_mode=run_mode
+        ),
         sync_saml_organizations=True,
     )
+
+
+def sync_saml_orgs_mode(config: Config) -> str:
+    """Return the validated standalone sync-saml-orgs mode."""
+    if config.users:
+        return "users"
+    if config.users_without_explicit_perms:
+        return "users_without_explicit_perms"
+    if config.created_after is not None:
+        return "created_after"
+    return "full"
 
 
 def resolve_set_command(config: Config, run_mode: str) -> ResolvedCommand:
@@ -790,6 +845,8 @@ def run_command(
         run_restore(config, client, sourcegraph_site_config, run_paths, worker_pool)
         return command_data
     else:
+        # Standalone command: the config's user filters (or --full) choose
+        # between a scoped and a full org sync.
         run_sync_saml_organizations(
             config,
             client,
@@ -797,6 +854,7 @@ def run_command(
             command_data,
             run_paths,
             worker_pool,
+            standalone=True,
         )
         return command_data
 
@@ -883,8 +941,16 @@ def run_sync_saml_organizations(
     command_data: run_context.CommandData,
     run_paths: backups.RunPaths,
     worker_pool: ThreadPoolExecutor,
+    *,
+    standalone: bool = False,
 ) -> None:
-    """Run the selected SAML organization sync command."""
+    """Run the selected SAML organization sync command.
+
+    Only the standalone command forwards the config's user filters: in
+    combined `set ... --sync-saml-orgs` runs those filters belong to the
+    set phase, which already hands over its selected users via
+    `command_data`.
+    """
     organizations_command.cmd_sync_saml_organizations(
         client,
         run_paths,
@@ -895,6 +961,10 @@ def run_sync_saml_organizations(
         ),
         do_backup=not config.no_backup,
         command_data=command_data,
+        user_identifiers=config.users if standalone else (),
+        users_without_explicit_perms=(config.users_without_explicit_perms if standalone else False),
+        user_created_after=config.created_after if standalone else None,
+        explicit_permissions_batch_size=config.explicit_permissions_batch_size,
         worker_pool=worker_pool,
     )
 

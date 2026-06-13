@@ -269,7 +269,7 @@ snapshots that make `--apply` reversible.
 1. **Get user and org metadata**
 
     ```bash
-    src-auth-perms-sync sync-saml-orgs
+    src-auth-perms-sync sync-saml-orgs --full
     ```
 
     - Queries the Sourcegraph instance for auth providers, users, users' SAML groups, and orgs
@@ -278,11 +278,40 @@ snapshots that make `--apply` reversible.
 2. **Apply org sync**
 
     ```bash
-    src-auth-perms-sync sync-saml-orgs --apply
+    src-auth-perms-sync sync-saml-orgs --full --apply
     ```
 
     - Creates the orgs if they don't exist, and sync the members from the SAML groups to the orgs
     - `--sync-saml-orgs` can also be added to a `set` run, to run both at the same time
+
+3. **Scoped org sync for selected users**
+
+    ```bash
+    src-auth-perms-sync sync-saml-orgs --users alice,bob
+    src-auth-perms-sync sync-saml-orgs --created-after 2026-06-01
+    src-auth-perms-sync sync-saml-orgs --users-without-explicit-perms
+    ```
+
+    - Same user filters as `get` and `set`; a mode flag is required — there
+      is no bare `sync-saml-orgs`
+
+### Org sync behavior
+
+- Org names are `synced-<configID>-<group name>` (non-alphanumeric characters
+  become `-`). The `synced-` prefix marks tool ownership: the sync only ever
+  modifies orgs whose name carries it, so manually created orgs are never touched.
+- The org sync mode is always explicit — no surprises:
+  - **Full** (`sync-saml-orgs --full`, or `set --full` / `--repos*`
+    `--sync-saml-orgs`): converges every synced org against all users. A synced
+    org whose SAML group disappeared has all members removed, but the org itself
+    is kept (its settings survive in case the group comes back).
+  - **Scoped** (user filters on `sync-saml-orgs`, or `set --users` /
+    `--users-without-explicit-perms` / `--created-after` with
+    `--sync-saml-orgs`): syncs org membership for exactly the selected users —
+    per-user additions AND removals, computed from each user's own SAML
+    assertion and org list. Other users' memberships never change, and no full
+    user scan or org member listing is needed, so API traffic stays
+    proportional to the selection.
 
 ## Options
 
