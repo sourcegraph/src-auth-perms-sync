@@ -166,6 +166,11 @@ result = src.Set(config, mapping_rules=rules)
 # result = src.SyncSamlOrgs(config)
 ```
 
+The import API does not read environment variables or `.env` files on its
+own — those apply to the CLI only. Pass every value explicitly to
+`src.Config(...)` (read `os.environ` yourself if you want env-driven
+configuration, as the example above does).
+
 Module mode never touches your `logging` handlers or the root logger — your
 application's logging config stays in charge. To see progress messages:
 
