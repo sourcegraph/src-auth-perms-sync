@@ -4,6 +4,9 @@ ignores:
   - ".venv/**"
   - "build/**"
   - "dist/**"
+  - "node_modules/**"
+modulePaths:
+  - "./node_modules"
 customRules:
   - markdownlint-rule-relative-links
 config:
