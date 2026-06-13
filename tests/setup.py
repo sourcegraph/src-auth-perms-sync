@@ -64,7 +64,9 @@ query SetupAuthProviders {
 PENDING_PERMISSIONS_QUERY = "query SetupPending { usersWithPendingPermissions }"
 
 
-def run_sql(kubectl_config: dict[str, Any], statement: str) -> list[list[str]]:
+def run_sql(
+    kubectl_config: dict[str, Any], statement: str, *, timeout_seconds: int = 120
+) -> list[list[str]]:
     """Run SQL on the pgsql pod; return rows of pipe-separated fields."""
     script = f"SET app.current_tenant = '{int(kubectl_config['tenantID'])}';\n{statement}"
     command = [
@@ -86,10 +88,39 @@ def run_sql(kubectl_config: dict[str, Any], statement: str) -> list[list[str]]:
         "-d",
         str(kubectl_config["database"]),
     ]
-    completed = subprocess.run(command, input=script, capture_output=True, text=True, timeout=120)
+    completed = subprocess.run(
+        command,
+        input=script,
+        capture_output=True,
+        text=True,
+        timeout=timeout_seconds,
+    )
     if completed.returncode != 0:
         raise RuntimeError(f"psql failed: {completed.stderr.strip()}")
     return [line.split("|") for line in completed.stdout.splitlines() if line]
+
+
+def sql_literal(value: str) -> str:
+    """Return a single-quoted SQL string literal."""
+    return "'" + value.replace("'", "''") + "'"
+
+
+def sql_like_literal(value: str) -> str:
+    """Return a quoted SQL LIKE pattern with wildcard characters escaped."""
+    escaped = value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return sql_literal(escaped)
+
+
+def email_suffix(users_config: dict[str, Any]) -> str:
+    """Return the configured email suffix, validating the expected template shape."""
+    template = str(users_config["emailTemplate"])
+    suffix = template.replace("{username}", "")
+    if (
+        not SAFE_NAME_PATTERN.match(suffix.lstrip("@"))
+        or template[: len("{username}")] != "{username}"
+    ):
+        raise RuntimeError(f"emailTemplate must be '{{username}}@<domain>': {template!r}")
+    return suffix
 
 
 def upsert_saml_account(
@@ -134,6 +165,184 @@ def upsert_saml_account(
         "             account_id, kind) WHERE deleted_at IS NULL "
         "DO UPDATE SET account_data = EXCLUDED.account_data, updated_at = now();",
     )
+
+
+def upsert_saml_stress_accounts(
+    kubectl_config: dict[str, Any],
+    users_config: dict[str, Any],
+    *,
+    service_id: str,
+    client_id: str,
+    user_count: int,
+    group_count: int,
+    groups_per_user: int,
+    group_prefix: str,
+) -> int:
+    """Bulk-write generated SAML group claims for synthetic stress users."""
+    validate_saml_stress_inputs(user_count, group_count, groups_per_user, group_prefix)
+    suffix = email_suffix(users_config)
+    rows = run_sql(
+        kubectl_config,
+        f"""
+WITH selected_users AS MATERIALIZED (
+  SELECT
+    u.id,
+    u.username,
+    row_number() OVER (ORDER BY u.username) - 1 AS user_index
+  FROM users u
+  WHERE u.username ~ {sql_literal(str(users_config["usernamePattern"]))}
+    AND u.deleted_at IS NULL
+  ORDER BY u.username
+  LIMIT {user_count}
+),
+group_claims AS (
+  SELECT
+    selected_users.id AS user_id,
+    {sql_literal(group_prefix)} || '-' ||
+      lpad(((selected_users.user_index * {groups_per_user} + offset_index)
+        % {group_count})::text, 5, '0') AS group_name
+  FROM selected_users
+  CROSS JOIN generate_series(0, {groups_per_user - 1}) AS generated_offsets(offset_index)
+),
+account_rows AS (
+  SELECT
+    selected_users.id AS user_id,
+    selected_users.username || {sql_literal(suffix)} AS account_id,
+    jsonb_build_object(
+      'NameID', selected_users.username || {sql_literal(suffix)},
+      'Values', jsonb_build_object(
+        'groups', jsonb_build_object(
+          'Name', 'groups',
+          'Values', jsonb_agg(
+            jsonb_build_object('Value', group_claims.group_name)
+            ORDER BY group_claims.group_name
+          )
+        ),
+        'Email', jsonb_build_object(
+          'Name', 'Email',
+          'Values', jsonb_build_array(
+            jsonb_build_object('Value', selected_users.username || {sql_literal(suffix)})
+          )
+        )
+      )
+    )::text AS account_data
+  FROM selected_users
+  JOIN group_claims ON group_claims.user_id = selected_users.id
+  GROUP BY selected_users.id, selected_users.username
+),
+upserted AS (
+  INSERT INTO user_external_accounts
+    (user_id, service_type, service_id, client_id, account_id,
+     account_data, encryption_key_id, kind)
+  SELECT
+    account_rows.user_id,
+    'saml',
+    {sql_literal(service_id)},
+    {sql_literal(client_id)},
+    account_rows.account_id,
+    account_rows.account_data,
+    '',
+    'AUTH'
+  FROM account_rows
+  ON CONFLICT (tenant_id, user_id, service_type, service_id, client_id,
+               account_id, kind) WHERE deleted_at IS NULL
+  DO UPDATE SET account_data = EXCLUDED.account_data, updated_at = now()
+  RETURNING 1
+)
+SELECT count(*) FROM upserted;
+""",
+        timeout_seconds=600,
+    )
+    return int(rows[0][0]) if rows and rows[0] else 0
+
+
+def delete_saml_stress_accounts(
+    kubectl_config: dict[str, Any],
+    users_config: dict[str, Any],
+    *,
+    service_id: str,
+    client_id: str,
+    group_prefix: str,
+) -> int:
+    """Delete generated SAML stress accounts from synthetic users."""
+    if not SAFE_NAME_PATTERN.match(group_prefix):
+        raise RuntimeError(f"unsafe SAML stress group prefix: {group_prefix!r}")
+    rows = run_sql(
+        kubectl_config,
+        f"""
+WITH deleted AS (
+  DELETE FROM user_external_accounts account
+  USING users u
+  WHERE account.user_id = u.id
+    AND u.username ~ {sql_literal(str(users_config["usernamePattern"]))}
+    AND u.deleted_at IS NULL
+    AND account.deleted_at IS NULL
+    AND account.service_type = 'saml'
+    AND account.service_id = {sql_literal(service_id)}
+    AND account.client_id = {sql_literal(client_id)}
+    AND account.account_data::text LIKE '%' || {sql_like_literal(group_prefix + "-")}
+      || '%'
+      ESCAPE '\'
+  RETURNING 1
+)
+SELECT count(*) FROM deleted;
+""",
+        timeout_seconds=600,
+    )
+    return int(rows[0][0]) if rows and rows[0] else 0
+
+
+def delete_saml_stress_organizations(
+    kubectl_config: dict[str, Any], organization_name_prefix: str
+) -> tuple[int, int]:
+    """Delete generated SAML stress organizations and their memberships."""
+    if not SAFE_NAME_PATTERN.match(organization_name_prefix):
+        raise RuntimeError(f"unsafe SAML stress organization prefix: {organization_name_prefix!r}")
+    rows = run_sql(
+        kubectl_config,
+        f"""
+WITH target_orgs AS MATERIALIZED (
+  SELECT id
+  FROM orgs
+  WHERE name::text LIKE {sql_like_literal(organization_name_prefix + "-")} || '%'
+    ESCAPE '\'
+    AND deleted_at IS NULL
+),
+deleted_members AS (
+  DELETE FROM org_members
+  WHERE org_id IN (SELECT id FROM target_orgs)
+  RETURNING 1
+),
+deleted_orgs AS (
+  DELETE FROM orgs
+  WHERE id IN (SELECT id FROM target_orgs)
+  RETURNING 1
+)
+SELECT
+  (SELECT count(*) FROM deleted_members),
+  (SELECT count(*) FROM deleted_orgs);
+""",
+        timeout_seconds=600,
+    )
+    if not rows or len(rows[0]) < 2:
+        return (0, 0)
+    return (int(rows[0][0]), int(rows[0][1]))
+
+
+def validate_saml_stress_inputs(
+    user_count: int, group_count: int, groups_per_user: int, group_prefix: str
+) -> None:
+    """Validate generated stress dimensions before interpolating SQL."""
+    if user_count <= 0:
+        raise RuntimeError("SAML stress user count must be positive")
+    if group_count <= 0:
+        raise RuntimeError("SAML stress group count must be positive")
+    if groups_per_user <= 0:
+        raise RuntimeError("SAML stress groups per user must be positive")
+    if groups_per_user > group_count:
+        raise RuntimeError("SAML stress groups per user cannot exceed group count")
+    if not SAFE_NAME_PATTERN.match(group_prefix):
+        raise RuntimeError(f"unsafe SAML stress group prefix: {group_prefix!r}")
 
 
 @dataclass
