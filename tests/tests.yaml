@@ -1361,7 +1361,7 @@ cases:
       command: set
       users:
         - test_user_09991
-      sync_saml_organizations: true
+      sync_saml_orgs: true
       apply: true
     expectedMutations: 5
 
@@ -1385,7 +1385,7 @@ cases:
       command: set
       users:
         - test_user_09991
-      sync_saml_organizations: true
+      sync_saml_orgs: true
       apply: true
     expectedMutations: 0
 

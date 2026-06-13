@@ -12,7 +12,7 @@
 actionlint
 
 ### Markdown files
-npx --yes markdownlint-cli2@0.22.1
+npx --yes -p markdownlint-cli2@0.22.1 -p markdownlint-rule-relative-links@5.1.0 markdownlint-cli2
 
 ### Confusable Unicode characters in non-Python files
 # (ruff RUF001-RUF003 covers Python strings/comments/docstrings)
@@ -102,7 +102,7 @@ uv run ruff format --check src/src_auth_perms_sync/ tests/
 uv run pyright
 uv run python -m unittest discover -s tests
 uv run src-auth-perms-sync --help
-npx --yes markdownlint-cli2@0.22.1
+npx --yes -p markdownlint-cli2@0.22.1 -p markdownlint-rule-relative-links@5.1.0 markdownlint-cli2
 uv build --wheel --sdist --out-dir /tmp/src-auth-perms-sync-release-check --no-create-gitignore
 rm -rf /tmp/src-auth-perms-sync-release-check
 ```
@@ -257,6 +257,10 @@ removed names like `ev`, `ex`, `exc`, `cfg`, `conn`, `resp`, `fn`,
 
 Short names that ARE acceptable (don't rewrite these on sight):
 
+- **Established domain abbreviations**: `org` / `orgs` for Sourcegraph
+  organizations, matching the `sync-saml-orgs` command, the `orgs/`
+  package, and the `sync_saml_orgs` config field. Do not expand these
+  back to `organization(s)` in identifiers.
 - **TypedDict / dataclass fields that mirror the wire format**: `id`,
   `url`, `kind` on `ExternalService` etc. These match GraphQL/JSON
   keys and renaming would break the contract.

@@ -166,6 +166,11 @@ result = src.Set(config, mapping_rules=rules)
 # result = src.SyncSamlOrgs(config)
 ```
 
+The import API does not read environment variables or `.env` files on its
+own — those apply to the CLI only. Pass every value explicitly to
+`src.Config(...)` (read `os.environ` yourself if you want env-driven
+configuration, as the example above does).
+
 Module mode never touches your `logging` handlers or the root logger — your
 application's logging config stays in charge. To see progress messages:
 
@@ -194,7 +199,7 @@ snapshots that make `--apply` reversible.
 - Environment variables (CLI), or src.Config args (Python import)
   - `SRC_ENDPOINT`
   - `SRC_ACCESS_TOKEN` from a user with site-admin perms
-  - See [.env.example](./.env.example)
+  - See [.env.example](./examples/.env.example)
 
 - YAML maps file
   - By default: `src-auth-perms-sync-runs/<src_endpoint>/maps.yaml`
@@ -208,7 +213,7 @@ snapshots that make `--apply` reversible.
   - Each mapping rule takes
     - A map of filters for users
     - A map of filters for repos
-  - See [maps-example.yaml](./maps-example.yaml)
+  - See [maps.yaml](./examples/maps.yaml)
   - An empty maps.yaml file is created for you on the first `get` run
 
 ## Usage: Permission sync
@@ -228,7 +233,7 @@ snapshots that make `--apply` reversible.
 
     - Edit `src-auth-perms-sync-runs/<src_endpoint>/maps.yaml`
     - Add mapping rules under the `maps:` top level key
-    - See [maps-example.yaml](./maps-example.yaml)
+    - See [maps.yaml](./examples/maps.yaml)
 
 3. **Set: Dry run**
 

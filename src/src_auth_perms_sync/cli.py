@@ -72,7 +72,7 @@ SET_CONFIG_FIELDS = src.config_field_names(
     "repos",
     "repos_without_explicit_perms",
     "repos_created_after",
-    "sync_saml_organizations",
+    "sync_saml_orgs",
     "apply",
     "no_backup",
     "artifacts_dir",
@@ -178,7 +178,7 @@ class ResolvedCommand:
     log_name: LogCommandName
     artifact_name: str
     set_options: permission_types.SetCommandOptions | None = None
-    sync_saml_organizations: bool = False
+    sync_saml_orgs: bool = False
 
     @property
     def set_mode(self) -> permission_types.SetCommandMode | None:
@@ -317,7 +317,7 @@ class Config(src.SourcegraphClientConfig, src.LoggingConfig, src.OpenTelemetryCo
         help="Process repositories cloned to the Sourcegraph instance on or after this date",
         help_group="Repo filters",
     )
-    sync_saml_organizations: bool = src.config_field(
+    sync_saml_orgs: bool = src.config_field(
         default=False,
         env_var="SRC_AUTH_PERMS_SYNC_SYNC_SAML_ORGS",
         cli_flag="--sync-saml-orgs",
@@ -449,7 +449,7 @@ def validate_command_options(command_name: CommandName, config: Config) -> None:
     """Validate options that only make sense with specific commands."""
     if command_name == "get" and config.apply:
         config_error("--apply cannot be used with the read-only get command")
-    if config.sync_saml_organizations and command_name != "set":
+    if config.sync_saml_orgs and command_name != "set":
         config_error("--sync-saml-orgs can only be combined with set")
     if command_name == "restore" and config.restore_path is None:
         config_error("restore requires --restore-path")
@@ -645,7 +645,7 @@ def resolve_command(command_name: CommandName, config: Config) -> ResolvedComman
         artifact_name=SYNC_SAML_ORGS_ARTIFACT_NAMES[sync_saml_orgs_mode(config)].format(
             run_mode=run_mode
         ),
-        sync_saml_organizations=True,
+        sync_saml_orgs=True,
     )
 
 
@@ -663,20 +663,16 @@ def sync_saml_orgs_mode(config: Config) -> str:
 def resolve_set_command(config: Config, run_mode: str) -> ResolvedCommand:
     """Return resolved metadata for the selected set command mode."""
     set_options = set_command_options(config)
-    log_names = (
-        SYNC_SET_COMMAND_LOG_NAMES if config.sync_saml_organizations else SET_COMMAND_LOG_NAMES
-    )
+    log_names = SYNC_SET_COMMAND_LOG_NAMES if config.sync_saml_orgs else SET_COMMAND_LOG_NAMES
     artifact_names = (
-        SYNC_SET_COMMAND_ARTIFACT_NAMES
-        if config.sync_saml_organizations
-        else SET_COMMAND_ARTIFACT_NAMES
+        SYNC_SET_COMMAND_ARTIFACT_NAMES if config.sync_saml_orgs else SET_COMMAND_ARTIFACT_NAMES
     )
     return ResolvedCommand(
         name="set",
         log_name=log_names[set_options.mode],
         artifact_name=artifact_names[set_options.mode].format(run_mode=run_mode),
         set_options=set_options,
-        sync_saml_organizations=config.sync_saml_organizations,
+        sync_saml_orgs=config.sync_saml_orgs,
     )
 
 
@@ -778,7 +774,7 @@ def run_fields(
         fields["no_files"] = True
     if command.set_mode is not None:
         fields["set_mode"] = command.set_mode
-    if command.sync_saml_organizations:
+    if command.sync_saml_orgs:
         fields["sync_saml_orgs"] = True
     if config.created_after is not None:
         fields["created_after"] = config.created_after
@@ -847,7 +843,7 @@ def run_command(
     else:
         # Standalone command: the config's user filters (or --full) choose
         # between a scoped and a full org sync.
-        run_sync_saml_organizations(
+        run_sync_saml_orgs(
             config,
             client,
             sourcegraph_site_config,
@@ -858,8 +854,8 @@ def run_command(
         )
         return command_data
 
-    if command.sync_saml_organizations:
-        run_sync_saml_organizations(
+    if command.sync_saml_orgs:
+        run_sync_saml_orgs(
             config,
             client,
             sourcegraph_site_config,
@@ -905,7 +901,7 @@ def run_set(
             sourcegraph_site_config.saml_groups_attribute_name_by_config_id
         ),
         do_backup=not config.no_backup,
-        retain_saml_group_users=command.sync_saml_organizations,
+        retain_saml_group_users=command.sync_saml_orgs,
         worker_pool=worker_pool,
         mapping_rules=mapping_rules,
     )
@@ -934,7 +930,7 @@ def run_restore(
     )
 
 
-def run_sync_saml_organizations(
+def run_sync_saml_orgs(
     config: Config,
     client: src.SourcegraphClient,
     sourcegraph_site_config: site_config.SiteConfig,
@@ -951,7 +947,7 @@ def run_sync_saml_organizations(
     set phase, which already hands over its selected users via
     `command_data`.
     """
-    organizations_command.cmd_sync_saml_organizations(
+    organizations_command.cmd_sync_saml_orgs(
         client,
         run_paths,
         dry_run=not config.apply,
