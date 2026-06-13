@@ -809,7 +809,7 @@ def cli_flags_by_field_name() -> dict[str, str]:
     """Map Config field names to their real CLI flags (from field metadata).
 
     Mechanical snake→kebab casing would be wrong for several fields
-    (e.g. open_telemetry → --otel, sync_saml_organizations →
+    (e.g. open_telemetry → --otel, sync_saml_orgs →
     --sync-saml-orgs), so the generator reads the same metadata the
     argument parser is built from.
     """

@@ -257,6 +257,10 @@ removed names like `ev`, `ex`, `exc`, `cfg`, `conn`, `resp`, `fn`,
 
 Short names that ARE acceptable (don't rewrite these on sight):
 
+- **Established domain abbreviations**: `org` / `orgs` for Sourcegraph
+  organizations, matching the `sync-saml-orgs` command, the `orgs/`
+  package, and the `sync_saml_orgs` config field. Do not expand these
+  back to `organization(s)` in identifiers.
 - **TypedDict / dataclass fields that mirror the wire format**: `id`,
   `url`, `kind` on `ExternalService` etc. These match GraphQL/JSON
   keys and renaming would break the contract.

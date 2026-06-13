@@ -279,7 +279,7 @@ class CliConfigTests(unittest.TestCase):
             make_config(
                 maps_path=Path("maps.yaml"),
                 apply=True,
-                sync_saml_organizations=True,
+                sync_saml_orgs=True,
                 full=True,
             ),
         )
@@ -287,28 +287,28 @@ class CliConfigTests(unittest.TestCase):
         self.assertEqual("set", set_command.name)
         self.assertEqual("set_full_sync_saml_orgs", set_command.log_name)
         self.assertEqual("set-sync-saml-orgs-apply", set_command.artifact_name)
-        self.assertTrue(set_command.sync_saml_organizations)
+        self.assertTrue(set_command.sync_saml_orgs)
 
     def test_validate_config_allows_sync_saml_orgs_with_set(self) -> None:
         cli.validate_config(
             "set",
-            make_config(maps_path=Path("maps.yaml"), sync_saml_organizations=True, full=True),
+            make_config(maps_path=Path("maps.yaml"), sync_saml_orgs=True, full=True),
         )
 
     def test_validate_config_rejects_sync_saml_orgs_without_set(self) -> None:
         self.assert_config_error(
             "get",
-            make_config(sync_saml_organizations=True),
+            make_config(sync_saml_orgs=True),
             "can only be combined with set",
         )
         self.assert_config_error(
             "restore",
-            make_config(restore_path=Path("snapshot.json"), sync_saml_organizations=True),
+            make_config(restore_path=Path("snapshot.json"), sync_saml_orgs=True),
             "can only be combined with set",
         )
         self.assert_config_error(
             "sync_saml_orgs",
-            make_config(sync_saml_organizations=True),
+            make_config(sync_saml_orgs=True),
             "can only be combined with set",
         )
 
@@ -838,7 +838,7 @@ class CliConfigTests(unittest.TestCase):
         self.assertIsNone(cmd_set_full.call_args.kwargs["repository_created_after"])
 
     def test_run_command_passes_set_data_to_combined_sync(self) -> None:
-        configuration = make_config(sync_saml_organizations=True, full=True)
+        configuration = make_config(sync_saml_orgs=True, full=True)
         command = cli.resolve_command("set", configuration)
         client = cast(src.SourcegraphClient, object())
         sourcegraph_site_config = object()
@@ -853,7 +853,7 @@ class CliConfigTests(unittest.TestCase):
                 return_value=sourcegraph_site_config,
             ),
             mock.patch.object(cli, "run_set", return_value=command_data) as run_set,
-            mock.patch.object(cli, "run_sync_saml_organizations") as run_sync_saml_orgs,
+            mock.patch.object(cli, "run_sync_saml_orgs") as run_sync_saml_orgs,
         ):
             cli.run_command(configuration, command, client, run_paths, worker_pool)
 

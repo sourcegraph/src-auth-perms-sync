@@ -600,7 +600,7 @@ def _raise_for_failed_organization_sync(result: _OrganizationApplyResult) -> Non
     raise SystemExit(1)
 
 
-def cmd_sync_saml_organizations(
+def cmd_sync_saml_orgs(
     client: src.SourcegraphClient,
     run_paths: backups.RunPaths,
     *,
@@ -643,7 +643,7 @@ def cmd_sync_saml_organizations(
         bool(user_identifiers) or users_without_explicit_perms or user_created_after is not None
     )
     with src.span(
-        "cmd_sync_saml_organizations",
+        "cmd_sync_saml_orgs",
         dry_run=dry_run,
         parallelism=parallelism,
         do_backup=do_backup,

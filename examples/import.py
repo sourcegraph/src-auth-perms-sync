@@ -17,6 +17,8 @@ import src_auth_perms_sync as src
 # Configure your logger
 logging.basicConfig(level=logging.INFO)
 
+# The import API does not read environment variables or .env files on its
+# own (the CLI does); pass every value explicitly.
 config = src.Config(
     src_endpoint=os.environ["SRC_ENDPOINT"],
     src_access_token=os.environ["SRC_ACCESS_TOKEN"],
@@ -43,19 +45,19 @@ mapping_rules: list[src.MappingRule] = [
     },
 ]
 
-# Run the set dry run
+# Run the set dry run, also syncing SAML groups to Sourcegraph organizations
 result = src.Set(
-    config.model_copy(update={"full": True, "apply": False}),
+    config.model_copy(update={"full": True, "apply": False, "sync_saml_orgs": True}),
     mapping_rules=mapping_rules,
 )
 # Print if it succeeded
-print("permission sync apply dry run:", "ok" if result else "failed")
+print("permission sync dry run:", "ok" if result else "failed")
 
-# Run the set apply
+# Run the set apply, also syncing SAML groups to Sourcegraph organizations
 result = src.Set(
-    config.model_copy(update={"full": True, "apply": True}),
+    config.model_copy(update={"full": True, "apply": True, "sync_saml_orgs": True}),
     mapping_rules=mapping_rules,
 )
 
 # Print if it succeeded
-print("permission sync apply apply:", "ok" if result else "failed")
+print("permission sync apply:", "ok" if result else "failed")
