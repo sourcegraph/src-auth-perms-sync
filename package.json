@@ -1,0 +1,11 @@
+{
+  "name": "src-auth-perms-sync",
+  "private": true,
+  "scripts": {
+    "lint:markdown": "markdownlint-cli2"
+  },
+  "devDependencies": {
+    "markdownlint-cli2": "0.22.1",
+    "markdownlint-rule-relative-links": "5.1.0"
+  }
+}
