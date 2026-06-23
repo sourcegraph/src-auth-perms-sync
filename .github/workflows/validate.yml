@@ -137,7 +137,7 @@ jobs:
           ref: ${{ inputs.ref || github.ref }}
 
       - name: Cache npm
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ~/.npm
           key: npm-${{ runner.os }}-markdownlint-cli2-${{ env.MARKDOWNLINT_CLI2_VERSION }}-relative-links-${{ env.MARKDOWNLINT_RELATIVE_LINKS_VERSION }}
@@ -172,7 +172,7 @@ jobs:
           python-version: ${{ env.PYTHON_VERSION }}
 
       - name: Cache uv
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ~/.cache/uv
           key: uv-${{ runner.os }}-py${{ env.PYTHON_VERSION }}-${{ hashFiles('uv.lock') }}
@@ -224,7 +224,7 @@ jobs:
           python-version: ${{ env.PYTHON_VERSION }}
 
       - name: Cache uv
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ~/.cache/uv
           key: uv-${{ runner.os }}-py${{ env.PYTHON_VERSION }}-${{ hashFiles('uv.lock') }}
