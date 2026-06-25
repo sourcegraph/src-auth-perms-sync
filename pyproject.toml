@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [dependency-groups]
 dev = [
-    "pyright>=1.1.410",
+    "pyright>=1.1.411",
     "ruff>=0.15.18",
     "types-pyyaml>=6.0.12.20260518",
 ]
