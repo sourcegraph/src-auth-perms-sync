@@ -505,7 +505,7 @@ joined to `users` and `repo` for names.
 
 ### `GetPermissionSyncDiscovery`
 
-The `get` command writes `code-hosts.yaml` and `auth-providers.yaml`, then uses
+The `get` command writes `code-host-connections.yaml` and `auth-providers.yaml`, then uses
 the same discovery data for mapping. A single discovery endpoint would simplify
 this and avoid multiple round trips.
 

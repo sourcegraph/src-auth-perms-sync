@@ -232,7 +232,7 @@ def cmd_get(
 ) -> run_context.CommandData:
     """Refresh the generated discovery YAML files.
 
-    `run_paths.code_hosts_path` receives Sourcegraph code host connection
+    `run_paths.code_host_connections_path` receives Sourcegraph code host connection
     configs, `run_paths.auth_providers_path` receives auth provider configs,
     and `run_paths.maps_path` names the maps file recorded in the snapshot.
 
@@ -320,12 +320,21 @@ def cmd_get(
         ]
 
         if run_paths.write_files:
-            permissions_maps.dump_code_hosts_yaml(run_paths.code_hosts_path, services)
+            permissions_maps.dump_code_host_connections_yaml(
+                run_paths.code_host_connections_path, services
+            )
             permissions_maps.dump_auth_providers_yaml(run_paths.auth_providers_path, providers)
-            log.info("Wrote %s and %s", run_paths.code_hosts_path, run_paths.auth_providers_path)
+            log.info(
+                "Wrote %s and %s",
+                run_paths.code_host_connections_path,
+                run_paths.auth_providers_path,
+            )
         else:
-            log.info("Skipping code-hosts.yaml and auth-providers.yaml because --no-files is set.")
-        cmd_event["code_hosts_path"] = str(run_paths.code_hosts_path)
+            log.info(
+                "Skipping code-host-connections.yaml and auth-providers.yaml "
+                "because --no-files is set."
+            )
+        cmd_event["code_host_connections_path"] = str(run_paths.code_host_connections_path)
         cmd_event["auth_providers_path"] = str(run_paths.auth_providers_path)
         cmd_event["maps_path"] = str(run_paths.maps_path)
 
@@ -390,7 +399,7 @@ def cmd_get(
             auth_providers=raw_providers,
             saml_group_users=saml_group_users,
             auth_provider_views=providers,
-            code_host_views=services,
+            code_host_connection_views=services,
         )
 
 

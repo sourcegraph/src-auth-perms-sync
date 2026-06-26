@@ -198,7 +198,9 @@ def dump_auth_providers_yaml(path: Path, providers: list[dict[str, Any]]) -> Non
     _dump_readonly_discovery_yaml(path, header, "authProviders", providers)
 
 
-def dump_code_hosts_yaml(path: Path, code_hosts: list[dict[str, Any]]) -> None:
+def dump_code_host_connections_yaml(
+    path: Path, code_host_connections: list[dict[str, Any]]
+) -> None:
     header = (
         "# Sourcegraph code host connection configs.\n"
         "# Generated/refreshed by:  src-auth-perms-sync get\n"
@@ -206,7 +208,7 @@ def dump_code_hosts_yaml(path: Path, code_hosts: list[dict[str, Any]]) -> None:
         "# ExternalService.config.username is surfaced as top-level `username` when present.\n"
         "# This file is read-only reference data; edit maps.yaml, not this file.\n"
     )
-    _dump_readonly_discovery_yaml(path, header, "codeHostConnections", code_hosts)
+    _dump_readonly_discovery_yaml(path, header, "codeHostConnections", code_host_connections)
 
 
 def _dump_readonly_discovery_yaml(
@@ -244,7 +246,7 @@ def create_maps_yaml_if_missing(path: Path) -> bool:
     content = (
         "# Auth provider -> code host connection mapping rules\n"
         "# Maintain this file, using values from auth-providers.yaml "
-        "and code-hosts.yaml as references\n"
+        "and code-host-connections.yaml as references\n"
         "\n"
         "maps:\n"
         "\n"

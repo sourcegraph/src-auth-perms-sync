@@ -144,7 +144,7 @@ result = src.Set(config)  # truthy on success; result.paths has run artifacts
 get_result = src.Get(config)
 for provider in get_result.auth_providers:
     ...
-for code_host in get_result.code_hosts:
+for code_host_connection in get_result.code_host_connections:
     ...
 
 # Mapping rules can be passed in memory instead of a maps YAML file -
@@ -225,7 +225,7 @@ snapshots that make `--apply` reversible.
     ```
 
     - Queries the Sourcegraph instance for auth providers and code host connections
-    - Writes generated reference files `auth-providers.yaml` and `code-hosts.yaml` under
+    - Writes generated reference files `auth-providers.yaml` and `code-host-connections.yaml` under
       `src-auth-perms-sync-runs/<src_endpoint>/`
     - Creates an empty `maps.yaml` if it doesn't exist
 
@@ -327,7 +327,7 @@ Run `src-auth-perms-sync --help` for options
 ```text
 src-auth-perms-sync-runs/<src_endpoint>/
 |-- auth-providers.yaml
-|-- code-hosts.yaml
+|-- code-host-connections.yaml
 |-- maps.yaml
 `-- runs
     `-- timestamp-command
@@ -341,7 +341,7 @@ src-auth-perms-sync-runs/<src_endpoint>/
 - The `src-auth-perms-sync-runs` dir is created under your current working directory
 - The `<src_endpoint>` dir is created with the hostname from `SRC_ENDPOINT`
 - If `maps.yaml` doesn't exist already, it'll be created for you
-- `auth-providers.yaml` and `code-hosts.yaml` are created / replaced by the `get` command,
+- `auth-providers.yaml` and `code-host-connections.yaml` are created / replaced by the `get` command,
   for you to copy values from, to use in your `maps.yaml`
 - Only one `maps.yaml` file can be used at a time per Sourcegraph instance, as each `set --apply`
   command resets the state on the Sourcegraph instance to the `maps.yaml` file which was used

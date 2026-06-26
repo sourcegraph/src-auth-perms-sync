@@ -23,8 +23,8 @@ OutputValue = TypeVar("OutputValue")
 class CommandData:
     """Instance data a command loaded and later commands or callers may reuse.
 
-    `auth_provider_views` and `code_host_views` carry the same dicts the get
-    command writes to `auth-providers.yaml` and `code-hosts.yaml`, so module
+    `auth_provider_views` and `code_host_connection_views` carry the same dicts the get
+    command writes to `auth-providers.yaml` and `code-host-connections.yaml`, so module
     callers receive discovery data without re-parsing files.
 
     `saml_group_users` carries the complete user population (full set
@@ -39,7 +39,7 @@ class CommandData:
     saml_group_users: list[shared_types.SamlGroupUser] | None = None
     scoped_saml_group_users: list[shared_types.ScopedSamlGroupUser] | None = None
     auth_provider_views: list[dict[str, Any]] | None = None
-    code_host_views: list[dict[str, Any]] | None = None
+    code_host_connection_views: list[dict[str, Any]] | None = None
     maps_created: bool = False
 
 

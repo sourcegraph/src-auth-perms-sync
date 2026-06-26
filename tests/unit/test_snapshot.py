@@ -453,7 +453,7 @@ class SnapshotTests(unittest.TestCase):
                 artifacts_dir=directory,
                 endpoint_directory=directory,
                 maps_path=directory / "maps.yaml",
-                code_hosts_path=directory / "code-hosts.yaml",
+                code_host_connections_path=directory / "code-host-connections.yaml",
                 auth_providers_path=directory / "auth-providers.yaml",
                 run_directory=directory,
             )

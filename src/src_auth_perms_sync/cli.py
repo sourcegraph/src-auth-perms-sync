@@ -1036,15 +1036,15 @@ class CommandResult:
 class GetResult:
     """Outcome of one discovery run, carrying the discovered data in memory.
 
-    `auth_providers` and `code_hosts` hold the same dicts written to
-    `auth-providers.yaml` and `code-hosts.yaml`, so module callers can
+    `auth_providers` and `code_host_connections` hold the same dicts written to
+    `auth-providers.yaml` and `code-host-connections.yaml`, so module callers can
     assemble mapping rules without re-parsing files.
     """
 
     succeeded: bool
     paths: backups.RunPaths | None = None
     auth_providers: tuple[dict[str, Any], ...] = ()
-    code_hosts: tuple[dict[str, Any], ...] = ()
+    code_host_connections: tuple[dict[str, Any], ...] = ()
     maps_created: bool = False
 
     def __bool__(self) -> bool:
@@ -1060,7 +1060,7 @@ def Get(config: Config, *, event_sink: src.EventSink | None = None) -> GetResult
         succeeded=True,
         paths=run_paths,
         auth_providers=tuple(command_data.auth_provider_views or ()),
-        code_hosts=tuple(command_data.code_host_views or ()),
+        code_host_connections=tuple(command_data.code_host_connection_views or ()),
         maps_created=command_data.maps_created,
     )
 
