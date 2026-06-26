@@ -176,7 +176,7 @@ def external_service_to_yaml(service: permission_types.ExternalService) -> dict[
     raw_config = service.get("config")
     if raw_config:
         try:
-            parsed_config = cast(Any, json5.loads(raw_config))
+            parsed_config = json5.loads(raw_config)
         except ValueError:
             pass
         else:

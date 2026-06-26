@@ -846,7 +846,7 @@ def _parsed_service_config(service: permission_types.ExternalService) -> dict[st
     if not raw_config:
         return {}
     try:
-        parsed = cast(Any, json5.loads(raw_config))
+        parsed = json5.loads(raw_config)
     except ValueError:
         return {}
     if not isinstance(parsed, dict):
