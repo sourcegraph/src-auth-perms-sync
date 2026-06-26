@@ -70,6 +70,7 @@ class MutationCounts:
 @dataclass(frozen=True, slots=True)
 class SamlGroupMembership:
     provider_config_id: str
+    provider_display_name: str
     group_name: str
 
 

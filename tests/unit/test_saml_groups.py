@@ -230,10 +230,14 @@ class SamlGroupTests(unittest.TestCase):
                     username="alice",
                     saml_group_memberships=(
                         shared_types.SamlGroupMembership(
-                            provider_config_id="okta", group_name="engineering"
+                            provider_config_id="okta",
+                            provider_display_name="SAML",
+                            group_name="engineering",
                         ),
                         shared_types.SamlGroupMembership(
-                            provider_config_id="okta", group_name="platform"
+                            provider_config_id="okta",
+                            provider_display_name="SAML",
+                            group_name="platform",
                         ),
                     ),
                 )
@@ -243,11 +247,11 @@ class SamlGroupTests(unittest.TestCase):
 
     def test_organization_name_for_saml_group_uses_synced_prefix_and_sanitizes(self) -> None:
         self.assertEqual(
-            "synced-okta-eng-team",
-            saml_groups.organization_name_for_saml_group("okta", "eng team!"),
+            "synced-Okta-Prod-eng-team",
+            saml_groups.organization_name_for_saml_group("Okta Prod", "eng team!"),
         )
         self.assertTrue(
-            saml_groups.is_synced_organization_name("synced-okta-eng-team"),
+            saml_groups.is_synced_organization_name("synced-Okta-Prod-eng-team"),
         )
         self.assertFalse(saml_groups.is_synced_organization_name("okta-eng-team"))
 
@@ -308,7 +312,9 @@ class SamlGroupTests(unittest.TestCase):
                     username="alice",
                     saml_group_memberships=(
                         shared_types.SamlGroupMembership(
-                            provider_config_id="okta", group_name="engineering"
+                            provider_config_id="okta",
+                            provider_display_name="SAML",
+                            group_name="engineering",
                         ),
                     ),
                     # The manually created org is NOT tool-managed: it must

@@ -1374,11 +1374,13 @@ cases:
     #   bigO: O(1)
     #   reads:
     #     users: 1
-    #   writes: none
+    #   writes: 4 mutations
     description: >-
-      Scoped org sync is idempotent: with repo grants and synced org
-      membership already converged, a set --users --sync-saml-orgs apply
-      issues zero mutations and changes nothing.
+      Scoped org sync converges from the old configID-based org name to
+      the display-name-based org name: repo grants are already converged,
+      but org sync creates the display-name org, removes the creator's
+      auto-membership, adds the scoped user, and removes that user from
+      the old synced org.
     modes:
       - local
     args:
@@ -1387,7 +1389,7 @@ cases:
         - test_user_09991
       sync_saml_orgs: true
       apply: true
-    expectedMutations: 0
+    expectedMutations: 4
 
   sync-saml-orgs-full-cleanup:
     # scope:

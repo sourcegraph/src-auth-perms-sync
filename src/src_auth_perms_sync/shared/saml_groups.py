@@ -41,17 +41,17 @@ _ORGANIZATION_NAME_PART_RE = re.compile(r"[^A-Za-z0-9]+")
 _ORGANIZATION_NAME_DASH_RUN_RE = re.compile(r"-+")
 
 
-def organization_name_for_saml_group(provider_config_id: str, group_name: str) -> str:
+def organization_name_for_saml_group(provider_display_name: str, group_name: str) -> str:
     """Return the deterministic synced org name for one SAML group.
 
-    Shape: `synced-<sanitized configID>-<sanitized group name>`.
+    Shape: `synced-<sanitized auth provider display name>-<sanitized group name>`.
     """
-    provider_part = _organization_name_part(provider_config_id, "auth provider configID")
+    provider_part = _organization_name_part(provider_display_name, "auth provider display name")
     group_part = _organization_name_part(group_name, "SAML group name")
     organization_name = f"{SYNCED_ORGANIZATION_NAME_PREFIX}{provider_part}-{group_part}"
     if len(organization_name) > ORGANIZATION_NAME_MAX_LENGTH:
         raise SystemExit(
-            f"FATAL: generated org name for configID={provider_config_id!r} "
+            f"FATAL: generated org name for auth provider displayName={provider_display_name!r} "
             f"group={group_name!r} is {len(organization_name)} characters; "
             f"Sourcegraph org names must be <= {ORGANIZATION_NAME_MAX_LENGTH}."
         )
@@ -198,9 +198,9 @@ def saml_group_memberships_for_user(
     providers_by_account_key: dict[tuple[str, str], shared_types.AuthProvider],
     attribute_names_by_provider: SamlGroupsAttributeNameByProvider,
 ) -> tuple[shared_types.SamlGroupMembership, ...]:
-    """Extract one user's distinct (configID, group) SAML memberships."""
+    """Extract one user's distinct SAML provider/group memberships."""
     memberships: list[shared_types.SamlGroupMembership] = []
-    seen: set[tuple[str, str]] = set()
+    seen: set[tuple[str, str, str]] = set()
     for account in user["externalAccounts"]["nodes"]:
         if account["serviceType"] != SAML_SERVICE_TYPE:
             continue
@@ -213,12 +213,13 @@ def saml_group_memberships_for_user(
             account["clientID"],
         )
         for group_name in extract_saml_groups(account.get("accountData"), attribute_name):
-            membership_key = (provider["configID"], group_name)
+            membership_key = (provider["configID"], provider["displayName"], group_name)
             if membership_key in seen:
                 continue
             memberships.append(
                 shared_types.SamlGroupMembership(
                     provider_config_id=provider["configID"],
+                    provider_display_name=provider["displayName"],
                     group_name=group_name,
                 )
             )
