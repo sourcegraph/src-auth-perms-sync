@@ -37,6 +37,7 @@ SYNCED_ORGANIZATION_SEARCH_LIMIT: int = 5000
 
 _ALREADY_MEMBER_TEXT = "user is already a member of the organization"
 _ORGANIZATION_EXISTS_TEXT = "organization name is already taken"
+_ONLY_MEMBER_TEXT = "remove the only member of an organization"
 
 # Re-exported here for callers that think in org-sync terms; the naming
 # rule lives in shared.saml_groups so user compaction can share it.
@@ -424,6 +425,8 @@ def _apply_organization_sync(
             "remove",
             parallelism,
             worker_pool,
+            current_user=sync_state.current_user,
+            targets=sync_state.targets,
         )
     return _OrganizationApplyResult(
         creates=create_counts,
@@ -1272,6 +1275,9 @@ def _apply_user_changes(
     change_kind: organization_types.OrganizationChangeKind,
     parallelism: int,
     worker_pool: ThreadPoolExecutor | None = None,
+    *,
+    current_user: organization_types.OrgMember | None = None,
+    targets: dict[str, organization_types.TargetOrganization] | None = None,
 ) -> shared_types.MutationCounts:
     if not changes:
         return shared_types.MutationCounts()
@@ -1292,6 +1298,8 @@ def _apply_user_changes(
                 change,
                 current_states[change.organization_name],
                 change_kind,
+                current_user=current_user,
+                target=targets.get(change.organization_name) if targets is not None else None,
             )
 
         def record_result(
@@ -1353,6 +1361,9 @@ def _apply_user_change(
     change: organization_types.OrganizationUserChange,
     state: organization_types.OrganizationState,
     change_kind: organization_types.OrganizationChangeKind,
+    *,
+    current_user: organization_types.OrgMember | None = None,
+    target: organization_types.TargetOrganization | None = None,
 ) -> None:
     if state.id is None:
         raise RuntimeError(f"organization {change.organization_name!r} has no ID")
@@ -1382,10 +1393,60 @@ def _apply_user_change(
         organization_name=change.organization_name,
         username=change.username,
     ):
-        client.graphql(
-            queries.MUTATION_REMOVE_USER_FROM_ORGANIZATION,
-            {"organization": state.id, "user": change.user_id},
-        )
+        try:
+            client.graphql(
+                queries.MUTATION_REMOVE_USER_FROM_ORGANIZATION,
+                {"organization": state.id, "user": change.user_id},
+            )
+        except src.GraphQLError as exception:
+            if not _should_retry_last_member_removal(
+                exception, change, state, target, current_user
+            ):
+                raise
+            _remove_last_other_member_via_current_user(client, change, state, current_user)
+
+
+def _should_retry_last_member_removal(
+    exception: src.GraphQLError,
+    change: organization_types.OrganizationUserChange,
+    state: organization_types.OrganizationState,
+    target: organization_types.TargetOrganization | None,
+    current_user: organization_types.OrgMember | None,
+) -> bool:
+    return (
+        _ONLY_MEMBER_TEXT in str(exception)
+        and current_user is not None
+        and target is not None
+        and not target.desired_members_by_id
+        and change.user_id != current_user["id"]
+        and len(state.members_by_id) == 1
+        and change.user_id in state.members_by_id
+    )
+
+
+def _remove_last_other_member_via_current_user(
+    client: src.SourcegraphClient,
+    change: organization_types.OrganizationUserChange,
+    state: organization_types.OrganizationState,
+    current_user: organization_types.OrgMember | None,
+) -> None:
+    if current_user is None:
+        raise RuntimeError("current user is required for last-member org cleanup")
+    log.info(
+        "  Sourcegraph forbids removing %s as the only member of org %s; "
+        "temporarily adding current user %s so the stale synced org can be emptied.",
+        change.username,
+        change.organization_name,
+        current_user["username"],
+    )
+    temporary_membership = organization_types.OrganizationUserChange(
+        organization_name=change.organization_name,
+        user_id=current_user["id"],
+        username=current_user["username"],
+    )
+    _apply_user_change(client, temporary_membership, state, "add")
+    _apply_user_change(client, change, state, "remove")
+    _apply_user_change(client, temporary_membership, state, "remove")
 
 
 def _snapshot_from_states(
