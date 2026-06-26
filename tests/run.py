@@ -34,6 +34,7 @@ Examples:
   uv run tests/run.py
   uv run tests/run.py --live
   uv run tests/run.py --performance --repeat 3
+  uv run tests/run.py --performance --saml-org-stress --monitor-sourcegraph-load
   uv run tests/run.py --install
   uv run tests/run.py --update-golden
 """
@@ -83,6 +84,10 @@ FULL_APPLY_READ_BACK_USER_SAMPLE = 5
 DEFAULT_PROPERTY_ITERATIONS = 25
 DEFAULT_PROPERTY_SEED = 20260610
 DEFAULT_PERFORMANCE_REPEAT = 1
+DEFAULT_SAML_ORG_STRESS_USERS = 10000
+DEFAULT_SAML_ORG_STRESS_GROUPS = 10000
+DEFAULT_SAML_ORG_STRESS_GROUPS_PER_USER = 5
+DEFAULT_SAML_ORG_STRESS_PREFIX = "perms-sync-stress-group"
 
 EXPLICIT_REPOS_READ_BACK_QUERY = """
 query TestExplicitRepoReadBack($username: String!, $first: Int!, $after: String) {
@@ -312,6 +317,12 @@ class TestArguments:
     fail_on_memory_regression_mib: float | None
     jaeger_trace_limit: int
     external_sample_interval: float
+    saml_org_stress: bool
+    saml_org_stress_users: int
+    saml_org_stress_groups: int
+    saml_org_stress_groups_per_user: int
+    saml_org_stress_prefix: str
+    keep_saml_org_stress_data: bool
     monitor_sourcegraph_load: bool
     monitor_namespace: str
     monitor_frontend_target: str
@@ -443,6 +454,43 @@ def parse_arguments(argv: Sequence[str] | None = None) -> TestArguments:
         help="Seconds between external process-tree RSS samples during performance cases; "
         "0 disables (default: 1.0)",
     )
+    performance_group.add_argument(
+        "--saml-org-stress",
+        action="store_true",
+        help="Run only the opt-in sync-saml-orgs breaking-point stress case",
+    )
+    performance_group.add_argument(
+        "--saml-org-stress-users",
+        type=int,
+        default=DEFAULT_SAML_ORG_STRESS_USERS,
+        help=f"Synthetic users to seed for --saml-org-stress (default: "
+        f"{DEFAULT_SAML_ORG_STRESS_USERS})",
+    )
+    performance_group.add_argument(
+        "--saml-org-stress-groups",
+        type=int,
+        default=DEFAULT_SAML_ORG_STRESS_GROUPS,
+        help=f"Distinct SAML groups/orgs to generate for --saml-org-stress "
+        f"(default: {DEFAULT_SAML_ORG_STRESS_GROUPS})",
+    )
+    performance_group.add_argument(
+        "--saml-org-stress-groups-per-user",
+        type=int,
+        default=DEFAULT_SAML_ORG_STRESS_GROUPS_PER_USER,
+        help=f"SAML groups assigned to each stress user (default: "
+        f"{DEFAULT_SAML_ORG_STRESS_GROUPS_PER_USER})",
+    )
+    performance_group.add_argument(
+        "--saml-org-stress-prefix",
+        default=DEFAULT_SAML_ORG_STRESS_PREFIX,
+        help=f"Synthetic SAML group prefix for --saml-org-stress (default: "
+        f"{DEFAULT_SAML_ORG_STRESS_PREFIX})",
+    )
+    performance_group.add_argument(
+        "--keep-saml-org-stress-data",
+        action="store_true",
+        help="Leave generated stress SAML accounts and synced orgs in the instance",
+    )
     monitor_group = parser.add_argument_group("sourcegraph load monitor")
     monitor_group.add_argument(
         "--monitor-sourcegraph-load",
@@ -500,6 +548,12 @@ def parse_arguments(argv: Sequence[str] | None = None) -> TestArguments:
         fail_on_memory_regression_mib=cast("float | None", options.fail_on_memory_regression_mib),
         jaeger_trace_limit=int(options.jaeger_trace_limit),
         external_sample_interval=float(options.external_sample_interval),
+        saml_org_stress=bool(options.saml_org_stress),
+        saml_org_stress_users=int(options.saml_org_stress_users),
+        saml_org_stress_groups=int(options.saml_org_stress_groups),
+        saml_org_stress_groups_per_user=int(options.saml_org_stress_groups_per_user),
+        saml_org_stress_prefix=str(options.saml_org_stress_prefix),
+        keep_saml_org_stress_data=bool(options.keep_saml_org_stress_data),
         monitor_sourcegraph_load=bool(options.monitor_sourcegraph_load),
         monitor_namespace=str(options.monitor_namespace),
         monitor_frontend_target=str(options.monitor_frontend_target),
@@ -2604,6 +2658,184 @@ class TestSuite:
         baseline = ("baseline", tuple(shlex.split(self.arguments.baseline_command)))
         return [baseline, candidate]
 
+    def prepare_saml_org_stress(self) -> Callable[[], None] | None:
+        """Seed generated SAML accounts before the measured stress run."""
+        if self.arguments.baseline_command:
+            self.record(
+                "perf: sync-saml-orgs stress setup",
+                "performance",
+                False,
+                0.0,
+                "--saml-org-stress cannot be combined with --baseline-command",
+            )
+            return None
+        if self.arguments.test_filter:
+            self.filter_matched_count += 1
+            log.warning("--saml-org-stress ignores the --performance TESTS filter.")
+
+        started = time.monotonic()
+        try:
+            from src_auth_perms_sync.shared.saml_groups import organization_name_for_saml_group
+            from tests import setup as instance_setup
+
+            setup_config = load_setup_config()
+            provider = self.saml_auth_provider()
+            if provider is None:
+                self.record(
+                    "perf: sync-saml-orgs stress setup",
+                    "performance",
+                    False,
+                    time.monotonic() - started,
+                    f"no SAML auth provider on {self.endpoint}",
+                )
+                return None
+
+            kubectl_config = cast("dict[str, Any]", setup_config["kubectl"])
+            users_config = cast("dict[str, Any]", setup_config["users"])
+            configured_accounts = cast(
+                "dict[str, list[str]]", setup_config.get("samlAccounts") or {}
+            )
+            instance_setup.validate_saml_stress_inputs(
+                self.arguments.saml_org_stress_users,
+                self.arguments.saml_org_stress_groups,
+                self.arguments.saml_org_stress_groups_per_user,
+                self.arguments.saml_org_stress_prefix,
+            )
+            organization_name_prefix = organization_name_for_saml_group(
+                provider["configID"], self.arguments.saml_org_stress_prefix
+            )
+
+            if not self.cleanup_saml_org_stress_data(
+                "perf: sync-saml-orgs stress stale cleanup",
+                kubectl_config,
+                users_config,
+                configured_accounts,
+                provider,
+                organization_name_prefix,
+            ):
+                return None
+
+            account_count = instance_setup.upsert_saml_stress_accounts(
+                kubectl_config,
+                users_config,
+                service_id=provider["serviceID"],
+                client_id=provider["clientID"],
+                user_count=self.arguments.saml_org_stress_users,
+                group_count=self.arguments.saml_org_stress_groups,
+                groups_per_user=self.arguments.saml_org_stress_groups_per_user,
+                group_prefix=self.arguments.saml_org_stress_prefix,
+            )
+        except Exception as exception:  # noqa: BLE001 - record, don't kill the suite.
+            self.record(
+                "perf: sync-saml-orgs stress setup",
+                "performance",
+                False,
+                time.monotonic() - started,
+                f"{type(exception).__name__}: {exception}",
+            )
+            return None
+
+        desired_memberships = (
+            self.arguments.saml_org_stress_users * self.arguments.saml_org_stress_groups_per_user
+        )
+        detail = (
+            f"seeded {account_count}/{self.arguments.saml_org_stress_users} user account(s), "
+            f"{self.arguments.saml_org_stress_groups} group(s), "
+            f"{desired_memberships} desired membership(s)"
+        )
+        passed = account_count == self.arguments.saml_org_stress_users
+        self.record(
+            "perf: sync-saml-orgs stress setup",
+            "performance",
+            passed,
+            time.monotonic() - started,
+            detail,
+        )
+        log.info("SAML org stress setup: %s", detail)
+        if not passed:
+            self.cleanup_saml_org_stress_data(
+                "perf: sync-saml-orgs stress failed-setup cleanup",
+                kubectl_config,
+                users_config,
+                configured_accounts,
+                provider,
+                organization_name_prefix,
+            )
+            return None
+
+        if self.arguments.keep_saml_org_stress_data:
+            log.warning(
+                "Keeping SAML org stress data. Re-run without --keep-saml-org-stress-data "
+                "to clean it before the next measured stress run."
+            )
+
+        def cleanup() -> None:
+            self.cleanup_saml_org_stress_data(
+                "perf: sync-saml-orgs stress cleanup",
+                kubectl_config,
+                users_config,
+                configured_accounts,
+                provider,
+                organization_name_prefix,
+            )
+
+        return cleanup
+
+    def cleanup_saml_org_stress_data(
+        self,
+        name: str,
+        kubectl_config: dict[str, Any],
+        users_config: dict[str, Any],
+        configured_accounts: dict[str, list[str]],
+        provider: dict[str, str],
+        organization_name_prefix: str,
+    ) -> bool:
+        """Delete generated stress data and restore setup.yaml SAML accounts."""
+        started = time.monotonic()
+        try:
+            from tests import setup as instance_setup
+
+            deleted_members, deleted_organizations = (
+                instance_setup.delete_saml_stress_organizations(
+                    kubectl_config, organization_name_prefix
+                )
+            )
+            deleted_accounts = instance_setup.delete_saml_stress_accounts(
+                kubectl_config,
+                users_config,
+                service_id=provider["serviceID"],
+                client_id=provider["clientID"],
+                group_prefix=self.arguments.saml_org_stress_prefix,
+            )
+            email_template = str(users_config["emailTemplate"])
+            for username, groups in configured_accounts.items():
+                instance_setup.upsert_saml_account(
+                    kubectl_config,
+                    username,
+                    groups,
+                    service_id=provider["serviceID"],
+                    client_id=provider["clientID"],
+                    account_id=email_template.replace("{username}", username),
+                )
+        except Exception as exception:  # noqa: BLE001 - record, don't kill the suite.
+            self.record(
+                name,
+                "performance",
+                False,
+                time.monotonic() - started,
+                f"{type(exception).__name__}: {exception}",
+            )
+            return False
+
+        detail = (
+            f"deleted {deleted_organizations} org(s), {deleted_members} member row(s), "
+            f"{deleted_accounts} stress account(s); restored {len(configured_accounts)} "
+            "setup account(s)"
+        )
+        self.record(name, "performance", True, time.monotonic() - started, detail)
+        log.info("SAML org stress cleanup: %s", detail)
+        return True
+
     def run_performance(self) -> None:
         log.info(
             "\n=== Performance: repeat=%d, jaeger_trace_limit=%d ===",
@@ -2616,6 +2848,11 @@ class TestSuite:
         except (LiveAbort, SystemExit) as error:
             self.record("performance prerequisites", "performance", False, 0.0, str(error))
             return
+        stress_cleanup: Callable[[], None] | None = None
+        if self.arguments.saml_org_stress:
+            stress_cleanup = self.prepare_saml_org_stress()
+            if stress_cleanup is None:
+                return
         trace_fetcher: JaegerTraceFetcher | None = None
         if self.arguments.jaeger_trace_limit > 0:
             trace_fetcher = JaegerTraceFetcher(
@@ -2647,6 +2884,8 @@ class TestSuite:
         finally:
             if load_monitor is not None:
                 load_monitor.stop()
+            if stress_cleanup is not None and not self.arguments.keep_saml_org_stress_data:
+                stress_cleanup()
         self.write_performance_report(rows)
         self.check_memory_regressions(rows)
 
@@ -2682,6 +2921,23 @@ class TestSuite:
                 )
             )
             return result
+
+        if self.arguments.saml_org_stress:
+            measure(
+                CliCase(
+                    f"perf: sync-saml-orgs stress apply [{iteration}]",
+                    ("sync-saml-orgs", "--full", "--apply", "--no-backup"),
+                    0,
+                )
+            )
+            measure(
+                CliCase(
+                    f"perf: sync-saml-orgs stress idempotent apply [{iteration}]",
+                    ("sync-saml-orgs", "--full", "--apply", "--no-backup"),
+                    0,
+                )
+            )
+            return rows
 
         # The dry run is also the baseline snapshot source for the apply +
         # restore pair, so selecting the apply implies running the dry run.
