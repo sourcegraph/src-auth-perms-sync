@@ -819,7 +819,7 @@ def cmd_set_additive_users(
                 if user["id"] in candidate_user_ids:
                     selected_users.append(user)
                     continue
-                log.info(
+                log.debug(
                     "User %s was not created on or after %s - nothing to do.",
                     user["username"],
                     user_created_after,
@@ -1322,7 +1322,7 @@ def _plan_additions_for_user(
             desired_repos[repository["id"]] = repository
 
     if not desired_repos:
-        log.info("User %s: no desired repo grants.", user["username"])
+        log.debug("User %s: no desired repo grants.", user["username"])
         return []
 
     if existing_repo_ids is None:
@@ -1340,7 +1340,7 @@ def _plan_additions_for_user(
         if repository_id not in existing_repo_ids
     ]
     additions.sort(key=lambda addition: (addition.username, addition.repo_name))
-    log.info(
+    log.debug(
         "User %s: %d desired repo grant(s), %d already explicit, %d to add.",
         user["username"],
         len(desired_repos),
@@ -1414,7 +1414,7 @@ def _finish_additive_dry_run(
 ) -> None:
     """Log the additive dry-run mutation plan."""
     for addition in additions:
-        log.info(
+        log.debug(
             "[DRY RUN] Would add %s to %s (id=%d).",
             addition.username,
             addition.repo_name,
