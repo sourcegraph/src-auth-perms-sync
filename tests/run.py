@@ -1883,7 +1883,7 @@ class TestSuite:
                 self.delete_temporary_user(label, level, username, user_id)
 
     def create_temporary_user(self, username: str) -> str | None:
-        """Create a throwaway user (created_at = now) for created-after cases."""
+        """Create a throwaway user (created_at = now) for users-created-after cases."""
         try:
             data = self.graphql(
                 "mutation TestCreateUser($username: String!) {"

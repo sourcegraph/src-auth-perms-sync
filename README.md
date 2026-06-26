@@ -293,7 +293,7 @@ snapshots that make `--apply` reversible.
 
     ```bash
     src-auth-perms-sync sync-saml-orgs --users alice,bob
-    src-auth-perms-sync sync-saml-orgs --created-after 2026-06-01
+    src-auth-perms-sync sync-saml-orgs --users-created-after 2026-06-01
     src-auth-perms-sync sync-saml-orgs --users-without-explicit-perms
     ```
 
@@ -311,7 +311,7 @@ snapshots that make `--apply` reversible.
     org whose SAML group disappeared has all members removed, but the org itself
     is kept (its settings survive in case the group comes back).
   - **Scoped** (user filters on `sync-saml-orgs`, or `set --users` /
-    `--users-without-explicit-perms` / `--created-after` with
+    `--users-without-explicit-perms` / `--users-created-after` with
     `--sync-saml-orgs`): syncs org membership for exactly the selected users -
     per-user additions AND removals, computed from each user's own SAML
     assertion and org list. Other users' memberships never change, and no full

@@ -624,7 +624,7 @@ def sourcegraph_datetime_filter(value: datetime.datetime) -> str:
 
 def user_ids_created_on_or_after(client: src.SourcegraphClient, value: str) -> set[str]:
     """Return Sourcegraph user IDs created on or after the given CLI date."""
-    filter_value = sourcegraph_datetime_filter(parse_cli_date(value, "--created-after"))
+    filter_value = sourcegraph_datetime_filter(parse_cli_date(value, "--users-created-after"))
     candidates = permissions_sourcegraph.list_site_user_candidates(client, filter_value)
     log.info(
         "Restricting to %d Sourcegraph user(s) created on or after %s.",
