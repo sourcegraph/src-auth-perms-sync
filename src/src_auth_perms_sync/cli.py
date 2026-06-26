@@ -733,7 +733,7 @@ def require_set_input_file(maps_path: Path) -> None:
     raise SystemExit(
         "set input file does not exist: "
         f"{maps_path}\n"
-        "Run `uv run src-auth-perms-sync get` to create the default maps.yaml, "
+        "Run `src-auth-perms-sync get` to create the default maps.yaml, "
         "or pass a path to an existing maps file."
     )
 

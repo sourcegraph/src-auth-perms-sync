@@ -649,7 +649,7 @@ def _finish_full_set_apply_with_backup(
         log.info(
             "To roll back the explicit-permissions state captured in "
             "the before-snapshot, run:\n"
-            "  uv run src-auth-perms-sync restore --restore-path %s --apply",
+            "  src-auth-perms-sync restore --restore-path %s --apply",
             before_path,
         )
 
