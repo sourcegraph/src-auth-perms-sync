@@ -130,7 +130,7 @@ def load_mapping_context(
     """Load maps, providers, services, and repos for permission planning."""
     mapping_rules = load_mapping_rules(input_path)
     if not mapping_rules:
-        log.warning("No maps defined in %s — nothing to do.", input_path)
+        log.warning("No maps defined in %s - nothing to do.", input_path)
         return None
 
     return load_mapping_context_for_rules(
@@ -520,8 +520,8 @@ def validate_post_apply(
 
     1. Pending bindIDs: any username we just wrote that didn't resolve to a
        real User now appears in `usersWithPendingPermissions`. In our use
-       case this should never happen — we enumerate users via the users
-       query before mutating — but it's a cheap safety net.
+       case this should never happen - we enumerate users via the users
+       query before mutating - but it's a cheap safety net.
 
     2. Per-repo expected vs. actual: for every repo we touched, the
        after-snapshot's explicit-user list must equal the union we asked

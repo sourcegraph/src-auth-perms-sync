@@ -70,7 +70,7 @@ def list_users_streaming(
 
     If `collect_into` is provided, every yielded user is appended to that
     list, so the caller ends up with the materialized list AND the
-    streaming benefit in one pass — no double-pagination.
+    streaming benefit in one pass - no double-pagination.
     """
     for node in client.stream_connection_nodes(
         queries.query_users(

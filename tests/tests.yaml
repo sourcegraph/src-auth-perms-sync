@@ -1352,7 +1352,7 @@ cases:
       Additive set --users with --sync-saml-orgs runs a SCOPED org sync:
       the selected user is added to the synced org their SAML group
       requires (created on demand, creator membership cleaned up) and
-      removed from a synced org their groups no longer justify — while an
+      removed from a synced org their groups no longer justify - while an
       out-of-scope member of that same org is left untouched. One repo
       grant + create + add + creator removal + stale removal = 5 mutations.
     modes:
@@ -1403,7 +1403,7 @@ cases:
     description: >-
       Standalone full org sync converges synced orgs both ways: creates the
       org a SAML group requires (cleaning up the creator's auto-membership)
-      and empties — but never deletes — a synced org whose SAML group
+      and empties - but never deletes - a synced org whose SAML group
       disappeared from every user's assertion.
     modes:
       - local

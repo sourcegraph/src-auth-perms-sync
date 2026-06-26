@@ -6,7 +6,7 @@ Sourcegraph stores the full gosaml2 `AssertionInfo` JSON as the
 attribute named by the provider's `groupsAttributeName` site config
 (default `"groups"`).
 
-This module does NOT fetch — it only parses user rows fetched with
+This module does NOT fetch - it only parses user rows fetched with
 `include_account_data=True`. Two on-disk shapes are handled defensively:
 
   1. Raw `*saml2.AssertionInfo`:
@@ -135,7 +135,7 @@ def extract_saml_groups(
     """Pull the group-name strings out of one SAML `accountData` blob.
 
     Returns `[]` for null/empty data, missing attribute, or unknown shape
-    — never raises. Duplicate group names within one assertion are
+    - never raises. Duplicate group names within one assertion are
     de-duplicated; ordering is preserved.
     """
     if not account_data:
@@ -268,7 +268,7 @@ def compact_scoped_saml_group_users(
 ) -> list[shared_types.ScopedSamlGroupUser]:
     """Compact in-scope users for a scoped (per-user) organization sync.
 
-    Every user is kept — even with zero SAML group memberships — because
+    Every user is kept - even with zero SAML group memberships - because
     scoped org sync also removes users from synced orgs they left. Each
     user's row must have been fetched with `include_organizations=True`;
     only `synced-` prefixed org memberships are retained.
@@ -312,7 +312,7 @@ def count_users_per_saml_group(
     when no site config is available; every provider then falls back to
     the default.
 
-    A user is counted at most once per (provider, group) — multiple
+    A user is counted at most once per (provider, group) - multiple
     accounts under the same provider with overlapping groups don't
     double-count, and groups that don't appear in any user's assertion
     don't appear in the output at all.

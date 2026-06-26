@@ -242,7 +242,7 @@ class PermissionsSourcegraphTests(unittest.TestCase):
             hydrated_ids,
             [user_id for user_id in requested_user_ids if user_id != "user-30"],
         )
-        # 60 users at the hydration batch size of 25 → 3 requests.
+        # 60 users at the hydration batch size of 25 -> 3 requests.
         self.assertEqual([len(call) for call in client.calls], [25, 25, 10])
         for query in client.queries:
             self.assertIn("query UsersByIDBatch", query)
@@ -303,7 +303,7 @@ class PermissionsSourcegraphTests(unittest.TestCase):
     def test_candidates_without_explicit_repos_pages_past_first_page_sequentially(self) -> None:
         # Regression: with parallelism=1 and more users than one page, the
         # selection used to silently consider ONLY the first page (1000
-        # users) — every later user was excluded from candidates.
+        # users) - every later user was excluded from candidates.
         site_users = _SiteUsersClient(total_count=2500)
         explicit_repos = _ExplicitReposClient({"user-1500"})
 

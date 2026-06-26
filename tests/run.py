@@ -204,7 +204,7 @@ command_output_log = logging.getLogger("test.command_output")
 # identical structured records; this flag drops them from BOTH handlers.
 SUPPRESS_PACKAGE_LOGS = threading.Event()
 
-# With --quiet, package chatter stays out of the console entirely — including
+# With --quiet, package chatter stays out of the console entirely - including
 # the expected warnings produced by intentionally-failing cases. Runner
 # failures are still shown (they log at ERROR), and the file keeps everything.
 CONSOLE_QUIET = threading.Event()
@@ -248,7 +248,7 @@ class PackageNoiseFilter(logging.Filter):
 
 
 class FileLogFormatter(logging.Formatter):
-    """Time-of-day prefix only — the date is in the log file name.
+    """Time-of-day prefix only - the date is in the log file name.
 
     Command output lines pass through verbatim: the subprocess already
     timestamps its own lines, so run.py's prefix would just repeat it.
@@ -831,8 +831,8 @@ class TestSuite:
 
     def record(self, name: str, level: str, passed: bool, seconds: float, detail: str = "") -> None:
         self.results.append(CheckResult(name, level, passed, seconds, detail))
-        marker = "✓" if passed else "✗"
-        suffix = f" — {detail}" if detail and not passed else ""
+        marker = "PASS" if passed else "FAIL"
+        suffix = f" - {detail}" if detail and not passed else ""
         log.log(
             logging.INFO if passed else logging.ERROR,
             "%s [%s] %s (%.1fs)%s",
@@ -861,7 +861,7 @@ class TestSuite:
     def explicitly_selected(self, *names: str) -> bool:
         """Return whether a filter token names one of `names`.
 
-        Unlike `test_selected`, returns False when no filter was given —
+        Unlike `test_selected`, returns False when no filter was given -
         for checks that must be opt-in (instance-wide stress runs).
         """
         if not self.arguments.test_filter:
@@ -952,10 +952,7 @@ class TestSuite:
         self.gate("ruff check", ["uv", "run", "ruff", "check", "."])
         self.gate("ruff format --check", ["uv", "run", "ruff", "format", "--check", "."])
         self.gate("pyright", ["uv", "run", "pyright"])
-        self.gate(
-            "confusable characters (non-Python files)",
-            ["uv", "run", "python", "tests/confusables.py"],
-        )
+        self.gate("non-ASCII characters", ["uv", "run", "python", "tests/unicode_scan.py"])
         self.gate(
             "unit + fixture tests",
             ["uv", "run", "python", "-m", "unittest", "discover", "-s", "tests"],
@@ -980,7 +977,7 @@ class TestSuite:
             if is_replay_case(case):
                 if update_golden:
                     continue
-                log.info("— %s (parse) —", case_name)
+                log.info("- %s (parse) -", case_name)
                 started = time.monotonic()
                 failure = run_local_replay_case(case_name)
                 self.record(
@@ -997,7 +994,7 @@ class TestSuite:
                 self._update_golden_after(FIXTURES_DIR / case_name, result)
                 continue
             for runner in runners:
-                log.info("— %s (%s) —", case_name, runner)
+                log.info("- %s (%s) -", case_name, runner)
                 started = time.monotonic()
                 result = run_fixture_case(case_name, runner)
                 self.record(
@@ -1036,7 +1033,7 @@ class TestSuite:
                 return
         after_path.write_text(json.dumps(result.actual_state, indent=2) + "\n", encoding="utf-8")
         log.info(
-            "golden: %s after.json updated — review the diff before committing",
+            "golden: %s after.json updated - review the diff before committing",
             case_directory.name,
         )
 
@@ -1424,12 +1421,12 @@ class TestSuite:
         details: list[str] = []
         if synthetic:
             details.append(
-                f"synthetic leftovers from an interrupted run: {synthetic[:5]} — "
+                f"synthetic leftovers from an interrupted run: {synthetic[:5]} - "
                 "`uv run tests/setup.py --apply` clears them"
             )
         if unknown:
             details.append(
-                f"pending bindIDs of unknown origin: {unknown[:5]} — investigate "
+                f"pending bindIDs of unknown origin: {unknown[:5]} - investigate "
                 "before clearing (an empty setRepositoryPermissionsForUsers on the "
                 "affected repo removes its pending rows)"
             )
@@ -1629,8 +1626,8 @@ class TestSuite:
     ) -> None:
         """Seed the case's before-state, run it with --apply, verify, restore.
 
-        Every involved repo — fixture state repos, exact rule names, and any
-        declared `live.involvedRepos` — is read, seeded, verified, and
+        Every involved repo - fixture state repos, exact rule names, and any
+        declared `live.involvedRepos` - is read, seeded, verified, and
         restored, all SCOPED to those repos via direct GraphQL (seconds),
         never through the product's restore command (which performs a full
         instance capture: minutes at 10k users, and whole-instance restore
@@ -1734,7 +1731,7 @@ class TestSuite:
                 return
 
         # Repos in scope but absent from after.json must come back exactly as
-        # seeded — these are the canaries that detect widened selectors.
+        # seeded - these are the canaries that detect widened selectors.
         expected_after = {
             name: after_grants.get(name, before_grants.get(name, set())) for name in involved_names
         }
@@ -1930,8 +1927,8 @@ class TestSuite:
 
         The fabricated SAML accounts (tests/setup.yaml samlAccounts) define
         the desired members of the throwaway orgs derived from the synthetic
-        groups. Seeding makes one org diverge both ways — a member no SAML
-        group justifies, and a missing member the group requires — then one
+        groups. Seeding makes one org diverge both ways - a member no SAML
+        group justifies, and a missing member the group requires - then one
         `sync-saml-orgs --apply` must converge every synthetic-group org back
         to SAML truth, verified by an independent member read-back.
         """
@@ -2004,7 +2001,7 @@ class TestSuite:
         """Force one org's membership to diverge from SAML truth in both directions.
 
         Adds `unjustified_member` and removes `required_member`. Creates the
-        org when missing — createOrganization auto-adds the calling admin,
+        org when missing - createOrganization auto-adds the calling admin,
         which is one more unjustified member the sync must remove.
         """
         started = time.monotonic()
@@ -2115,7 +2112,7 @@ class TestSuite:
     def run_saml_group_change_check(self, environment: dict[str, str]) -> None:
         """A user added to a mapped SAML group must gain the mapped perms.
 
-        Reuses the saml-group-live fixture's mapping (samlGroup → exact
+        Reuses the saml-group-live fixture's mapping (samlGroup -> exact
         repos). Baseline: a full apply grants only the group's current
         members. Then the fabricated SAML account of a non-member gains the
         mapped group (the same SQL path tests/setup.py uses), the same apply
@@ -2321,7 +2318,7 @@ class TestSuite:
         """Return the repo names a pending bindID has explicit-API grants on.
 
         `authorizedUserRepositories` falls back to the pending-permissions
-        store when the bindID matches no user — the only API that exposes a
+        store when the bindID matches no user - the only API that exposes a
         pending bindID's repos.
         """
         names: set[str] = set()
@@ -2380,7 +2377,7 @@ class TestSuite:
         # any of them is selected.
         want_user_cycle = self.select("live: set --users apply", "user cycle")
         # The full cycle applies the ROOT maps.yaml to the whole instance
-        # (10k users x ~1,150 repos) — an instance-wide stress run that has
+        # (10k users x ~1,150 repos) - an instance-wide stress run that has
         # crashed the test instance's Postgres. Opt-in only:
         #   uv run tests/run.py --live "full cycle"
         want_full_cycle = self.explicitly_selected("live: set --full", "full cycle")
@@ -2848,7 +2845,7 @@ class TestSuite:
         failed = len(self.results) - passed
         for result in self.results:
             if not result.passed:
-                log.error("FAILED [%s] %s — %s", result.level, result.name, result.detail)
+                log.error("FAILED [%s] %s - %s", result.level, result.name, result.detail)
         skipped_suffix = (
             f" Skipped {len(self.skipped_check_names)} check(s) not matching the test filter."
             if self.skipped_check_names
@@ -3296,7 +3293,7 @@ EXACT_REPOSITORY_SELECTOR_FIELDS = {"names"}
 
 
 def load_setup_config() -> dict[str, Any]:
-    """Parse tests/setup.yaml — the source of truth for fabricated SAML accounts."""
+    """Parse tests/setup.yaml - the source of truth for fabricated SAML accounts."""
     import yaml
 
     return cast("dict[str, Any]", yaml.safe_load(SETUP_CONFIG_PATH.read_text(encoding="utf-8")))
@@ -3339,7 +3336,7 @@ def fixture_maps_repo_scope(
     touch, so they capture and restore exactly that set. Exact `names:`
     selectors enumerate themselves; any other repo selector (regexes,
     code-host matchers) requires the case to declare `live.involvedRepos`
-    covering everything the selector can match — undeclared matches are
+    covering everything the selector can match - undeclared matches are
     mutated without restore and only detected by the canary checks.
 
     User-side selectors are unrestricted: whatever users a rule matches, the

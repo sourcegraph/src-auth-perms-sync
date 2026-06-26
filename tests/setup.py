@@ -157,7 +157,11 @@ class Setup:
     def record(self, name: str, ok: bool, detail: str) -> None:
         self.outcomes.append(Outcome(name, ok, detail))
         log.log(
-            logging.INFO if ok else logging.ERROR, "%s %s — %s", "✓" if ok else "✗", name, detail
+            logging.INFO if ok else logging.ERROR,
+            "%s %s - %s",
+            "PASS" if ok else "FAIL",
+            name,
+            detail,
         )
 
     def sql(self, statement: str) -> list[list[str]]:
@@ -207,7 +211,7 @@ class Setup:
             "users",
             user_count >= int(users_config["count"]),
             f"{user_count} live synthetic users (need {users_config['count']}); "
-            "bulk creation is out of setup's scope — reprovision the instance if short",
+            "bulk creation is out of setup's scope - reprovision the instance if short",
         )
         self.record(
             "repos",
@@ -270,7 +274,7 @@ class Setup:
             current = self.fabricated_groups_on_instance(username, service_id, client_id)
             if current == list(groups):
                 continue
-            drift.append(f"{username}: {current} → {list(groups)}")
+            drift.append(f"{username}: {current} -> {list(groups)}")
             if self.apply:
                 upsert_saml_account(
                     self.config["kubectl"],
@@ -371,7 +375,7 @@ class Setup:
         Live fixture cases seed pending bindIDs matching the synthetic
         prefix and restore them away; leftovers mean an interrupted run and
         --apply deletes exactly those rows. Anything else has an UNKNOWN
-        origin — setup must not silently destroy it. Investigate, then
+        origin - setup must not silently destroy it. Investigate, then
         clear deliberately (an empty setRepositoryPermissionsForUsers on
         the affected repo removes its pending rows).
         """
@@ -386,7 +390,7 @@ class Setup:
             not unknown,
             "none of unknown origin"
             if not unknown
-            else f"{len(unknown)} pending bindID(s) of unknown origin: {unknown[:5]} — "
+            else f"{len(unknown)} pending bindID(s) of unknown origin: {unknown[:5]} - "
             "investigate before clearing (setup never deletes these)",
         )
         if not synthetic:

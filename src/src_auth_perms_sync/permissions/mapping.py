@@ -3,7 +3,7 @@
 Each mapping rule has a `users:` section and a `repos:` section. Top-level
 selectors under each section AND together to keep each rule restrictive.
 Values inside each supplied selector list OR together. Across mapping rules,
-`cmd_set` unions the per-repo user sets at apply time — see
+`cmd_set` unions the per-repo user sets at apply time - see
 `src/src_auth_perms_sync/permissions/types.py` for the rationale.
 
 Adding a new matcher type:
@@ -36,10 +36,10 @@ log = logging.getLogger(__name__)
 # validators to reject typos. The mapping from matcher key to
 # discovered-entry key is hard-coded inside `_providers_matching` /
 # `_services_matching` (only `authProvider.type` differs:
-# matcher `type` ↔ AuthProvider `serviceType`).
+# matcher `type` <-> AuthProvider `serviceType`).
 # Discovered-provider fields that AND together inside `_providers_matching`.
 # `samlGroup` is allowed under `authProvider:` too but is not a provider
-# field — it filters within the matched provider's users (see
+# field - it filters within the matched provider's users (see
 # `_users_matching_auth_provider`).
 AUTH_PROVIDER_MATCHER_FIELDS: set[str] = {
     "type",
@@ -84,7 +84,7 @@ def validate_mapping_rules(rules: Sequence[object]) -> None:
 
     Semantic warnings (e.g. an authProvider matcher with no fields set,
     which would match every provider on the instance) are logged at
-    apply time by the resolver, not raised here — they're not always
+    apply time by the resolver, not raised here - they're not always
     bugs.
     """
     errors: list[str] = []
@@ -348,12 +348,12 @@ def resolve_users(
     """Return users matching ALL top-level selectors under `users:`.
 
     `saml_groups_attribute_names` overrides the default `"groups"` SAML
-    assertion attribute name per (serviceID, clientID) — see
+    assertion attribute name per (serviceID, clientID) - see
     `src/src_auth_perms_sync/shared/saml_groups.py`. When
     `None`, every SAML provider falls back to the default. Only
     consulted by the `authProvider.samlGroup` sub-field.
 
-    Empty sections return an empty user set — `validate_mapping_rules`
+    Empty sections return an empty user set - `validate_mapping_rules`
     rejects this at config-load time, so this branch only fires for
     programmatic callers.
     """
@@ -456,7 +456,7 @@ def _users_matching_email_values(
     exact_values = set(emails)
     matched = [user for user in all_users if _user_matches_email(user, exact_values, [])]
     log.info(
-        "    emails → %d user(s) matched %d email selector(s)",
+        "    emails -> %d user(s) matched %d email selector(s)",
         len(matched),
         len(exact_values),
     )
@@ -470,7 +470,7 @@ def _users_matching_email_regexes(
     patterns = _compiled_regexes(email_regexes)
     matched = [user for user in all_users if _user_matches_email(user, set(), patterns)]
     log.info(
-        "    emailRegexes → %d user(s) matched %d email regex selector(s)",
+        "    emailRegexes -> %d user(s) matched %d email regex selector(s)",
         len(matched),
         len(set(email_regexes)),
     )
@@ -494,7 +494,7 @@ def _users_matching_username_values(
     exact_values = set(usernames)
     matched = [user for user in all_users if _text_matches(user["username"], exact_values, [])]
     log.info(
-        "    usernames → %d user(s) matched %d username selector(s)",
+        "    usernames -> %d user(s) matched %d username selector(s)",
         len(matched),
         len(exact_values),
     )
@@ -508,7 +508,7 @@ def _users_matching_username_regexes(
     patterns = _compiled_regexes(username_regexes)
     matched = [user for user in all_users if _text_matches(user["username"], set(), patterns)]
     log.info(
-        "    usernameRegexes → %d user(s) matched %d username regex selector(s)",
+        "    usernameRegexes -> %d user(s) matched %d username regex selector(s)",
         len(matched),
         len(set(username_regexes)),
     )
@@ -557,7 +557,7 @@ def _users_matching_auth_provider(
         return []
     for provider in matching_providers:
         log.info(
-            "    authProvider → %s (type=%s serviceID=%s clientID=%s)",
+            "    authProvider -> %s (type=%s serviceID=%s clientID=%s)",
             provider["displayName"],
             provider["serviceType"],
             provider["serviceID"],
@@ -581,7 +581,7 @@ def _users_matching_auth_provider(
                     matched[user["id"]] = user
     if saml_group:
         log.info(
-            "    samlGroup → %d user(s) in group %r",
+            "    samlGroup -> %d user(s) in group %r",
             len(matched),
             saml_group,
         )
@@ -734,7 +734,7 @@ def _repo_ids_matching_names(
     exact_values = set(names)
     matched = {repo["id"] for repo in repos if _repo_name_matches(repo["name"], exact_values, [])}
     log.info(
-        "    names → %d repo(s) matched %d name selector(s)",
+        "    names -> %d repo(s) matched %d name selector(s)",
         len(matched),
         len(exact_values),
     )
@@ -748,7 +748,7 @@ def _repo_ids_matching_name_regexes(
     patterns = _compiled_regexes(name_regexes)
     matched = {repo["id"] for repo in repos if _repo_name_matches(repo["name"], set(), patterns)}
     log.info(
-        "    nameRegexes → %d repo(s) matched %d name regex selector(s)",
+        "    nameRegexes -> %d repo(s) matched %d name regex selector(s)",
         len(matched),
         len(set(name_regexes)),
     )
@@ -770,7 +770,7 @@ def _repos_matching_code_host_connection(
     matched_repos: dict[str, permission_types.Repository] = {}
     for service in matching_services:
         log.info(
-            "    codeHostConnection → %s (id=%d kind=%s)",
+            "    codeHostConnection -> %s (id=%d kind=%s)",
             service["displayName"],
             src.decode_external_service_id(service["id"]),
             service["kind"],

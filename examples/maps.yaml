@@ -1,4 +1,4 @@
-# User → Repo permission mapping rules
+# User -> Repo permission mapping rules
 
 # Maintain your maps.yaml file, using the values from auth-providers.yaml and code-hosts.yaml,
 # which are created by the --get command, under `src-auth-perms-sync-runs/<endpoint>/`

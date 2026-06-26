@@ -300,8 +300,8 @@ query SiteUsers($limit: Int!, $offset: Int!, $createdAt: SiteUsersDateRangeInput
 }
 """
 
-# Server-side filtered to PermissionSource.API — explicit grants only, never
-# code-host-synced. We always invert (user→repos) here because
+# Server-side filtered to PermissionSource.API - explicit grants only, never
+# code-host-synced. We always invert (user->repos) here because
 # Repository.permissionsInfo.users does NOT accept a `source` filter on this
 # SG version, so the repo-centric direction can't cleanly distinguish
 # explicit-API grants from sync/site-admin grants.
@@ -334,7 +334,7 @@ query PendingBindIDs {
 
 # For a bindID with no matching user, this resolver falls back to the
 # pending-permissions store and returns the repos the bindID is pending
-# on ("late binding" — see the GraphQL schema comment). That fallback is
+# on ("late binding" - see the GraphQL schema comment). That fallback is
 # the only API that exposes WHICH repos a pending bindID has.
 QUERY_PENDING_USER_REPOS = """
 query PendingUserRepos($bindID: String!, $first: Int!, $after: String) {

@@ -62,7 +62,7 @@ class Snapshot(TypedDict):
     config_file: str | None  # absolute path of the YAML, if known
     config_sha256: str | None  # sha256 of the YAML at capture time
     # Explicit-API grants whose bindID has not resolved to a real user yet
-    # ("grant before first login"): bindID → repos it is pending on.
+    # ("grant before first login"): bindID -> repos it is pending on.
     pending_users: dict[str, list[permission_types.Repository]]
     stats: SnapshotStats
     repos: dict[str, RepoSnapshot]
@@ -184,7 +184,7 @@ SNAPSHOT_DIFF_SCHEMA_VERSION: int = 2
 def pending_bind_ids_by_repository_id(
     pending_users: dict[str, list[permission_types.Repository]],
 ) -> dict[str, list[str]]:
-    """Invert bindID → repos into repo ID → sorted pending bindIDs."""
+    """Invert bindID -> repos into repo ID -> sorted pending bindIDs."""
     bind_ids_by_repository_id: dict[str, list[str]] = {}
     for bind_id, repositories in pending_users.items():
         for repository in repositories:
@@ -197,7 +197,7 @@ def pending_bind_ids_by_repository_id(
 def pending_repository_names_by_id(
     pending_users: dict[str, list[permission_types.Repository]],
 ) -> dict[str, str]:
-    """Return repo ID → name for every repo referenced by pending grants."""
+    """Return repo ID -> name for every repo referenced by pending grants."""
     return {
         repository["id"]: repository["name"]
         for repositories in pending_users.values()
@@ -234,9 +234,9 @@ def capture_explicit_grants(
     """Build the per-repo inverse index of explicit-API grants.
 
     Fetches `user.permissionsInfo.repositories(source: API)` for batches of
-    users in parallel via a thread pool, then inverts to `repo_id → RepoSnapshot`.
+    users in parallel via a thread pool, then inverts to `repo_id -> RepoSnapshot`.
 
-    Accepts any `Iterable[User]` — including a streaming generator from
+    Accepts any `Iterable[User]` - including a streaming generator from
     `list_users_streaming`. When passed a streaming source, this function
     submits batched UserExplicitRepos calls **while** iterating, so the
     submission loop blocking on the next ListUsers page overlaps with
@@ -261,9 +261,9 @@ def capture_explicit_grants(
     if selected_repository_ids is not None and not selected_repository_ids:
         # No repos selected (e.g. --repos-created-after matched nothing): no
         # per-user permission lookup could contribute anything, so skip them.
-        # Still drain the users iterable — callers pass recording streams
+        # Still drain the users iterable - callers pass recording streams
         # whose side effects feed later phases (mapping, SAML extraction).
-        log.info("No repositories selected — skipping the explicit-permissions lookups.")
+        log.info("No repositories selected - skipping the explicit-permissions lookups.")
         return {}, sum(1 for _ in users)
 
     # Invert directly as each per-user fetch completes. Store only repo IDs
@@ -359,7 +359,7 @@ def capture_explicit_grants(
         progress_step = max(1, expected_user_count // 10) if expected_user_count else 1000
         # Start the timer BEFORE submission. Iterating `users` may block on
         # ListUsers pagination, but workers process already-submitted tasks
-        # during those blocks — so progress reflects real wall-clock work.
+        # during those blocks - so progress reflects real wall-clock work.
         progress_started = time.perf_counter()
         completed = 0
         next_progress_report = progress_step
@@ -944,7 +944,7 @@ def write_snapshot(path: Path, snapshot: Snapshot) -> None:
 
     Repo IDs are decoded from their opaque GraphQL Node form
     (`Repository:<int>` base64) to plain integer DB primary keys before
-    write — they're far easier to grep, diff, and read by eye.
+    write - they're far easier to grep, diff, and read by eye.
     `read_snapshot` re-encodes them on load so the in-memory shape (and
     every consumer of `Snapshot`) keeps using opaque IDs unchanged.
     """

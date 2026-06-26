@@ -14,7 +14,7 @@ from . import queries, saml_groups
 # HTTP statuses that genuinely indicate the access token can't read site
 # config (missing Site Admin role / SITE_CONFIG#READ). Everything else
 # (5xx, network, parse, etc.) is a transport / server failure, not an
-# authorization problem — say so instead of misleading the operator.
+# authorization problem - say so instead of misleading the operator.
 AUTHORIZATION_HTTP_STATUSES = frozenset({401, 403})
 
 log = logging.getLogger(__name__)
@@ -30,14 +30,14 @@ class SiteConfig:
     """
 
     bind_id_mode: str
-    """`"USERNAME"` (the only value validate_site_config accepts) — kept
+    """`"USERNAME"` (the only value validate_site_config accepts) - kept
     for downstream snapshot / apply layers that pass it through."""
 
     auth_providers_by_config_id: dict[str, dict[str, Any]]
     """Raw `auth.providers[*]` site-config entries keyed by explicit
     `configID`, with redacted/secret fields stripped (see
     `_strip_sensitive_provider_fields`). Entries without an explicit
-    `configID` are dropped — Sourcegraph synthesizes one as a content-
+    `configID` are dropped - Sourcegraph synthesizes one as a content-
     addressed hash we can't safely replicate from Python.
 
     Surfaced to `cmd_get` so the YAML config carries every non-secret
@@ -54,14 +54,14 @@ class SiteConfig:
     Only populated for SAML site-config entries that set BOTH a non-
     default `groupsAttributeName` AND an explicit `configID`. Entries
     that customize `groupsAttributeName` without setting `configID`
-    are skipped (with a warning) — Sourcegraph synthesizes a `configID`
+    are skipped (with a warning) - Sourcegraph synthesizes a `configID`
     of `<type>:<index>` for them internally, but that synthesis is an
     implementation detail and order-dependent. Operators who need this
     override should set explicit `configID` on each affected SAML
     provider in site config.
 
     Providers without an entry fall back to
-    `DEFAULT_GROUPS_ATTRIBUTE_NAME` (`"groups"`) — the same default
+    `DEFAULT_GROUPS_ATTRIBUTE_NAME` (`"groups"`) - the same default
     Sourcegraph itself uses when `groupsAttributeName` is unset, so
     the fallback is safe."""
 
@@ -118,7 +118,7 @@ def validate_site_config(client: src.SourcegraphClient) -> SiteConfig:
         safety_errors.append(
             "auth.enableUsernameChanges must be `false` (currently true). "
             "Username-keyed permissions become unstable if users can rename "
-            "themselves — a user could rename into another user's old name "
+            "themselves - a user could rename into another user's old name "
             "and inherit their permissions."
         )
 
@@ -136,7 +136,7 @@ def validate_site_config(client: src.SourcegraphClient) -> SiteConfig:
                 "Site-config safety requirements not met:"
                 + bullet
                 + bullet.join(safety_errors)
-                + "\n\nFix: edit site config (Site admin → Configuration) so it "
+                + "\n\nFix: edit site config (Site admin -> Configuration) so it "
                 "includes:\n"
                 '  "permissions.userMapping": { "enabled": true, "bindID": "username" },\n'
                 '  "auth.enableUsernameChanges": false'
@@ -217,14 +217,14 @@ def _query_site_configuration(
 # Sourcegraph's `effectiveContents` resolver redacts secrets by replacing
 # them with this literal sentinel string (see internal/conf/validate.go
 # in sourcegraph/sourcegraph). Any field carrying this value is stripped
-# from the YAML — value-based, so it stays correct if Sourcegraph adds
+# from the YAML - value-based, so it stays correct if Sourcegraph adds
 # more redactions in the future without us having to enumerate them.
 REDACTED_SENTINEL = "REDACTED"
 
 # SAML fields Sourcegraph does NOT redact but we still drop:
 # private keys / certs / inline IdP metadata blobs are large secrets that
 # don't belong in a config-discovery YAML. The URL-form
-# (`identityProviderMetadataURL`) is kept — it's a reference, not a blob.
+# (`identityProviderMetadataURL`) is kept - it's a reference, not a blob.
 _DROPPED_PROVIDER_FIELDS: frozenset[str] = frozenset(
     {
         "serviceProviderPrivateKey",
@@ -249,7 +249,7 @@ def _extract_auth_providers_by_config_id(
 ) -> dict[str, dict[str, Any]]:
     """`auth.providers[*]` site-config entries keyed by explicit `configID`,
     with secrets stripped. Entries without an explicit `configID` are
-    silently skipped — see `SiteConfig.auth_providers_by_config_id` for
+    silently skipped - see `SiteConfig.auth_providers_by_config_id` for
     the rationale."""
     by_config_id: dict[str, dict[str, Any]] = {}
     raw_providers = contents.get("auth.providers")
@@ -363,7 +363,7 @@ def _missing_config_id_error(entry: dict[str, Any], attribute_name: str) -> str:
         "      Why: this script needs a stable name to refer to your SAML\n"
         "      provider. If you don't set `configID`, Sourcegraph generates\n"
         "      one for you, but that auto-generated value silently changes\n"
-        "      whenever you edit any field on the provider — which would\n"
+        "      whenever you edit any field on the provider - which would\n"
         "      break this script the next time you re-run it after a\n"
         "      site-config edit."
     )

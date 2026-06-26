@@ -14,9 +14,8 @@ actionlint
 ### Markdown files
 npx --yes -p markdownlint-cli2@0.22.1 -p markdownlint-rule-relative-links@5.1.0 markdownlint-cli2
 
-### Confusable Unicode characters in non-Python files
-# (ruff RUF001-RUF003 covers Python strings/comments/docstrings)
-uv run python tests/confusables.py
+### Non-ASCII characters in tracked text files
+uv run python tests/unicode_scan.py
 
 ### Python files
 
@@ -41,7 +40,7 @@ own checks.
 
 ```bash
 # Fast, no network (also what the pre-commit hook runs):
-# lint, format, pyright, confusable-character scan, unit + fixture
+# lint, format, pyright, non-ASCII character scan, unit + fixture
 # tests, CLI rejection matrix,
 # randomized permission invariants
 uv run tests/run.py
@@ -64,7 +63,7 @@ uv run tests/run.py --performance --baseline-command "uvx src-auth-perms-sync@la
 uv run tests/run.py --update-golden
 ```
 
-- Fixture cases live in `tests/e2e/fixtures/<case>/` — see the README there
+- Fixture cases live in `tests/e2e/fixtures/<case>/` - see the README there
   for the format. Add cases there to cover new mapping behaviors.
 - For manual verification against a real instance, dry-run first (no
   `--apply`), read the planned changes, then `--apply` on a scratch instance
@@ -165,7 +164,7 @@ gh run watch "${RUN_ID}" --repo "${GH_REPO}" --exit-status
 gh release view "v${VERSION}" --repo "${GH_REPO}"
 ```
 
-## Hard invariants — do not break
+## Hard invariants - do not break
 
 Violating these can silently grant the wrong users access to the wrong
 repos.
@@ -206,31 +205,31 @@ organization sync maps SAML groups to Sourcegraph org membership. Read
 CLI lives in `src/src_auth_perms_sync/`; invoke with `uv run src-auth-perms-sync`.
 Strict pyright covers the package. Root modules are entrypoints only:
 
-- `cli.py` — `main()`, arg parsing, owns the CLI description. Module
+- `cli.py` - `main()`, arg parsing, owns the CLI description. Module
   wrappers (`Get`/`Set`/`Restore`/`SyncSamlOrgs`) return result dataclasses
   and never install logging handlers; only `main()` runs CLI-mode logging.
-- `shared/` — cross-workflow helpers: Sourcegraph auth-provider/user list
+- `shared/` - cross-workflow helpers: Sourcegraph auth-provider/user list
   helpers, shared GraphQL operations and TypedDicts, site-config validation,
   and SAML group parsing. `shared/backups.py` defines `RunPaths`: every
   filesystem path for one run, resolved once at the edge
-  (`resolve_run_paths`) and threaded explicitly — never recompute paths
+  (`resolve_run_paths`) and threaded explicitly - never recompute paths
   from cwd or globals below the edge, and honor `run_paths.write_files`
   (False under `--no-files`) before any disk write.
 
 Business workflows live in packages:
 
-- `permissions/` — repo permission sync (`command.py`, `maps.py`,
+- `permissions/` - repo permission sync (`command.py`, `maps.py`,
   `mapping.py`, `sourcegraph.py`, `snapshot.py`, `apply.py`, `queries.py`,
   `types.py`). Add new mapping filters in `permissions/types.py` and
   `permissions/mapping.py`.
-- `orgs/` — SAML group → Sourcegraph organization sync (`command.py`,
+- `orgs/` - SAML group -> Sourcegraph organization sync (`command.py`,
   `queries.py`, `types.py`).
 
 ## Toolchain
 
 - Python 3.11 + [uv](https://docs.astral.sh/uv/). Never invoke `python`
   directly; always `uv run ...`.
-- `uv run pyright` must be clean. No `# type: ignore` to silence —
+- `uv run pyright` must be clean. No `# type: ignore` to silence -
   fix the underlying type.
 - Local tests use stdlib `unittest`: `uv run python -m unittest discover -s tests`.
 - For Sourcegraph mutation-path changes, also verify by dry-running `--get` /
@@ -268,7 +267,7 @@ Short names that ARE acceptable (don't rewrite these on sight):
   `key`, `value`, `name`, `kind`.
 - **Stdlib idioms**: `ctx` for `contextvars.copy_context()`.
 - **Loop / comprehension variables when the type is obvious from one
-  line of context** is still discouraged — prefer `user`, `repo`,
+  line of context** is still discouraged - prefer `user`, `repo`,
   `provider`, `service`, `permission`, `node`, `entry`, `match`,
   `account`, `future`, `executor`, `exception`, `event`, `connection`,
   `response`, `timestamp`, `current`, `outcome`, `index`, `field_name`.

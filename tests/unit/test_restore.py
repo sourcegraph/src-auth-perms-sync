@@ -120,19 +120,19 @@ class RestoreTests(unittest.TestCase):
             overwrite.repository_id: (overwrite.repository_name, overwrite.usernames)
             for overwrite in plan.overwrites
         }
-        # Real users and pending both match — no mutation.
+        # Real users and pending both match - no mutation.
         self.assertNotIn(matching_repo_id, overwrites_by_repo)
-        # Pending grant missing from current state — restored alongside alice.
+        # Pending grant missing from current state - restored alongside alice.
         self.assertEqual(
             (drifted_repo["name"], ("alice", "ghost")),
             overwrites_by_repo[drifted_repo_id],
         )
-        # Repo with only a pending grant in the target — recreated.
+        # Repo with only a pending grant in the target - recreated.
         self.assertEqual(
             (pending_only_target_repo["name"], ("ghost",)),
             overwrites_by_repo[pending_only_target_repo_id],
         )
-        # Pending-only repo absent from the target — wiped.
+        # Pending-only repo absent from the target - wiped.
         self.assertEqual(
             (pending_only_current_repo["name"], ()),
             overwrites_by_repo[pending_only_current_repo_id],
