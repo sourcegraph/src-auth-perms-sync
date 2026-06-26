@@ -32,7 +32,7 @@
 - `get --repos <name>` still scans every user's explicit grants to find one
   repo's holders (~400 s at 10k users). A repo-centric read
   (`repository.permissionsInfo.users` + site-admin disambiguation, as the
-  test harness already does) would make it seconds — see the repo-centric
+  test harness already does) would make it seconds - see the repo-centric
   section below.
 
 ## Low priority: Repo-centric path, when users > repos, or for cross-checking
@@ -50,10 +50,10 @@ Reasons we might want to bring it back later:
 - **Targeted snapshots.** A "planned-scope" capture (only the repos
   the mapping rules touch) is faster than a full instance scan when
   the user-centric path is the long pole AND the planned set is small.
-  Would need either a server-side `source` filter on the repo→users
+  Would need either a server-side `source` filter on the repo->users
   connection, or a follow-up user-centric `source: API` query per
   ambiguous (site-admin) user to disambiguate.
-- **Adaptive capture path after SG adds `source` to repo→users.** Once
+- **Adaptive capture path after SG adds `source` to repo->users.** Once
   `RepositoryPermissionsInfo.users(source: PermissionSource)` exists,
   compute the expected request count both ways before snapshotting:
   sum `userCount` across all auth providers and sum `repoCount` across
@@ -70,7 +70,7 @@ If/when we revisit:
    ambiguous-user follow-up to be correct).
 2. Restore `QUERY_REPO_EXPLICIT_USERS` from git history; implement
    `list_repo_explicit_users` returning `(definitely, ambiguous)` and
-   actually consume both buckets — the previous code did neither.
+   actually consume both buckets - the previous code did neither.
 3. Add a CLI flag (e.g. `--cross-check-capture`) gated behind a clear
    "this doubles capture cost" warning.
 
@@ -89,7 +89,7 @@ SAML actually persists the group list. Recovery options for each:
 - OIDC has no `allowGroups` field on `OpenIDConnectAuthProvider`.
   `UserClaims` stores only name/email fields; the `groups` claim is never
   parsed. Recovery needs an upstream change to persist the claim.
-- GitHub OAuth has `allowOrgs`, `allowOrgsMap` (org→teams), and
+- GitHub OAuth has `allowOrgs`, `allowOrgsMap` (org->teams), and
   `requiredSsoOrgs`. Org/team checks happen live in `verifyUserOrgs` /
   `verifyUserTeams` and are discarded. Recovery needs an upstream change to
   persist the claim.

@@ -112,7 +112,7 @@ class FixtureCase(TypedDict):
     description: str
     modes: NotRequired[list[str]]  # local, live, performance (default: [local])
     # State cases declare `args`: the command plus Config fields. The CLI
-    # argv is GENERATED from it (field names → real cli_flag metadata) and
+    # argv is GENERATED from it (field names -> real cli_flag metadata) and
     # the import API consumes it directly, so one mapping drives both
     # entrypoints. Replay cases declare a raw `cliCommand` instead, because
     # their point is argv-level parser behavior.
@@ -598,7 +598,7 @@ class FakeSourcegraphClient:
 
     def _set_repo_permissions(self, variables: dict[str, object]) -> None:
         """Mirror the real resolver: bindIDs matching a user become explicit
-        grants; the rest replace the repo's pending rows — both in one call."""
+        grants; the rest replace the repo's pending rows - both in one call."""
         repository_id = self._repository_integer_id(variables["repo"])
         user_permissions = cast(list[dict[str, str]], variables["userPerms"])
         bind_ids = {user_permission["bindID"] for user_permission in user_permissions}
@@ -621,7 +621,7 @@ class FakeSourcegraphClient:
 
     def _authorized_user_repositories(self, bind_id_value: object) -> list[dict[str, Any]]:
         """Real users get their explicit repos; unknown bindIDs fall back to
-        the pending store — the server's "late binding" behavior."""
+        the pending store - the server's "late binding" behavior."""
         if not isinstance(bind_id_value, str):
             raise AssertionError("bindID variable must be a string")
         user = self._users_by_username.get(bind_id_value)
@@ -796,7 +796,7 @@ def case_runners(case: FixtureCase) -> list[str]:
 
     Every state case (declared via `args`) runs BOTH ways: the generated
     command line through the real argument parser, and the same mapping
-    through the Python import API — both must produce the same state,
+    through the Python import API - both must produce the same state,
     proving CLI/import parity for every behavior. Replay cases assert
     parser behavior on a raw cliCommand, which has no import equivalent.
     """
@@ -808,8 +808,8 @@ def case_runners(case: FixtureCase) -> list[str]:
 def cli_flags_by_field_name() -> dict[str, str]:
     """Map Config field names to their real CLI flags (from field metadata).
 
-    Mechanical snake→kebab casing would be wrong for several fields
-    (e.g. open_telemetry → --otel, sync_saml_orgs →
+    Mechanical snake->kebab casing would be wrong for several fields
+    (e.g. open_telemetry -> --otel, sync_saml_orgs ->
     --sync-saml-orgs), so the generator reads the same metadata the
     argument parser is built from.
     """
@@ -823,8 +823,8 @@ def cli_flags_by_field_name() -> dict[str, str]:
 def case_cli_arguments(case: FixtureCase, case_name: str) -> list[str]:
     """Return the case's argv: generated from `args`, or raw cliCommand.
 
-    Generated values render as: True → bare flag, False/None → omitted,
-    list → one comma-joined value, anything else → str(). --maps-path is
+    Generated values render as: True -> bare flag, False/None -> omitted,
+    list -> one comma-joined value, anything else -> str(). --maps-path is
     appended for set commands that do not declare maps_path.
     """
     args = case.get("args")
@@ -949,7 +949,7 @@ def cli_input_for_case(
     if command_name == "set" and "maps_path" not in options:
         options["maps_path"] = FIXTURES_DIR / case_name / "maps.yaml"
     # Keyword construction (not model_copy) so pydantic validates and
-    # coerces values exactly as it would for a library consumer — strings
+    # coerces values exactly as it would for a library consumer - strings
     # become Paths, lists become tuples.
     config = cli.Config(
         src_endpoint=endpoint,
@@ -1003,7 +1003,7 @@ def run_fixture_case(
             cli_input = cli_input_for_case(case, case_name, client.endpoint, runner)
             # Local runs execute in-process against the in-memory fake, where
             # client parallelism buys nothing and only adds scheduling
-            # nondeterminism — pin it to 1 regardless of the case's command
+            # nondeterminism - pin it to 1 regardless of the case's command
             # line. Live/performance runs use the command line as written.
             config_updates: dict[str, object] = {"parallelism": 1}
             if no_files:

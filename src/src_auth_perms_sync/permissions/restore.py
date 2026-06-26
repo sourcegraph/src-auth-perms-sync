@@ -205,14 +205,14 @@ def _validate_user_scoped_restore_snapshot_context(
     """Warn when a user-scoped restore target differs from the current context."""
     if target_snapshot["bindID_mode"] != bind_id_mode:
         log.warning(
-            "Snapshot bindID_mode=%s differs from live bindID_mode=%s — "
+            "Snapshot bindID_mode=%s differs from live bindID_mode=%s - "
             "captured usernames may not resolve to the same users.",
             target_snapshot["bindID_mode"],
             bind_id_mode,
         )
     if target_snapshot["endpoint"] != client.endpoint:
         log.warning(
-            "Snapshot endpoint=%s differs from live endpoint=%s — restoring "
+            "Snapshot endpoint=%s differs from live endpoint=%s - restoring "
             "across instances. Proceeding anyway; review the plan diff.",
             target_snapshot["endpoint"],
             client.endpoint,
@@ -254,7 +254,7 @@ def _log_user_scoped_restore_plan(
         len(plan.removals),
     )
     log.info(
-        "Diff (current → scoped snapshot):\n%s",
+        "Diff (current -> scoped snapshot):\n%s",
         permission_snapshot.render_user_scoped_diff(
             snapshot_state.current_snapshot,
             snapshot_state.target_snapshot,
@@ -293,7 +293,7 @@ def _finish_empty_user_scoped_restore_plan(
     current_snapshot: permission_snapshot.UserScopedSnapshot,
     do_backup: bool,
 ) -> None:
-    log.info("Scoped restore target already matches current state — nothing to apply.")
+    log.info("Scoped restore target already matches current state - nothing to apply.")
     if not do_backup:
         return
     if not run_paths.write_files:
@@ -467,7 +467,7 @@ def _validate_restore_snapshot_context(
     )
     if target_snapshot["bindID_mode"] != bind_id_mode:
         log.warning(
-            "Snapshot bindID_mode=%s differs from live bindID_mode=%s — "
+            "Snapshot bindID_mode=%s differs from live bindID_mode=%s - "
             "captured bindIDs may not resolve to the same users. Proceeding "
             "anyway; review the plan diff carefully.",
             target_snapshot["bindID_mode"],
@@ -475,7 +475,7 @@ def _validate_restore_snapshot_context(
         )
     if target_snapshot["endpoint"] != client.endpoint:
         log.warning(
-            "Snapshot endpoint=%s differs from live endpoint=%s — restoring "
+            "Snapshot endpoint=%s differs from live endpoint=%s - restoring "
             "across instances. Proceeding anyway; review the plan diff.",
             target_snapshot["endpoint"],
             client.endpoint,
@@ -534,7 +534,7 @@ def plan_full_restore(snapshot_state: RestoreSnapshotState) -> RestorePlan:
     Each overwrite carries the target's real usernames PLUS the target's
     pending bindIDs for that repo: `setRepositoryPermissionsForUsers`
     replaces both kinds in one transaction, and unresolved bindIDs become
-    pending rows again — restoring pending grants exactly as captured.
+    pending rows again - restoring pending grants exactly as captured.
     """
     target_snapshot = snapshot_state.target_snapshot
     current_snapshot = snapshot_state.current_snapshot
@@ -633,7 +633,7 @@ def _log_full_restore_plan(snapshot_state: RestoreSnapshotState, plan: RestorePl
         plan.extra_repo_count,
     )
     log.info(
-        "Diff (current → snapshot):\n%s",
+        "Diff (current -> snapshot):\n%s",
         permission_snapshot.render_snapshot_diff(
             snapshot_state.current_snapshot,
             snapshot_state.target_snapshot,
@@ -773,7 +773,7 @@ def _finish_restore_apply_with_backup(
     if residual != "No changes.":
         log.warning(
             "VALIDATION: post-restore state does NOT match the target "
-            "snapshot exactly. Residual diff (post-restore → snapshot):\n%s",
+            "snapshot exactly. Residual diff (post-restore -> snapshot):\n%s",
             residual,
         )
     else:

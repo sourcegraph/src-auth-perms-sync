@@ -306,7 +306,7 @@ def plan_full_set_permissions(
         )
         log.info("  Matched %d user(s).", len(matched_users))
         if not matched_users:
-            log.warning("  No users matched — skipping rule.")
+            log.warning("  No users matched - skipping rule.")
             continue
 
         matched_repos = permissions_mapping.resolve_repos(
@@ -317,7 +317,7 @@ def plan_full_set_permissions(
         )
         log.info("  Matched %d repo(s).", len(matched_repos))
         if not matched_repos:
-            log.warning("  No repos matched — skipping rule.")
+            log.warning("  No repos matched - skipping rule.")
             continue
 
         matched_usernames = tuple(sorted({user["username"] for user in matched_users}))
@@ -404,7 +404,7 @@ def _finish_full_set_dry_run(
         after_snapshot = projected_snapshot_shell(before_snapshot, plan.expected_users)
         log.info("Skipping dry-run snapshot files because --no-files is set.")
     log.info(
-        "Diff (before → dry-run after):\n%s",
+        "Diff (before -> dry-run after):\n%s",
         render_projected_snapshot_diff(
             before_snapshot,
             after_snapshot,
@@ -453,7 +453,7 @@ def _filter_full_set_plans(
     if skipped_repo_ids:
         log.info(
             "Short-circuit: %d / %d planned repo(s) already at the "
-            "desired explicit-permissions state — skipping their "
+            "desired explicit-permissions state - skipping their "
             "setRepositoryPermissionsForUsers calls.",
             len(skipped_repo_ids),
             len(overwrites),
@@ -472,7 +472,7 @@ def _overwrites_with_preserved_pending(
     """Resend each repo's pending bindIDs so overwrites don't delete them.
 
     `setRepositoryPermissionsForUsers` replaces a repo's whole explicit
-    list — real grants AND pending ones. Appending the repo's current
+    list - real grants AND pending ones. Appending the repo's current
     pending bindIDs to the payload re-creates the same pending rows in the
     same transaction, so the script neither creates nor loses them.
     """
@@ -541,7 +541,7 @@ def _apply_full_set_plans(
     full_short_circuit = bool(skipped_repo_ids) and not overwrites
     if full_short_circuit:
         log.info(
-            "All %d planned repo(s) already at the desired state — nothing to apply.",
+            "All %d planned repo(s) already at the desired state - nothing to apply.",
             len(skipped_repo_ids),
         )
         return _FullSetApplyResult(
@@ -635,7 +635,7 @@ def _finish_full_set_apply_with_backup(
     else:
         log.info("Skipping after-snapshot and diff files because --no-files is set.")
     log.info(
-        "Diff (before → after):\n%s",
+        "Diff (before -> after):\n%s",
         permission_snapshot.render_snapshot_diff(before_snapshot, after_snapshot),
     )
 
@@ -714,7 +714,7 @@ def _finish_empty_full_set_mapping_rules(
     command_event: dict[str, Any],
     worker_pool: ThreadPoolExecutor | None = None,
 ) -> None:
-    log.warning("No maps defined in %s — nothing to do.", run_paths.maps_path)
+    log.warning("No maps defined in %s - nothing to do.", run_paths.maps_path)
     if not (dry_run or do_backup):
         return
 
@@ -879,7 +879,7 @@ def _finish_empty_full_set_plan(
     do_backup: bool,
     command_event: dict[str, Any],
 ) -> None:
-    log.warning("No repos resolved across any mapping — nothing to do.")
+    log.warning("No repos resolved across any mapping - nothing to do.")
     if dry_run or do_backup:
         _write_noop_full_set_artifacts(
             run_paths,

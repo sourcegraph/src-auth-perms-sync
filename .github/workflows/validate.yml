@@ -185,6 +185,9 @@ jobs:
       - name: Validate lockfile
         run: uv lock --check
 
+      - name: Scan for Unicode characters
+        run: uv run --frozen python tests/unicode_scan.py
+
       - name: Lint Python
         run: uv run --frozen ruff check .
 

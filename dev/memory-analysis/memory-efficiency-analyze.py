@@ -470,7 +470,7 @@ def write_text_report(
         )
     r_squared = "n/a" if model.r_squared is None else f"{model.r_squared:.4f}"
     print("\nFit quality:")
-    print(f"  R²: {r_squared}")
+    print(f"  R^2: {r_squared}")
     print(f"  mean absolute error: {model.mean_absolute_error_megabytes:.2f} MiB")
     print(f"  p95 absolute error: {model.p95_absolute_error_megabytes:.2f} MiB")
     print(f"  max absolute error: {model.max_absolute_error_megabytes:.2f} MiB")

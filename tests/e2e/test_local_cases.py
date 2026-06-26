@@ -1,8 +1,8 @@
 """Assert every tests.yaml case that runs locally, and validate the registry.
 
 Live and performance execution happens in tests/run.py; here, all local-mode
-cases run without any network — state cases against an in-memory instance,
-replay cases through the real argument parser — and every registry entry is
+cases run without any network - state cases against an in-memory instance,
+replay cases through the real argument parser - and every registry entry is
 structurally validated, including the live/performance ones.
 """
 
@@ -180,8 +180,8 @@ class LocalCaseTests(unittest.TestCase):
     def test_no_files_set_dry_run_matches_files_enabled(self) -> None:
         """no_files must not change a set dry-run's decisions, and writes nothing.
 
-        The same fixture case runs twice through the import API — once with
-        files enabled and once with no_files — and must plan identical
+        The same fixture case runs twice through the import API - once with
+        files enabled and once with no_files - and must plan identical
         mutations and end in identical instance state, while the no_files
         run's temporary artifacts directory stays completely empty.
         """

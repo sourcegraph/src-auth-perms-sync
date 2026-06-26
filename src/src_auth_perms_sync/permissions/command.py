@@ -304,13 +304,13 @@ def cmd_get(
                 ),
                 # SAML providers always get the field (possibly empty) so
                 # operators can see at a glance whether the IdP is releasing
-                # a groups claim. Non-SAML providers get None → field omitted.
+                # a groups claim. Non-SAML providers get None -> field omitted.
                 saml_group_user_counts=(
                     saml_group_counts.get((provider["serviceID"], provider["clientID"]), {})
                     if provider["serviceType"] == saml_groups.SAML_SERVICE_TYPE
                     else None
                 ),
-                # Match by explicit `configID` only — Sourcegraph
+                # Match by explicit `configID` only - Sourcegraph
                 # synthesizes one for entries that omit it, but the synth
                 # is a content-addressed hash we can't safely replicate.
                 # Such providers get only the GraphQL-derived view.
@@ -428,7 +428,7 @@ def load_selected_users(
                 selected_users.append(user)
                 continue
             log.info(
-                "User %s was not created on or after %s — no user metadata selected.",
+                "User %s was not created on or after %s - no user metadata selected.",
                 user["username"],
                 user_created_after,
             )
@@ -606,8 +606,8 @@ def _additive_command_data(
 
     When `retain_saml_group_users` is set, the selected users are compacted
     into `scoped_saml_group_users` so a subsequent `--sync-saml-orgs` phase
-    syncs org membership for exactly these users — per-user additions and
-    removals — without streaming all users again. An empty selection yields
+    syncs org membership for exactly these users - per-user additions and
+    removals - without streaming all users again. An empty selection yields
     an empty scope (org sync no-ops), never a full-instance sync.
     """
     providers = context.providers if context is not None else None
@@ -793,7 +793,7 @@ def cmd_set_additive_users(
     ):
         mapping_rules = resolve_mapping_rules(mapping_rules, run_paths.maps_path)
         if not mapping_rules:
-            log.warning("No maps defined in %s — nothing to do.", run_paths.maps_path)
+            log.warning("No maps defined in %s - nothing to do.", run_paths.maps_path)
             return _additive_command_data(None, [], retain_saml_group_users)
         include_user_emails = permissions_mapping.mapping_rules_need_user_emails(mapping_rules)
         include_user_account_data = (
@@ -820,7 +820,7 @@ def cmd_set_additive_users(
                     selected_users.append(user)
                     continue
                 log.info(
-                    "User %s was not created on or after %s — nothing to do.",
+                    "User %s was not created on or after %s - nothing to do.",
                     user["username"],
                     user_created_after,
                 )
@@ -924,7 +924,7 @@ def cmd_set_additive_users_without_explicit_perms(
     ):
         mapping_rules = resolve_mapping_rules(mapping_rules, run_paths.maps_path)
         if not mapping_rules:
-            log.warning("No maps defined in %s — nothing to do.", run_paths.maps_path)
+            log.warning("No maps defined in %s - nothing to do.", run_paths.maps_path)
             return _additive_command_data(None, [], retain_saml_group_users)
         context = load_mapping_context_discovery(
             client,
@@ -1101,7 +1101,7 @@ def cmd_set_additive_created_after(
     ):
         mapping_rules = resolve_mapping_rules(mapping_rules, run_paths.maps_path)
         if not mapping_rules:
-            log.warning("No maps defined in %s — nothing to do.", run_paths.maps_path)
+            log.warning("No maps defined in %s - nothing to do.", run_paths.maps_path)
             return _additive_command_data(None, [], retain_saml_group_users)
         context = load_mapping_context_discovery(
             client,
@@ -1403,7 +1403,7 @@ def _write_additive_initial_artifacts(
     else:
         log.info("Skipping additive snapshot and maps backup files because --no-files is set.")
     log.info(
-        "Diff (before → planned after):\n%s",
+        "Diff (before -> planned after):\n%s",
         permission_snapshot.render_user_scoped_diff(before_snapshot, after_planned_snapshot),
     )
     return before_snapshot
@@ -1493,7 +1493,7 @@ def _finish_additive_apply_with_backup(
     else:
         log.info("Skipping scoped after-snapshot files because --no-files is set.")
     log.info(
-        "Diff (before → after):\n%s",
+        "Diff (before -> after):\n%s",
         permission_snapshot.render_user_scoped_diff(before_snapshot, after_snapshot),
     )
     _validate_additive_after(after_snapshot, additions)
@@ -1525,7 +1525,7 @@ def _run_additive_apply(
 ) -> None:
     """Snapshot, dry-run, apply, and validate an additive permission plan."""
     if not users:
-        log.info("No users selected — nothing to do.")
+        log.info("No users selected - nothing to do.")
         return
 
     snapshot_users = _snapshot_users_from_users(users)
@@ -1549,7 +1549,7 @@ def _run_additive_apply(
         return
 
     if not additions:
-        log.info("All selected users already have the mapped explicit grants — nothing to apply.")
+        log.info("All selected users already have the mapped explicit grants - nothing to apply.")
         return
 
     mutations = _apply_additive_permissions(client, additions, parallelism, worker_pool)
@@ -1654,7 +1654,7 @@ def _validate_additive_after(
         log.warning("VALIDATION: %d requested additive grant(s) are missing.", len(missing))
         for addition in missing[:20]:
             log.warning(
-                "  missing %s → %s (id=%d)",
+                "  missing %s -> %s (id=%d)",
                 addition.username,
                 addition.repo_name,
                 src.decode_repository_id(addition.repo_id),

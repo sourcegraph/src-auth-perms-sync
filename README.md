@@ -1,5 +1,5 @@
 # src-auth-perms-sync
-<!-- HUMAN-MAINTAINED SECTION START — DO NOT EDIT THIS SECTION -->
+<!-- HUMAN-MAINTAINED SECTION START - DO NOT EDIT THIS SECTION -->
 
 src-auth-perms-sync automates Sourcegraph's Explicit Permissions GraphQL API,
 setting user-to-repo permissions based on mapping rules, for example:
@@ -147,7 +147,7 @@ for provider in get_result.auth_providers:
 for code_host in get_result.code_hosts:
     ...
 
-# Mapping rules can be passed in memory instead of a maps YAML file —
+# Mapping rules can be passed in memory instead of a maps YAML file -
 # same structure and validation as maps.yaml entries:
 rules: list[src.MappingRule] = [
     {
@@ -167,11 +167,11 @@ result = src.Set(config, mapping_rules=rules)
 ```
 
 The import API does not read environment variables or `.env` files on its
-own — those apply to the CLI only. Pass every value explicitly to
+own - those apply to the CLI only. Pass every value explicitly to
 `src.Config(...)` (read `os.environ` yourself if you want env-driven
 configuration, as the example above does).
 
-Module mode never touches your `logging` handlers or the root logger — your
+Module mode never touches your `logging` handlers or the root logger - your
 application's logging config stays in charge. To see progress messages:
 
 ```python
@@ -297,7 +297,7 @@ snapshots that make `--apply` reversible.
     src-auth-perms-sync sync-saml-orgs --users-without-explicit-perms
     ```
 
-    - Same user filters as `get` and `set`; a mode flag is required — there
+    - Same user filters as `get` and `set`; a mode flag is required - there
       is no bare `sync-saml-orgs`
 
 ### Org sync behavior
@@ -305,14 +305,14 @@ snapshots that make `--apply` reversible.
 - Org names are `synced-<configID>-<group name>` (non-alphanumeric characters
   become `-`). The `synced-` prefix marks tool ownership: the sync only ever
   modifies orgs whose name carries it, so manually created orgs are never touched.
-- The org sync mode is always explicit — no surprises:
+- The org sync mode is always explicit - no surprises:
   - **Full** (`sync-saml-orgs --full`, or `set --full` / `--repos*`
     `--sync-saml-orgs`): converges every synced org against all users. A synced
     org whose SAML group disappeared has all members removed, but the org itself
     is kept (its settings survive in case the group comes back).
   - **Scoped** (user filters on `sync-saml-orgs`, or `set --users` /
     `--users-without-explicit-perms` / `--created-after` with
-    `--sync-saml-orgs`): syncs org membership for exactly the selected users —
+    `--sync-saml-orgs`): syncs org membership for exactly the selected users -
     per-user additions AND removals, computed from each user's own SAML
     assertion and org list. Other users' memberships never change, and no full
     user scan or org member listing is needed, so API traffic stays
@@ -326,16 +326,16 @@ Run `src-auth-perms-sync --help` for options
 
 ```text
 src-auth-perms-sync-runs/<src_endpoint>/
-├── auth-providers.yaml
-├── code-hosts.yaml
-├── maps.yaml
-└── runs
-    └── timestamp-command
-        ├── before.json
-        ├── after.json
-        ├── diff.json
-        ├── log.json
-        └── maps.yaml
+|-- auth-providers.yaml
+|-- code-hosts.yaml
+|-- maps.yaml
+`-- runs
+    `-- timestamp-command
+        |-- before.json
+        |-- after.json
+        |-- diff.json
+        |-- log.json
+        `-- maps.yaml
 ```
 
 - The `src-auth-perms-sync-runs` dir is created under your current working directory
@@ -353,4 +353,4 @@ src-auth-perms-sync-runs/<src_endpoint>/
   - An `after.json` file, capturing the new state
   - A `diff.json` file, a shorter, reviewable file containing the diffs between before and after
 
-<!-- HUMAN-MAINTAINED SECTION END — DO NOT EDIT ABOVE -->
+<!-- HUMAN-MAINTAINED SECTION END - DO NOT EDIT ABOVE -->

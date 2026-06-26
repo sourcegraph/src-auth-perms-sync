@@ -20,8 +20,8 @@ def _strip_redacted(value: Any) -> Any:
     Sourcegraph's `ExternalService.config` resolver replaces secrets with
     that literal sentinel before returning the JSONC blob (see
     internal/types/secret.go in sourcegraph/sourcegraph). Some redactions
-    live in nested arrays — e.g. GitHub `webhooks[].secret`,
-    `gitSSHCredential.privateKey` — so the strip is recursive.
+    live in nested arrays - e.g. GitHub `webhooks[].secret`,
+    `gitSSHCredential.privateKey` - so the strip is recursive.
 
     Lists / scalars pass through unchanged. The redaction sentinel itself,
     if it appears as a top-level scalar (it shouldn't, but defensively),
@@ -56,22 +56,22 @@ def auth_provider_to_yaml(
     `src/src_auth_perms_sync/shared/site_config.py`). Any
     fields it carries that aren't already emitted from GraphQL are
     surfaced verbatim, so operators see the full provider config in the
-    YAML — e.g. `identityProviderMetadataURL`, `serviceProviderIssuer`,
+    YAML - e.g. `identityProviderMetadataURL`, `serviceProviderIssuer`,
     `requireEmailDomain`, `allowSignup`. Order: GraphQL-derived identity
     keys first, then site-config extras, then observation-derived metadata.
 
-    For SAML providers, `saml_group_user_counts` (group name → distinct
+    For SAML providers, `saml_group_user_counts` (group name -> distinct
     user count) is ALWAYS surfaced under `samlGroupUserCounts:`, even
     when the mapping is empty. The empty case (`{}`) tells the operator
     the feature is supported but the IdP didn't release any
     `groupsAttributeName` (default `groups`) claim in this provider's
-    assertions — typically because the IdP hasn't been configured to do
+    assertions - typically because the IdP hasn't been configured to do
     so. Operators authoring `authProvider.samlGroup` mapping rules can use this
     field to size groups before writing rules, or to learn that they
     need to fix their IdP first. Pass `None` (the default for non-SAML
     providers) to omit the field entirely.
 
-    Empty-string fields are omitted — the builtin provider has no
+    Empty-string fields are omitted - the builtin provider has no
     serviceID / clientID / configID, so those keys would just be noise.
     """
     rendered: dict[str, Any] = {"type": provider["serviceType"]}
@@ -118,7 +118,7 @@ def count_users_per_provider(
         (they have a password set on the builtin provider).
 
     A user can therefore be counted under multiple providers (e.g. SAML +
-    builtin) — this matches reality: such a user can sign in either way.
+    builtin) - this matches reality: such a user can sign in either way.
     """
     seen: dict[tuple[str, str, str], set[str]] = {}
     for user in users:
@@ -242,7 +242,7 @@ def _dump_readonly_discovery_yaml(
 def create_maps_yaml_if_missing(path: Path) -> bool:
     """Create the operator-edited maps file once, preserving existing files."""
     content = (
-        "# Auth provider → code host connection mapping rules\n"
+        "# Auth provider -> code host connection mapping rules\n"
         "# Maintain this file, using values from auth-providers.yaml "
         "and code-hosts.yaml as references\n"
         "\n"

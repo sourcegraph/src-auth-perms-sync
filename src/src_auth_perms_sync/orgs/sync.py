@@ -85,7 +85,7 @@ def _load_organization_sync_state(
         if provider["serviceType"] == saml_groups.SAML_SERVICE_TYPE
     ]
     if not saml_providers:
-        log.warning("No SAML auth providers found — nothing to sync.")
+        log.warning("No SAML auth providers found - nothing to sync.")
         return None
     attribute_names_by_provider = saml_groups.attribute_names_by_provider_key(
         providers, saml_groups_attribute_name_by_config_id
@@ -104,7 +104,7 @@ def _load_organization_sync_state(
         # Truncated discovery: resolve target names individually and skip
         # orphaned-org cleanup this run.
         if not targets:
-            log.warning("No SAML group memberships found in user accountData — nothing to sync.")
+            log.warning("No SAML group memberships found in user accountData - nothing to sync.")
             return None
         current_user, current_states = _load_current_organization_states(
             client,
@@ -131,7 +131,7 @@ def _load_organization_sync_state(
         if not targets:
             log.warning(
                 "No SAML group memberships found in user accountData "
-                "and no synced orgs exist — nothing to sync."
+                "and no synced orgs exist - nothing to sync."
             )
             return None
         current_states = {
@@ -179,7 +179,7 @@ def _load_scoped_organization_sync_state(
 
     Each user's `accountData` is the complete truth for that user's SAML
     groups, and their own org list is the complete truth for their current
-    synced-org memberships — so additions AND removals are both safe per
+    synced-org memberships - so additions AND removals are both safe per
     user. Users outside the scope are never touched, and neither full user
     streams nor org member pages are loaded.
     """
@@ -217,7 +217,7 @@ def _load_scoped_organization_sync_state(
         len(target.desired_members_by_id) for target in targets.values()
     )
     if not targets:
-        log.info("Selected user(s) hold no SAML group or synced org memberships — nothing to sync.")
+        log.info("Selected user(s) hold no SAML group or synced org memberships - nothing to sync.")
         return None
 
     # Org IDs for orgs the scoped users belong to come from their own org
@@ -307,7 +307,7 @@ def _log_organization_sync_plan(sync_state: _OrganizationSyncState) -> None:
         len(sync_state.plan["removals"]),
     )
     log.info(
-        "Diff (current → desired):\n%s",
+        "Diff (current -> desired):\n%s",
         _render_organization_diff(sync_state.before_snapshot, sync_state.expected_snapshot),
     )
 
@@ -448,7 +448,7 @@ def _finish_organization_apply_with_backup(
     )
     if current_user_after["id"] != sync_state.current_user["id"]:
         log.warning(
-            "Current user changed during org sync (%s → %s); validation still uses org members.",
+            "Current user changed during org sync (%s -> %s); validation still uses org members.",
             sync_state.current_user["username"],
             current_user_after["username"],
         )

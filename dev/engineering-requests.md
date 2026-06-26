@@ -88,15 +88,15 @@ Observed during the concurrent captures:
 - `pgsql-0` CPU (`kubectl top`): 7,636-7,683 millicores of 8,000 (saturated).
 - `frontend` / `gitserver` CPU: 124-138m / 2-3m (idle bystanders).
 - `pg_stat_activity`: 29 active statements, all
-  `permsStore.ListUserPermissions`, **zero wait events** — pure CPU, no lock
+  `permsStore.ListUserPermissions`, **zero wait events** - pure CPU, no lock
   contention.
 - `pg_stat_statements`: `permsStore.ListUserPermissions` at 24,026 calls,
   27,635.6s total, 1,150ms mean.
-- Per-client capture throughput: 23 users/sec solo → 2-4 users/sec at 4-way
+- Per-client capture throughput: 23 users/sec solo -> 2-4 users/sec at 4-way
   concurrency.
-- Aggregate throughput: 8-16 users/sec at 4-way — **below the 23 users/sec a
+- Aggregate throughput: 8-16 users/sec at 4-way - **below the 23 users/sec a
   single client achieves alone** (negative scaling).
-- ALB (CloudWatch): no 5xx, no rejected connections — the edge and frontend
+- ALB (CloudWatch): no 5xx, no rejected connections - the edge and frontend
   are not the bottleneck.
 - Collateral failure: the fifth client's queries exceeded the 60s read timeout
   under this load; 5 retry attempts exhausted; its run failed with exit 1.
@@ -144,7 +144,7 @@ from `github.com/sourcegraph/sourcegraph`:
 Measured on the 10k-user / 50k-repo test instance, the presence probe
 `User.permissionsInfo.repositories(source: API, first: 1)` costs 225-350ms of
 server work per user, and alias batching barely helps (21,004 single-user
-probes averaged 351.6ms; 25-user batches averaged 5,616ms ≈ 224.7ms/user). A
+probes averaged 351.6ms; 25-user batches averaged 5,616ms ~ 224.7ms/user). A
 single `set --users-without-explicit-perms` run probing all 10,002 users at
 batch size 1 spent 4,269s of its 5,210s total in these probes.
 
@@ -158,9 +158,9 @@ Reading the resolver code in `github.com/sourcegraph/sourcegraph` explains why
   `updatedAt` fields. The rows are discarded afterward.
 - `userPermissionsInfoResolver.Repositories` (permissions_info.go) builds a
   CTE (`reposPermissionsInfoQueryFmt` in perms_store.go) that **materializes
-  every repo accessible to the user** — a full `repo` ⋈
-  `external_service_repos` ⋈ `external_services` join with the correlated
-  authz `EXISTS` predicate and an `ORDER BY` — before the outer query applies
+  every repo accessible to the user** - a full `repo` join
+  `external_service_repos` join `external_services` join with the correlated
+  authz `EXISTS` predicate and an `ORDER BY` - before the outer query applies
   `urp.source = 'API'` and the LIMIT. `first: 1` becomes `LIMIT 2` on the
   outer query only; the CTE is not short-circuited.
 - Requesting `totalCount` adds a second independent execution of the same CTE
@@ -180,7 +180,7 @@ Client-side mitigation shipped in `src-auth-perms-sync` (2026-06-12):
 locally BEFORE probing, so probes scale with the rule-matched user count
 instead of the instance's user count, and user hydration runs as aliased
 25-user batches instead of one `UserByID` request per user. The remaining
-inherent cost — ~225ms x probed user — is exactly what the
+inherent cost - ~225ms x probed user - is exactly what the
 presence/filter API requested below would remove, and
 `get --users-without-explicit-perms` still has to probe every active user
 because its semantics are instance-wide.

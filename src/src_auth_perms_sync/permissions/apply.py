@@ -34,7 +34,7 @@ class CircuitBreaker:
     failure). Once `failure_rate` over that window exceeds
     `failure_threshold` AND we have at least `min_samples` outcomes
     recorded, the breaker opens and `is_open()` returns True for the rest
-    of the run (no half-open / reset logic — once we decide the backend
+    of the run (no half-open / reset logic - once we decide the backend
     is too unhealthy, we stay tripped).
 
     Designed to bail out of a hopeless run (e.g., backend down, severely
@@ -130,13 +130,13 @@ def set_repo_permissions(
     """Overwrite a repo's explicit permissions with `user_perms` in one call.
 
     `user_perms` is a list of `{"bindID": <username>, "permission": "READ"}`.
-    bindID is always the Sourcegraph username — validate_site_config()
+    bindID is always the Sourcegraph username - validate_site_config()
     enforces that the site is configured with `bindID: "username"`.
 
     Retries on transient transport failures (network errors, HTTP 408/429/5xx)
-    happen inside the shared Sourcegraph client — every GraphQL call goes through the
+    happen inside the shared Sourcegraph client - every GraphQL call goes through the
     same retry plumbing. Application-level GraphQL errors (auth, validation,
-    schema) are NOT retried — they propagate on the first attempt.
+    schema) are NOT retried - they propagate on the first attempt.
     """
     with src.span(
         "set_repo_perms",
@@ -233,7 +233,7 @@ def _apply_permission_changes(
                 succeeded += 1
                 breaker.record(success=True)
                 log.debug(
-                    "  OK %s %s → %s (id=%d).",
+                    "  OK %s %s -> %s (id=%d).",
                     action,
                     change.username,
                     change.repo_name,
@@ -246,7 +246,7 @@ def _apply_permission_changes(
             if is_missing_mutation_resource_error(exception):
                 skipped += 1
                 log.warning(
-                    "  SKIP %s %s → %s (id=%d): repo/user no longer exists: %s",
+                    "  SKIP %s %s -> %s (id=%d): repo/user no longer exists: %s",
                     action,
                     change.username,
                     change.repo_name,
@@ -257,7 +257,7 @@ def _apply_permission_changes(
             failed += 1
             breaker.record(success=False)
             log.error(
-                "  FAIL %s %s → %s (id=%d): %s",
+                "  FAIL %s %s -> %s (id=%d): %s",
                 action,
                 change.username,
                 change.repo_name,
@@ -369,7 +369,7 @@ def _apply_repo_overwrite_plans(
                 succeeded += 1
                 breaker.record(success=True)
                 log.info(
-                    "  OK %s (id=%d) — %d users.",
+                    "  OK %s (id=%d) - %d users.",
                     overwrite.repository_name,
                     src.decode_repository_id(overwrite.repository_id),
                     len(overwrite.usernames),

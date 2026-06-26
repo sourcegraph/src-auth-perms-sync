@@ -32,7 +32,7 @@ classifiers = [
 dependencies = [
     "json5>=0.15.0",
     "pyyaml>=6.0.3",
-    "src-py-lib[otel]==0.3.0",
+    "src-py-lib[otel]==0.3.1",
 ]
 keywords = [
     "Sourcegraph"
@@ -63,9 +63,7 @@ line-length = 100
 extend-exclude = ["src-auth-perms-sync-runs"]
 
 [tool.ruff.lint]
-# RUF001-RUF003 ban confusable Unicode (en dash, multiplication sign,
-# lookalike letters) in Python strings, comments, and docstrings;
-# tests/confusables.py applies the same policy to non-Python files.
+# tests/unicode_scan.py bans non-ASCII characters in tracked text files.
 select = ["E", "F", "I", "B", "UP", "SIM", "RUF001", "RUF002", "RUF003"]
 
 [tool.uv]
