@@ -138,7 +138,7 @@ SAML_AUTH_PROVIDERS_QUERY = """
 query TestSamlAuthProviders {
   site {
     authProviders {
-      nodes { serviceType serviceID clientID configID }
+      nodes { serviceType serviceID clientID displayName configID }
     }
   }
 }
@@ -1951,12 +1951,14 @@ class TestSuite:
             for group in groups:
                 members_by_group.setdefault(group, set()).add(username)
         expected_members_by_organization = {
-            organization_name_for_saml_group(provider["configID"], group): usernames
+            organization_name_for_saml_group(provider["displayName"], group): usernames
             for group, usernames in members_by_group.items()
         }
 
         seeded_group = min(members_by_group)
-        seeded_organization = organization_name_for_saml_group(provider["configID"], seeded_group)
+        seeded_organization = organization_name_for_saml_group(
+            provider["displayName"], seeded_group
+        )
         # The sync must REMOVE this member: no SAML group puts them in the org.
         unjustified_member = next(
             username
