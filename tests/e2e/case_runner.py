@@ -721,7 +721,10 @@ class FakeSourcegraphClient:
     def _remove_user_from_organization(self, variables: dict[str, object]) -> None:
         organization = self._organization_by_graphql_id(variables["organization"])
         username = self._username_from_user_graphql_id(variables["user"])
-        self._organization_members_by_id[organization["id"]].discard(username)
+        members = self._organization_members_by_id[organization["id"]]
+        if len(members) == 1 and username != self._current_username:
+            raise src.GraphQLError("you can't remove the only member of an organization")
+        members.discard(username)
         self._mutation_count += 1
 
     def _organization_by_graphql_id(self, organization_id_value: object) -> FixtureOrganization:
