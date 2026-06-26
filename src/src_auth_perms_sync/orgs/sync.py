@@ -618,7 +618,7 @@ def cmd_sync_saml_orgs(
     """Create/update Sourcegraph orgs from discovered SAML groups.
 
     Org names are deterministic and config-free: the Sourcegraph-safe form
-    of `synced-<auth provider configID>-<group name>`. Invalid org-name
+    of `synced-<auth provider display name>-<group name>`. Invalid org-name
     characters are converted to `-`; any resulting name collision fails
     before mutation so we never merge unrelated SAML groups accidentally.
     The `synced-` prefix marks tool ownership: only orgs carrying it are
@@ -778,6 +778,7 @@ def _record_saml_group_user_memberships(
             targets,
             collisions,
             membership.provider_config_id,
+            membership.provider_display_name,
             membership.group_name,
             user,
         )
@@ -787,10 +788,11 @@ def _record_target_organization_membership(
     targets: dict[str, organization_types.TargetOrganization],
     collisions: set[str],
     provider_config_id: str,
+    provider_display_name: str,
     group_name: str,
     user: shared_types.SamlGroupUser | shared_types.ScopedSamlGroupUser,
 ) -> None:
-    organization_name = organization_name_for_saml_group(provider_config_id, group_name)
+    organization_name = organization_name_for_saml_group(provider_display_name, group_name)
     existing_target = targets.get(organization_name)
     if existing_target is not None and (
         existing_target.provider_config_id != provider_config_id

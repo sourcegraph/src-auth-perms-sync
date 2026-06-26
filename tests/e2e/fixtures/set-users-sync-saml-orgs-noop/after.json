@@ -1,6 +1,5 @@
 {
   "endpoint": "https://fixture.sourcegraph.test",
-  "currentUsername": "org_admin_09990",
   "authProviders": [
     {
       "serviceType": "builtin",
@@ -91,19 +90,25 @@
       "id": 101,
       "name": "test-repo-49981",
       "externalServiceID": 1,
-      "explicitPermissionsUsers": ["test_user_09991"]
+      "explicitPermissionsUsers": [
+        "test_user_09991"
+      ],
+      "pendingBindIDs": []
     }
   ],
   "organizations": [
     {
       "id": 2,
       "name": "synced-Okta-engineering",
-      "members": ["test_user_09991"]
+      "members": [
+        "test_user_09991"
+      ]
     },
     {
       "id": 1,
-      "name": "synced-okta-stale",
-      "members": ["test_user_09992"]
+      "name": "synced-okta-engineering",
+      "members": []
     }
-  ]
+  ],
+  "currentUsername": "org_admin_09990"
 }
