@@ -33,7 +33,7 @@ def make_run_paths(directory: Path, *, write_files: bool) -> backups.RunPaths:
         artifacts_dir=directory / "artifacts",
         endpoint_directory=endpoint_directory,
         maps_path=directory / "maps.yaml",
-        code_hosts_path=endpoint_directory / "code-hosts.yaml",
+        code_host_connections_path=endpoint_directory / "code-host-connections.yaml",
         auth_providers_path=endpoint_directory / "auth-providers.yaml",
         run_directory=endpoint_directory / "runs" / "2026-06-12-00-00-00-get",
         write_files=write_files,
@@ -153,11 +153,14 @@ class CmdGetFileBehaviorTests(unittest.TestCase):
             self.assertEqual({maps_path}, set(directory.rglob("*")))
 
         self.assertIsNotNone(command_data.auth_provider_views)
-        self.assertIsNotNone(command_data.code_host_views)
+        self.assertIsNotNone(command_data.code_host_connection_views)
         assert command_data.auth_provider_views is not None
-        assert command_data.code_host_views is not None
-        self.assertEqual("github", command_data.auth_provider_views[0]["type"])
-        self.assertEqual("GitHub Enterprise", command_data.code_host_views[0]["displayName"])
+        assert command_data.code_host_connection_views is not None
+        self.assertEqual("github", command_data.auth_provider_views[0]["authProvider"]["type"])
+        self.assertEqual(
+            "GitHub Enterprise",
+            command_data.code_host_connection_views[0]["codeHostConnection"]["displayName"],
+        )
 
     def test_writing_run_dumps_yaml_matching_the_returned_views(self) -> None:
         with tempfile.TemporaryDirectory() as directory_name:
@@ -166,12 +169,17 @@ class CmdGetFileBehaviorTests(unittest.TestCase):
 
             command_data = run_cmd_get(run_paths, do_backup=False)
 
-            self.assertTrue(run_paths.code_hosts_path.is_file())
+            self.assertTrue(run_paths.code_host_connections_path.is_file())
             self.assertTrue(run_paths.auth_providers_path.is_file())
-            code_hosts_on_disk = yaml.safe_load(run_paths.code_hosts_path.read_text())
+            code_host_connections_on_disk = yaml.safe_load(
+                run_paths.code_host_connections_path.read_text()
+            )
             auth_providers_on_disk = yaml.safe_load(run_paths.auth_providers_path.read_text())
 
-        self.assertEqual(command_data.code_host_views, code_hosts_on_disk["codeHostConnections"])
+        self.assertEqual(
+            command_data.code_host_connection_views,
+            code_host_connections_on_disk["codeHostConnections"],
+        )
         self.assertEqual(command_data.auth_provider_views, auth_providers_on_disk["authProviders"])
 
 

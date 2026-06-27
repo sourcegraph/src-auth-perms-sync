@@ -16,7 +16,7 @@ def make_run_paths(run_directory: Path) -> backups.RunPaths:
         artifacts_dir=run_directory.parent,
         endpoint_directory=run_directory.parent,
         maps_path=run_directory.parent / "maps.yaml",
-        code_hosts_path=run_directory.parent / "code-hosts.yaml",
+        code_host_connections_path=run_directory.parent / "code-host-connections.yaml",
         auth_providers_path=run_directory.parent / "auth-providers.yaml",
         run_directory=run_directory,
     )
@@ -140,8 +140,8 @@ class ResolveRunPathsTests(unittest.TestCase):
             run_paths = self.resolve(Path(directory_name))
 
         self.assertEqual(
-            run_paths.endpoint_directory / backups.CODE_HOSTS_FILE_NAME,
-            run_paths.code_hosts_path,
+            run_paths.endpoint_directory / backups.CODE_HOST_CONNECTIONS_FILE_NAME,
+            run_paths.code_host_connections_path,
         )
         self.assertEqual(
             run_paths.endpoint_directory / backups.AUTH_PROVIDERS_FILE_NAME,

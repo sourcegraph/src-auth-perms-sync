@@ -12,7 +12,7 @@ ARTIFACTS_DIR_NAME = "src-auth-perms-sync-runs"
 DEFAULT_MAPS_FILE_NAME = "maps.yaml"
 LOG_FILE_NAME = "log.json"
 RUNS_DIR_NAME = "runs"
-CODE_HOSTS_FILE_NAME = "code-hosts.yaml"
+CODE_HOST_CONNECTIONS_FILE_NAME = "code-host-connections.yaml"
 AUTH_PROVIDERS_FILE_NAME = "auth-providers.yaml"
 
 
@@ -30,7 +30,7 @@ class RunPaths:
     artifacts_dir: Path
     endpoint_directory: Path
     maps_path: Path
-    code_hosts_path: Path
+    code_host_connections_path: Path
     auth_providers_path: Path
     run_directory: Path
     write_files: bool = True
@@ -95,7 +95,7 @@ def resolve_run_paths(
         artifacts_dir=resolved_artifacts_dir,
         endpoint_directory=endpoint_directory,
         maps_path=resolved_maps_path,
-        code_hosts_path=endpoint_directory / CODE_HOSTS_FILE_NAME,
+        code_host_connections_path=endpoint_directory / CODE_HOST_CONNECTIONS_FILE_NAME,
         auth_providers_path=endpoint_directory / AUTH_PROVIDERS_FILE_NAME,
         run_directory=run_directory,
         write_files=write_files,

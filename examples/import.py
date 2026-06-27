@@ -27,9 +27,9 @@ config = src.Config(
 # Discover the instance's auth providers and code hosts
 discovery = src.Get(config)
 for auth_provider in discovery.auth_providers:
-    print("auth provider:", auth_provider.get("displayName"))
-for code_host in discovery.code_hosts:
-    print("code host:", code_host.get("displayName"))
+    print("auth provider:", auth_provider["authProvider"].get("displayName"))
+for code_host_connection in discovery.code_host_connections:
+    print("code host:", code_host_connection["codeHostConnection"].get("displayName"))
 
 # Configure your mapping rules
 mapping_rules: list[src.MappingRule] = [

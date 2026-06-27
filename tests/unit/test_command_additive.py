@@ -107,7 +107,7 @@ def make_run_paths(directory: Path, maps_path: Path) -> backups.RunPaths:
         artifacts_dir=directory / "artifacts",
         endpoint_directory=endpoint_directory,
         maps_path=maps_path,
-        code_hosts_path=endpoint_directory / "code-hosts.yaml",
+        code_host_connections_path=endpoint_directory / "code-host-connections.yaml",
         auth_providers_path=endpoint_directory / "auth-providers.yaml",
         run_directory=directory / "run-artifacts",
     )
@@ -158,7 +158,7 @@ maps:
             self.assertEqual([], client.repo_service_ids)
             self.assertEqual(0, client.explicit_repo_fetch_count)
 
-    def test_additive_users_loads_only_referenced_code_hosts(self) -> None:
+    def test_additive_users_loads_only_referenced_code_host_connections(self) -> None:
         first_service = make_external_service(1, "GitHub Enterprise")
         second_service = make_external_service(2, "GitLab")
         client = _AdditiveCommandClient(

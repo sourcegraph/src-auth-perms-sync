@@ -48,7 +48,7 @@ def make_run_paths() -> backups.RunPaths:
         artifacts_dir=Path("artifacts"),
         endpoint_directory=Path("artifacts/sourcegraph.example.com"),
         maps_path=Path("maps.yaml"),
-        code_hosts_path=Path("code-hosts.yaml"),
+        code_host_connections_path=Path("code-host-connections.yaml"),
         auth_providers_path=Path("auth-providers.yaml"),
         run_directory=Path("artifacts/sourcegraph.example.com/runs/run"),
     )
@@ -779,7 +779,9 @@ class CliConfigTests(unittest.TestCase):
         with (
             mock.patch.object(permissions_command, "load_discovery", return_value=([], [], {})),
             mock.patch.object(permissions_command, "load_selected_users", return_value=[]),
-            mock.patch.object(permissions_command.permissions_maps, "dump_code_hosts_yaml"),
+            mock.patch.object(
+                permissions_command.permissions_maps, "dump_code_host_connections_yaml"
+            ),
             mock.patch.object(permissions_command.permissions_maps, "dump_auth_providers_yaml"),
             mock.patch.object(
                 permissions_command.permission_snapshot, "build_snapshot"

@@ -46,62 +46,67 @@ def auth_provider_to_yaml(
 ) -> dict[str, Any]:
     """Render an auth provider for the YAML config.
 
-    Keys mirror the Sourcegraph site-config schema (`type`, `clientID`,
-    `displayName`, `configID`). `serviceID` has no direct site-config field
-    so we use the GraphQL name. `isBuiltin` is dropped (redundant with
-    `type == "builtin"`). `userCount` is our addition.
+    Returns a two-block entry:
+
+      - `authProvider:` holds exactly the fields a `maps.yaml` rule can
+        match under `users.authProvider`, so the block is copy-paste ready.
+        Keys mirror the Sourcegraph site-config schema (`type`, `clientID`,
+        `displayName`, `configID`); `serviceID` has no direct site-config
+        field so we use the GraphQL name. `isBuiltin` is dropped (redundant
+        with `type == "builtin"`).
+      - `info:` holds read-only context that mapping rules cannot match on
+        (`userCount`, `samlGroupUserCounts`, and any non-secret
+        site-config extras).
 
     `site_config_entry`, when provided, is the matching `auth.providers[*]`
     JSONC entry (already stripped of redacted/secret fields by
-    `src/src_auth_perms_sync/shared/site_config.py`). Any
-    fields it carries that aren't already emitted from GraphQL are
-    surfaced verbatim, so operators see the full provider config in the
-    YAML - e.g. `identityProviderMetadataURL`, `serviceProviderIssuer`,
-    `requireEmailDomain`, `allowSignup`. Order: GraphQL-derived identity
-    keys first, then site-config extras, then observation-derived metadata.
+    `src/src_auth_perms_sync/shared/site_config.py`). Any fields it carries
+    that aren't already matchable go under `info:`, so operators still see
+    the full provider config - e.g. `identityProviderMetadataURL`,
+    `serviceProviderIssuer`, `requireEmailDomain`, `allowSignup`.
 
     For SAML providers, `saml_group_user_counts` (group name -> distinct
-    user count) is ALWAYS surfaced under `samlGroupUserCounts:`, even
-    when the mapping is empty. The empty case (`{}`) tells the operator
-    the feature is supported but the IdP didn't release any
+    user count) is ALWAYS surfaced under `info.samlGroupUserCounts:`, even
+    when the mapping is empty. Its KEYS are the valid values for an
+    `authProvider.samlGroup` mapping rule. The empty case (`{}`) tells the
+    operator the feature is supported but the IdP didn't release any
     `groupsAttributeName` (default `groups`) claim in this provider's
     assertions - typically because the IdP hasn't been configured to do
-    so. Operators authoring `authProvider.samlGroup` mapping rules can use this
-    field to size groups before writing rules, or to learn that they
-    need to fix their IdP first. Pass `None` (the default for non-SAML
-    providers) to omit the field entirely.
+    so. Pass `None` (the default for non-SAML providers) to omit the field.
 
     Empty-string fields are omitted - the builtin provider has no
     serviceID / clientID / configID, so those keys would just be noise.
     """
-    rendered: dict[str, Any] = {"type": provider["serviceType"]}
+    selector: dict[str, Any] = {"type": provider["serviceType"]}
     if provider["serviceID"]:
-        rendered["serviceID"] = provider["serviceID"]
+        selector["serviceID"] = provider["serviceID"]
     if provider["clientID"]:
-        rendered["clientID"] = provider["clientID"]
-    rendered["displayName"] = provider["displayName"]
+        selector["clientID"] = provider["clientID"]
+    selector["displayName"] = provider["displayName"]
     if provider["configID"]:
-        rendered["configID"] = provider["configID"]
+        selector["configID"] = provider["configID"]
+
+    info: dict[str, Any] = {}
     if site_config_entry is not None:
-        # Merge in every non-secret site-config field that isn't already
-        # represented by a GraphQL-derived key above. The GraphQL value
-        # wins on overlaps (`type`, `displayName`, `clientID`, `configID`)
-        # since it's the resolved view the server actually uses.
+        # Surface every non-secret site-config field that isn't already a
+        # matchable selector key. The GraphQL value wins on overlaps
+        # (`type`, `displayName`, `clientID`, `configID`) since it's the
+        # resolved view the server actually uses.
         for field_name, value in site_config_entry.items():
-            if field_name in rendered:
+            if field_name in selector:
                 continue
-            rendered[field_name] = value
-    rendered["userCount"] = user_count
+            info[field_name] = value
+    info["userCount"] = user_count
     if saml_group_user_counts is not None:
         # Sort by descending count, then group name, so the largest groups
         # surface first when an operator skims the file.
-        rendered["samlGroupUserCounts"] = dict(
+        info["samlGroupUserCounts"] = dict(
             sorted(
                 saml_group_user_counts.items(),
                 key=lambda item: (-item[1], item[0]),
             )
         )
-    return rendered
+    return {"authProvider": selector, "info": info}
 
 
 BUILTIN_PROVIDER_KEY: tuple[str, str, str] = ("builtin", "", "")
@@ -131,48 +136,31 @@ def count_users_per_provider(
 
 
 def external_service_to_yaml(service: permission_types.ExternalService) -> dict[str, Any]:
-    """Render a code host for the YAML config.
+    """Render a code host connection for the YAML config.
 
-    Keys mirror the human-readable Sourcegraph GraphQL `ExternalService`
-    fields that maps can match. The opaque GraphQL `id` is omitted;
-    maps should identify code host connections with `kind`, `displayName`,
-    `url`, and/or `username`.
+    Returns a two-block entry:
+
+      - `codeHostConnection:` holds exactly the fields a `maps.yaml` rule
+        can match under `repos.codeHostConnection` (`kind`, `displayName`,
+        `url`, and `username` when present), so the block is copy-paste
+        ready. The opaque GraphQL `id` is omitted.
+      - `info:` holds read-only context that mapping rules cannot match on
+        (repo count, timestamps, sync state, creator, etc.).
 
     The JSONC `config` blob is parsed only to lift its top-level
-    `username` into the read-only discovery YAML. The rest of `config`
-    is intentionally omitted because maps no longer support matching
-    code-host connections by arbitrary config subtrees.
+    `username` into the matchable block. The rest of `config` is
+    intentionally omitted because maps no longer support matching
+    code host connections by arbitrary config subtrees.
 
-    Optional / nullable fields are omitted when null/empty so the YAML
+    Optional / nullable info fields are omitted when null/empty so the YAML
     stays readable. Booleans are always emitted (true or false) so the
     discovered state is explicit.
     """
-    rendered: dict[str, Any] = {
+    selector: dict[str, Any] = {
         "kind": service["kind"],
         "displayName": service["displayName"],
         "url": service["url"],
-        "repoCount": service["repoCount"],
-        "createdAt": service["createdAt"],
-        "updatedAt": service["updatedAt"],
-        "unrestricted": bool(service.get("unrestricted")),
-        "suspended": bool(service.get("suspended")),
-        "hasConnectionCheck": bool(service.get("hasConnectionCheck")),
-        "supportsRepoExclusion": bool(service.get("supportsRepoExclusion")),
     }
-    if service.get("lastSyncAt"):
-        rendered["lastSyncAt"] = service["lastSyncAt"]
-    if service.get("nextSyncAt"):
-        rendered["nextSyncAt"] = service["nextSyncAt"]
-    if service.get("lastSyncError"):
-        rendered["lastSyncError"] = service["lastSyncError"]
-    if service.get("warning"):
-        rendered["warning"] = service["warning"]
-    creator = service.get("creator")
-    if creator and creator.get("username"):
-        rendered["creator"] = creator["username"]
-    last_updater = service.get("lastUpdater")
-    if last_updater and last_updater.get("username"):
-        rendered["lastUpdater"] = last_updater["username"]
     raw_config = service.get("config")
     if raw_config:
         try:
@@ -184,29 +172,60 @@ def external_service_to_yaml(service: permission_types.ExternalService) -> dict[
                 config_values = cast(dict[str, Any], parsed_config)
                 username = config_values.get("username")
                 if isinstance(username, str) and username:
-                    rendered["username"] = username
-    return rendered
+                    selector["username"] = username
+
+    info: dict[str, Any] = {
+        "repoCount": service["repoCount"],
+        "createdAt": service["createdAt"],
+        "updatedAt": service["updatedAt"],
+        "unrestricted": bool(service.get("unrestricted")),
+        "suspended": bool(service.get("suspended")),
+        "hasConnectionCheck": bool(service.get("hasConnectionCheck")),
+        "supportsRepoExclusion": bool(service.get("supportsRepoExclusion")),
+    }
+    if service.get("lastSyncAt"):
+        info["lastSyncAt"] = service["lastSyncAt"]
+    if service.get("nextSyncAt"):
+        info["nextSyncAt"] = service["nextSyncAt"]
+    if service.get("lastSyncError"):
+        info["lastSyncError"] = service["lastSyncError"]
+    if service.get("warning"):
+        info["warning"] = service["warning"]
+    creator = service.get("creator")
+    if creator and creator.get("username"):
+        info["creator"] = creator["username"]
+    last_updater = service.get("lastUpdater")
+    if last_updater and last_updater.get("username"):
+        info["lastUpdater"] = last_updater["username"]
+    return {"codeHostConnection": selector, "info": info}
 
 
 def dump_auth_providers_yaml(path: Path, providers: list[dict[str, Any]]) -> None:
     header = (
         "# Sourcegraph auth provider configs.\n"
         "# Generated/refreshed by:  src-auth-perms-sync get\n"
-        "# Use these values when writing maps.yaml rules under `users.authProvider`.\n"
+        "# Each entry's `authProvider:` block is copy-paste ready: drop it under\n"
+        "#   `users.authProvider` in a maps.yaml rule to match those users.\n"
+        "# `info:` is read-only context that rules cannot match on. The KEYS of\n"
+        "#   `info.samlGroupUserCounts` are the valid `authProvider.samlGroup` values.\n"
         "# This file is read-only reference data; edit maps.yaml, not this file.\n"
     )
     _dump_readonly_discovery_yaml(path, header, "authProviders", providers)
 
 
-def dump_code_hosts_yaml(path: Path, code_hosts: list[dict[str, Any]]) -> None:
+def dump_code_host_connections_yaml(
+    path: Path, code_host_connections: list[dict[str, Any]]
+) -> None:
     header = (
         "# Sourcegraph code host connection configs.\n"
         "# Generated/refreshed by:  src-auth-perms-sync get\n"
-        "# Use these values when writing maps.yaml rules under `repos.codeHostConnection`.\n"
-        "# ExternalService.config.username is surfaced as top-level `username` when present.\n"
+        "# Each entry's `codeHostConnection:` block is copy-paste ready: drop it under\n"
+        "#   `repos.codeHostConnection` in a maps.yaml rule to match those repos.\n"
+        "#   `username` is lifted from ExternalService.config when present.\n"
+        "# `info:` is read-only context that rules cannot match on.\n"
         "# This file is read-only reference data; edit maps.yaml, not this file.\n"
     )
-    _dump_readonly_discovery_yaml(path, header, "codeHostConnections", code_hosts)
+    _dump_readonly_discovery_yaml(path, header, "codeHostConnections", code_host_connections)
 
 
 def _dump_readonly_discovery_yaml(
@@ -244,7 +263,7 @@ def create_maps_yaml_if_missing(path: Path) -> bool:
     content = (
         "# Auth provider -> code host connection mapping rules\n"
         "# Maintain this file, using values from auth-providers.yaml "
-        "and code-hosts.yaml as references\n"
+        "and code-host-connections.yaml as references\n"
         "\n"
         "maps:\n"
         "\n"
