@@ -690,6 +690,12 @@ def load_cli(argv: Sequence[str] | None = None) -> CliInput:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         allow_abbrev=False,
     )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"src-auth-perms-sync {_package_version()}",
+        help="Show the installed src-auth-perms-sync version and exit",
+    )
     subparsers = parser.add_subparsers(
         title="commands",
         metavar="COMMAND",
