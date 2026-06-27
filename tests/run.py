@@ -73,6 +73,19 @@ if TYPE_CHECKING:
     from tests.e2e.case_runner import FixtureRunResult, FixtureState
 
 FIXTURES_DIR = ROOT / "tests" / "e2e" / "fixtures"
+# Canonical synthetic-corpus maps.yaml the live harness seeds into a fresh
+# worktree's endpoint runs directory so the mutating permission cycles have a
+# valid maps file to apply. See ensure_live_maps_seed().
+LIVE_MAPS_SEED_PATH = ROOT / "tests" / "live-maps-seed.yaml"
+# Live checks that reach the pgsql pod over `kubectl exec` (and so need a
+# valid AWS SSO session). check_database_connectivity() probes the pod when
+# any of these is selected and skips them up front when it is unreachable.
+DATABASE_BACKED_LIVE_CHECKS = ("live: perms follow saml group change",)
+# When the pod is unreachable and the run is interactive, the harness offers
+# to refresh AWS SSO, then re-probes on this cadence until it succeeds.
+AWS_SSO_LOGIN_TIMEOUT_SECONDS = 300
+DATABASE_PROBE_RETRY_INTERVAL_SECONDS = 10
+DATABASE_PROBE_RETRY_TIMEOUT_SECONDS = 600
 TEST_LOGS_DIR = ROOT / "logs"
 LOG_PATH_PATTERN = re.compile(r"Writing log events to (.+?/log\.json)\.")
 STRUCTURED_EVENT_LINE_PATTERN = re.compile(r"^[.]*event=\S+\s*$")
@@ -880,6 +893,10 @@ class TestSuite:
     test_user: str = ""
     skipped_check_names: list[str] = field(default_factory=list[str])
     filter_matched_count: int = 0
+    # Set by check_database_connectivity(); None until the pgsql pod is probed.
+    # False means DB-backed live tests are skipped (the recorded probe failure
+    # still makes the run exit non-zero).
+    database_available: bool | None = None
 
     # -- bookkeeping --------------------------------------------------------
 
@@ -1436,6 +1453,7 @@ class TestSuite:
             return
         self.record("live prerequisites", "live", True, 0.0)
 
+        self.check_database_connectivity()
         self.check_live_hygiene()
         if self.select("wheel install smoke"):
             self.run_wheel_install_smoke()
@@ -1444,6 +1462,110 @@ class TestSuite:
         self.run_saml_group_change_check(environment)
         self.run_live_permission_cycles(environment)
         self.check_live_hygiene()
+
+    def check_database_connectivity(self) -> None:
+        """Probe the pgsql pod once, up front, so an expired AWS SSO session
+        is reported as a single early failure instead of crashing a later
+        DB-backed test mid-run.
+
+        Only DB-backed live tests need the pod (via `kubectl exec` against
+        EKS, which requires a valid AWS SSO session), so the probe is skipped
+        when none of them are selected. When the probe fails on an interactive
+        run, the harness refreshes AWS SSO and re-probes (see
+        recover_database_access). On unrecovered failure, DB-backed tests skip
+        themselves and the run still exits non-zero via this recorded failure.
+        """
+        label = "live: database connectivity"
+        if not self.test_selected(label, *DATABASE_BACKED_LIVE_CHECKS):
+            return
+        started = time.monotonic()
+        error = self.probe_database()
+        if error is not None and sys.stdin.isatty():
+            error = self.recover_database_access(error)
+        if error is None:
+            self.database_available = True
+            self.record(label, "live", True, time.monotonic() - started)
+        else:
+            self.database_available = False
+            self.record(
+                label, "live", False, time.monotonic() - started, database_error_detail(error)
+            )
+
+    def probe_database(self) -> str | None:
+        """Run `SELECT 1` on the pgsql pod; return None on success, else the error."""
+        from tests import setup as instance_setup
+
+        try:
+            kubectl_config = cast("dict[str, Any]", load_setup_config()["kubectl"])
+            instance_setup.run_sql(kubectl_config, "SELECT 1;", timeout_seconds=30)
+        except Exception as exception:
+            return str(exception)
+        return None
+
+    def recover_database_access(self, error: str) -> str | None:
+        """Refresh AWS SSO interactively, then re-probe until the pod responds.
+
+        Runs `aws sso login` once, then retries the probe every 10s for up to
+        10 minutes. Returns None once the pod is reachable, or the latest
+        error if SSO login could not run or the pod stayed unreachable.
+        """
+        log.warning("Database probe failed: %s", database_error_detail(error))
+        if not self.run_aws_sso_login():
+            return error
+        deadline = time.monotonic() + DATABASE_PROBE_RETRY_TIMEOUT_SECONDS
+        while True:
+            probe_error = self.probe_database()
+            if probe_error is None:
+                log.info("Database reachable after AWS SSO refresh.")
+                return None
+            if time.monotonic() >= deadline:
+                return probe_error
+            log.info(
+                "Database still unreachable; retrying in %ds (up to 10 min total)...",
+                DATABASE_PROBE_RETRY_INTERVAL_SECONDS,
+            )
+            time.sleep(DATABASE_PROBE_RETRY_INTERVAL_SECONDS)
+
+    def resolve_aws_profile(self) -> str | None:
+        """AWS profile for SSO login: AWS_PROFILE, then setup.yaml
+        kubectl.awsProfile, else None (the default profile)."""
+        profile = os.environ.get("AWS_PROFILE")
+        if profile:
+            return profile
+        kubectl_config = cast("dict[str, Any]", load_setup_config().get("kubectl") or {})
+        configured = kubectl_config.get("awsProfile")
+        return str(configured) if configured else None
+
+    def run_aws_sso_login(self) -> bool:
+        """Run `aws sso login` for the resolved profile; return True if it ran ok."""
+        command = ["aws", "sso", "login"]
+        profile = self.resolve_aws_profile()
+        if profile:
+            command += ["--profile", profile]
+        log.warning("Running `%s` - complete the browser prompt to continue...", " ".join(command))
+        try:
+            completed = subprocess.run(command, timeout=AWS_SSO_LOGIN_TIMEOUT_SECONDS, check=False)
+        except FileNotFoundError:
+            log.error("aws CLI not found; cannot refresh AWS SSO automatically")
+            return False
+        except subprocess.TimeoutExpired:
+            log.error("`aws sso login` timed out after %ds", AWS_SSO_LOGIN_TIMEOUT_SECONDS)
+            return False
+        if completed.returncode != 0:
+            log.error("`aws sso login` failed (exit %d)", completed.returncode)
+            return False
+        return True
+
+    def skip_if_database_unavailable(self, label: str) -> bool:
+        """Log and return True when a DB-backed test must skip the pgsql pod."""
+        if self.database_available is False:
+            log.warning(
+                "SKIP [live] %s - database unavailable "
+                "(see 'live: database connectivity'); run `aws sso login`",
+                label,
+            )
+            return True
+        return False
 
     def check_live_hygiene(self) -> None:
         """Cheap small-state guard: no pending bindIDs should ever persist.
@@ -2178,6 +2300,8 @@ class TestSuite:
         label = "live: perms follow saml group change"
         if not self.select(label):
             return
+        if self.skip_if_database_unavailable(label):
+            return
         log.info("\n--- Live: permissions follow a SAML group change ---")
         import yaml
 
@@ -2428,6 +2552,32 @@ class TestSuite:
             "; ".join(mismatches) if mismatches else f"{len(expected_pending)} repo(s) match",
         )
 
+    def live_maps_path(self) -> Path:
+        """Endpoint root maps.yaml the permission cycles apply (CLI default)."""
+        from src_auth_perms_sync.shared import backups
+
+        return (
+            Path(backups.ARTIFACTS_DIR_NAME)
+            / backups.endpoint_directory_name(self.endpoint)
+            / backups.DEFAULT_MAPS_FILE_NAME
+        )
+
+    def ensure_live_maps_seed(self) -> None:
+        """Seed a valid maps.yaml so a fresh worktree can run the cycles.
+
+        The permission cycles apply the endpoint root maps.yaml. On a fresh
+        worktree that file does not exist, so the baseline `get` writes the
+        empty default template, which then fails `set` validation. Seed the
+        synthetic-corpus maps when the file is missing or unusable; leave an
+        operator-maintained maps.yaml with real rules untouched.
+        """
+        maps_path = self.live_maps_path()
+        if maps_file_has_usable_rule(maps_path):
+            return
+        maps_path.parent.mkdir(parents=True, exist_ok=True)
+        maps_path.write_text(LIVE_MAPS_SEED_PATH.read_text(encoding="utf-8"), encoding="utf-8")
+        log.info("Seeded live maps file from %s -> %s", LIVE_MAPS_SEED_PATH, maps_path)
+
     def run_live_permission_cycles(self, environment: dict[str, str]) -> None:
         # The baseline get is a prerequisite for both cycles, so it runs when
         # any of them is selected.
@@ -2445,6 +2595,7 @@ class TestSuite:
         if not want_baseline:
             return
         log.info("\n--- Live: permission cycles with independent read-back ---")
+        self.ensure_live_maps_seed()
         baseline = self.run_cli_case(
             CliCase(
                 "live: get user baseline",
@@ -3555,6 +3706,33 @@ def load_setup_config() -> dict[str, Any]:
     import yaml
 
     return cast("dict[str, Any]", yaml.safe_load(SETUP_CONFIG_PATH.read_text(encoding="utf-8")))
+
+
+def database_error_detail(error: str) -> str:
+    """Summarize a pgsql/kubectl failure, calling out expired AWS SSO."""
+    lowered = error.lower()
+    if "sso session" in lowered and ("expired" in lowered or "invalid" in lowered):
+        return "pgsql pod unreachable: AWS SSO session expired - run `aws sso login`"
+    first_line = next((line for line in error.splitlines() if line.strip()), "unknown error")
+    return f"pgsql pod unreachable: {first_line.strip()}"
+
+
+def maps_file_has_usable_rule(path: Path) -> bool:
+    """Return True if the maps file has a rule with both users and repos.
+
+    A `set` run needs at least one rule carrying both sections; the empty
+    default template (a lone `- name: Map 1`) fails validation, so it is not
+    usable.
+    """
+    import yaml
+
+    if not path.is_file():
+        return False
+    loaded = cast("dict[str, Any]", yaml.safe_load(path.read_text(encoding="utf-8")) or {})
+    for rule in cast("list[dict[str, Any]]", loaded.get("maps") or []):
+        if rule.get("users") and rule.get("repos"):
+            return True
+    return False
 
 
 def fixture_grants(case_name: str, file_name: str) -> dict[str, set[str]] | None:

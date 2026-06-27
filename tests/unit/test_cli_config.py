@@ -5,6 +5,7 @@ import io
 import os
 import tempfile
 import unittest
+from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
@@ -428,6 +429,97 @@ class CliConfigTests(unittest.TestCase):
         self.assertIn("--maps-path", help_text)
         self.assertIn("--artifacts-dir", help_text)
         self.assertIn("--no-files", help_text)
+
+    def test_set_help_lists_set_specific_options(self) -> None:
+        help_text = self.load_cli_help_text("set", "--help")
+
+        self.assertIn("--full", help_text)
+        self.assertIn("--maps-path", help_text)
+        self.assertIn("--apply", help_text)
+
+    def test_restore_help_lists_restore_specific_options(self) -> None:
+        help_text = self.load_cli_help_text("restore", "--help")
+
+        self.assertIn("--restore-path", help_text)
+        self.assertIn("--apply", help_text)
+        self.assertNotIn("--maps-path", help_text)
+
+    def test_sync_saml_orgs_help_lists_mode_options(self) -> None:
+        help_text = self.load_cli_help_text("sync-saml-orgs", "--help")
+
+        self.assertIn("--full", help_text)
+        self.assertIn("--users", help_text)
+        self.assertNotIn("--maps-path", help_text)
+
+    def test_version_flag_reports_package_version(self) -> None:
+        captured_stdout = io.StringIO()
+
+        with (
+            contextlib.redirect_stdout(captured_stdout),
+            self.assertRaises(SystemExit) as exit_context,
+        ):
+            cli.load_cli(["--version"])
+
+        self.assertEqual(0, exit_context.exception.code)
+        self.assertIn("src-auth-perms-sync", captured_stdout.getvalue())
+
+    def test_parallelism_config_is_loaded_from_env(self) -> None:
+        config = load_config_from_env(SRC_AUTH_PERMS_SYNC_PARALLELISM="8")
+
+        self.assertEqual(8, config.parallelism)
+
+    def test_parallelism_rejects_values_below_one(self) -> None:
+        with self.assertRaisesRegex(shared_config.ConfigError, "greater than or equal to 1"):
+            load_config_from_env(SRC_AUTH_PERMS_SYNC_PARALLELISM="0")
+
+    def test_max_attempts_config_is_loaded_from_env(self) -> None:
+        config = load_config_from_env(SRC_AUTH_PERMS_SYNC_MAX_ATTEMPTS="3")
+
+        self.assertEqual(3, config.max_attempts)
+
+    def test_max_attempts_rejects_values_below_one(self) -> None:
+        with self.assertRaisesRegex(shared_config.ConfigError, "greater than or equal to 1"):
+            load_config_from_env(SRC_AUTH_PERMS_SYNC_MAX_ATTEMPTS="0")
+
+    def test_sample_interval_config_is_loaded_from_env(self) -> None:
+        config = load_config_from_env(SRC_AUTH_PERMS_SYNC_SAMPLE_INTERVAL="2.5")
+
+        self.assertEqual(2.5, config.sample_interval)
+
+    def test_sample_interval_allows_zero_to_disable_sampling(self) -> None:
+        config = load_config_from_env(SRC_AUTH_PERMS_SYNC_SAMPLE_INTERVAL="0")
+
+        self.assertEqual(0, config.sample_interval)
+
+    def test_sample_interval_rejects_negative_values(self) -> None:
+        with self.assertRaisesRegex(shared_config.ConfigError, "greater than or equal to 0"):
+            load_config_from_env(SRC_AUTH_PERMS_SYNC_SAMPLE_INTERVAL="-5")
+
+    def test_users_config_drops_empty_and_whitespace_only_entries(self) -> None:
+        config = load_config_from_env(SRC_AUTH_PERMS_SYNC_USERS=" , ,, ")
+
+        self.assertEqual((), config.users)
+
+    def test_load_cli_rejects_restore_path_env_var_on_set(self) -> None:
+        self.assert_load_cli_rejects_env(
+            ["set", "--full"],
+            {"SRC_AUTH_PERMS_SYNC_RESTORE_PATH": "snapshot.json"},
+            "--restore-path requires the restore command",
+        )
+
+    def test_load_cli_rejects_maps_path_env_var_on_restore(self) -> None:
+        self.assert_load_cli_rejects_env(
+            ["restore", "--restore-path", "snapshot.json"],
+            {"SRC_AUTH_PERMS_SYNC_MAPS_PATH": "maps.yaml"},
+            "--maps-path requires the get or set command",
+        )
+
+    def test_load_cli_rejects_full_env_var_on_get(self) -> None:
+        self.assert_load_cli_rejects_env(
+            ["get"],
+            {"SRC_AUTH_PERMS_SYNC_FULL": "true"},
+            "--full requires the set or sync-saml-orgs command",
+        )
 
     def test_validate_config_rejects_restore_without_restore_path(self) -> None:
         self.assert_config_error("restore", make_config(), "restore requires --restore-path")
@@ -953,3 +1045,42 @@ class CliConfigTests(unittest.TestCase):
             cli.validate_config(command_name, config)
         self.assertEqual(2, exit_context.exception.code)
         self.assertIn(expected_message, captured_stderr.getvalue())
+
+    def load_cli_help_text(self, *argv: str) -> str:
+        captured_stdout = io.StringIO()
+        with (
+            contextlib.redirect_stdout(captured_stdout),
+            self.assertRaises(SystemExit) as exit_context,
+        ):
+            cli.load_cli([*argv])
+        self.assertEqual(0, exit_context.exception.code)
+        return captured_stdout.getvalue()
+
+    def assert_load_cli_rejects_env(
+        self,
+        argv: Sequence[str],
+        env: dict[str, str],
+        expected_message: str,
+    ) -> None:
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            mock.patch.dict(
+                os.environ,
+                {
+                    "SRC_ENDPOINT": "https://sourcegraph.example.com",
+                    "SRC_ACCESS_TOKEN": "secret",
+                    **env,
+                },
+                clear=True,
+            ),
+        ):
+            env_file = Path(directory) / ".env"
+            env_file.write_text("")
+            captured_stderr = io.StringIO()
+            with (
+                contextlib.redirect_stderr(captured_stderr),
+                self.assertRaises(SystemExit) as exit_context,
+            ):
+                cli.load_cli([*argv, "--env-file", str(env_file)])
+            self.assertEqual(2, exit_context.exception.code)
+            self.assertIn(expected_message, captured_stderr.getvalue())
