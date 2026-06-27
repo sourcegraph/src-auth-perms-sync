@@ -156,9 +156,10 @@ class CmdGetFileBehaviorTests(unittest.TestCase):
         self.assertIsNotNone(command_data.code_host_connection_views)
         assert command_data.auth_provider_views is not None
         assert command_data.code_host_connection_views is not None
-        self.assertEqual("github", command_data.auth_provider_views[0]["type"])
+        self.assertEqual("github", command_data.auth_provider_views[0]["authProvider"]["type"])
         self.assertEqual(
-            "GitHub Enterprise", command_data.code_host_connection_views[0]["displayName"]
+            "GitHub Enterprise",
+            command_data.code_host_connection_views[0]["codeHostConnection"]["displayName"],
         )
 
     def test_writing_run_dumps_yaml_matching_the_returned_views(self) -> None:

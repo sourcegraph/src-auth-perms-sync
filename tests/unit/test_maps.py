@@ -105,8 +105,9 @@ class MapsTests(unittest.TestCase):
 
         rendered = maps.external_service_to_yaml(service)
 
-        self.assertEqual("LOB1-SA1", rendered["username"])
-        self.assertNotIn("config", rendered)
+        self.assertEqual("LOB1-SA1", rendered["codeHostConnection"]["username"])
+        self.assertNotIn("config", rendered["codeHostConnection"])
+        self.assertNotIn("config", rendered["info"])
 
 
 class MappingTests(unittest.TestCase):

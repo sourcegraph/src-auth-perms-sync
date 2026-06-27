@@ -1038,7 +1038,9 @@ class GetResult:
 
     `auth_providers` and `code_host_connections` hold the same dicts written to
     `auth-providers.yaml` and `code-host-connections.yaml`, so module callers can
-    assemble mapping rules without re-parsing files.
+    assemble mapping rules without re-parsing files. Each entry has a
+    copy-paste-ready selector block (`authProvider` / `codeHostConnection`)
+    plus an `info` block of read-only, non-matchable context.
     """
 
     succeeded: bool
