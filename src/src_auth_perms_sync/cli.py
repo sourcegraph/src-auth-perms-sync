@@ -263,23 +263,23 @@ class Config(src.SourcegraphClientConfig, src.LoggingConfig, src.OpenTelemetryCo
             "NOTE: This can be CPU intensive on the database server,\n"
             "Reduce --parallelism if instance performance is impacted"
         ),
-        help_group="Set scope (required: pass --full or filters)",
+        help_group="Scope (required: 1 of the following)",
     )
     users: tuple[str, ...] = src.config_field(
         default=(),
         env_var="SRC_AUTH_PERMS_SYNC_USERS",
         cli_flag="--users",
         metavar="USERS",
-        help="Add perms for a comma-delimited list of Sourcegraph usernames and/or email addresses",
-        help_group="Set scope (required: pass --full or filters)",
+        help="Filter on a comma-delimited list of Sourcegraph usernames and/or email addresses",
+        help_group="Scope (required: 1 of the following)",
     )
     users_without_explicit_perms: bool = src.config_field(
         default=False,
         env_var="SRC_AUTH_PERMS_SYNC_USERS_WITHOUT_EXPLICIT_PERMS",
         cli_flag="--users-without-explicit-perms",
         cli_action="store_true",
-        help="Add perms for Sourcegraph users without explicit permissions",
-        help_group="Set scope (required: pass --full or filters)",
+        help="Filter on Sourcegraph users without explicit permissions",
+        help_group="Scope (required: 1 of the following)",
     )
     users_created_after: str | None = src.config_field(
         default=None,
@@ -287,24 +287,24 @@ class Config(src.SourcegraphClientConfig, src.LoggingConfig, src.OpenTelemetryCo
         cli_flag="--users-created-after",
         metavar="YYYY-MM-DD",
         pattern=r"^\d{4}-\d{2}-\d{2}$",
-        help="Add perms for Sourcegraph users created on or after this date",
-        help_group="Set scope (required: pass --full or filters)",
+        help="Filter on Sourcegraph users created on or after this date",
+        help_group="Scope (required: 1 of the following)",
     )
     repos: tuple[str, ...] = src.config_field(
         default=(),
         env_var="SRC_AUTH_PERMS_SYNC_REPOS",
         cli_flag="--repos",
         metavar="REPOS",
-        help="Add perms for a comma-delimited list of Sourcegraph repository names",
-        help_group="Set scope (required: pass --full or filters)",
+        help="Filter on a comma-delimited list of Sourcegraph repository names",
+        help_group="Scope (required: 1 of the following)",
     )
     repos_without_explicit_perms: bool = src.config_field(
         default=False,
         env_var="SRC_AUTH_PERMS_SYNC_REPOS_WITHOUT_EXPLICIT_PERMS",
         cli_flag="--repos-without-explicit-perms",
         cli_action="store_true",
-        help="Add perms for repositories without explicit permissions",
-        help_group="Set scope (required: pass --full or filters)",
+        help="Filter on repositories without explicit permissions",
+        help_group="Scope (required: 1 of the following)",
     )
     repos_created_after: str | None = src.config_field(
         default=None,
@@ -312,8 +312,8 @@ class Config(src.SourcegraphClientConfig, src.LoggingConfig, src.OpenTelemetryCo
         cli_flag="--repos-created-after",
         metavar="YYYY-MM-DD",
         pattern=r"^\d{4}-\d{2}-\d{2}$",
-        help="Add perms for repositories cloned to the Sourcegraph instance on or after this date",
-        help_group="Set scope (required: pass --full or filters)",
+        help="Filter on repositories cloned to the Sourcegraph instance on or after this date",
+        help_group="Scope (required: 1 of the following)",
     )
     sync_saml_orgs: bool = src.config_field(
         default=False,
@@ -404,28 +404,40 @@ CLI_COMMANDS: tuple[CliCommand, ...] = (
         argument_name="get",
         command_name="get",
         help="Discover auth providers and code hosts",
-        description="Gather auth providers, code hosts, users, and permissions.",
+        description=(
+            "Gather auth providers, code hosts, users, and permissions.\n"
+            "NOTE: All args can be set via cli args or environment variables"
+        ),
         config_fields=GET_CONFIG_FIELDS,
     ),
     CliCommand(
         argument_name="set",
         command_name="set",
         help="Reconcile repo permissions from maps.yaml",
-        description="Reconcile Sourcegraph explicit repo permissions from maps.yaml.",
+        description=(
+            "Reconcile Sourcegraph explicit repo permissions from maps.yaml\n"
+            "NOTE: All args can be set via cli args or environment variables"
+        ),
         config_fields=SET_CONFIG_FIELDS,
     ),
     CliCommand(
         argument_name="restore",
         command_name="restore",
         help="Restore repo permissions from a snapshot",
-        description="Restore Sourcegraph explicit repo permissions from a snapshot JSON file.",
+        description=(
+            "Restore Sourcegraph explicit repo permissions from a snapshot JSON file.\n"
+            "NOTE: All args can be set via cli args or environment variables"
+        ),
         config_fields=RESTORE_CONFIG_FIELDS,
     ),
     CliCommand(
         argument_name="sync-saml-orgs",
         command_name="sync_saml_orgs",
         help="Sync orgs from SAML groups",
-        description="Create/update Sourcegraph organizations and memberships from SAML groups.",
+        description=(
+            "Create/update Sourcegraph organizations and memberships from SAML groups.\n"
+            "NOTE: All args can be set via cli args or environment variables"
+        ),
         config_fields=SYNC_SAML_ORGS_CONFIG_FIELDS,
     ),
 )

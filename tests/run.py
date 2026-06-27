@@ -73,6 +73,10 @@ if TYPE_CHECKING:
     from tests.e2e.case_runner import FixtureRunResult, FixtureState
 
 FIXTURES_DIR = ROOT / "tests" / "e2e" / "fixtures"
+# Canonical synthetic-corpus maps.yaml the live harness seeds into a fresh
+# worktree's endpoint runs directory so the mutating permission cycles have a
+# valid maps file to apply. See ensure_live_maps_seed().
+LIVE_MAPS_SEED_PATH = ROOT / "tests" / "live-maps-seed.yaml"
 TEST_LOGS_DIR = ROOT / "logs"
 LOG_PATH_PATTERN = re.compile(r"Writing log events to (.+?/log\.json)\.")
 STRUCTURED_EVENT_LINE_PATTERN = re.compile(r"^[.]*event=\S+\s*$")
@@ -2428,6 +2432,32 @@ class TestSuite:
             "; ".join(mismatches) if mismatches else f"{len(expected_pending)} repo(s) match",
         )
 
+    def live_maps_path(self) -> Path:
+        """Endpoint root maps.yaml the permission cycles apply (CLI default)."""
+        from src_auth_perms_sync.shared import backups
+
+        return (
+            Path(backups.ARTIFACTS_DIR_NAME)
+            / backups.endpoint_directory_name(self.endpoint)
+            / backups.DEFAULT_MAPS_FILE_NAME
+        )
+
+    def ensure_live_maps_seed(self) -> None:
+        """Seed a valid maps.yaml so a fresh worktree can run the cycles.
+
+        The permission cycles apply the endpoint root maps.yaml. On a fresh
+        worktree that file does not exist, so the baseline `get` writes the
+        empty default template, which then fails `set` validation. Seed the
+        synthetic-corpus maps when the file is missing or unusable; leave an
+        operator-maintained maps.yaml with real rules untouched.
+        """
+        maps_path = self.live_maps_path()
+        if maps_file_has_usable_rule(maps_path):
+            return
+        maps_path.parent.mkdir(parents=True, exist_ok=True)
+        maps_path.write_text(LIVE_MAPS_SEED_PATH.read_text(encoding="utf-8"), encoding="utf-8")
+        log.info("Seeded live maps file from %s -> %s", LIVE_MAPS_SEED_PATH, maps_path)
+
     def run_live_permission_cycles(self, environment: dict[str, str]) -> None:
         # The baseline get is a prerequisite for both cycles, so it runs when
         # any of them is selected.
@@ -2445,6 +2475,7 @@ class TestSuite:
         if not want_baseline:
             return
         log.info("\n--- Live: permission cycles with independent read-back ---")
+        self.ensure_live_maps_seed()
         baseline = self.run_cli_case(
             CliCase(
                 "live: get user baseline",
@@ -3555,6 +3586,24 @@ def load_setup_config() -> dict[str, Any]:
     import yaml
 
     return cast("dict[str, Any]", yaml.safe_load(SETUP_CONFIG_PATH.read_text(encoding="utf-8")))
+
+
+def maps_file_has_usable_rule(path: Path) -> bool:
+    """Return True if the maps file has a rule with both users and repos.
+
+    A `set` run needs at least one rule carrying both sections; the empty
+    default template (a lone `- name: Map 1`) fails validation, so it is not
+    usable.
+    """
+    import yaml
+
+    if not path.is_file():
+        return False
+    loaded = cast("dict[str, Any]", yaml.safe_load(path.read_text(encoding="utf-8")) or {})
+    for rule in cast("list[dict[str, Any]]", loaded.get("maps") or []):
+        if rule.get("users") and rule.get("repos"):
+            return True
+    return False
 
 
 def fixture_grants(case_name: str, file_name: str) -> dict[str, set[str]] | None:

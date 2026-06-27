@@ -85,9 +85,9 @@ class CliEntrypointTests(unittest.TestCase):
         self.assertIn("--users USERS", set_help.stdout)
         self.assertIn("--sync-saml-orgs", set_help.stdout)
         self.assertNotIn("--restore-path", set_help.stdout)
-        self.assertIn("Set scope (required: pass --full or filters):", set_help.stdout)
+        self.assertIn("Scope (required: 1 of the following):", set_help.stdout)
         self.assertLess(
-            set_help.stdout.index("\nSet scope"),
+            set_help.stdout.index("\nScope (required:"),
             set_help.stdout.index("\nOrganization sync:"),
         )
         self.assertNotIn("\nUser filters:", set_help.stdout)

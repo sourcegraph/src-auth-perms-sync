@@ -1,0 +1,80 @@
+# Synthetic-corpus mapping rules used to bootstrap live test runs.
+#
+# The live harness (tests/run.py --live) writes this file to
+# src-auth-perms-sync-runs/<endpoint>/maps.yaml when that path is missing or
+# still holds the empty default template, so a fresh worktree can run the
+# mutating permission cycles. An operator-maintained maps.yaml with real
+# rules is left untouched.
+#
+# It targets the corpus that tests/setup.yaml provisions on the test
+# instance:
+# - users: test_user_00001 through test_user_10000
+# - repos: test-repo-00001 through test-repo-50000
+#
+# Default active shape:
+# - one large rectangular non-overlap rule: 10k users x 1k repos = 10M grants
+# - two small overlapping rules near repo 49k to validate union correctness
+#
+# The 50k-repo all-repo selector below is intentionally not active by default:
+# 10k users x 50k repos would produce 500M planned grants and very large
+# dry-run after/diff files. Use it only for a deliberate long stress run.
+
+x-test-users-all: &test_users_all
+  - '^test_user_[0-9]{5}$'
+
+x-test-users-00001-00100: &test_users_00001_00100
+  - '^test_user_(0000[1-9]|000[1-9][0-9]|00100)$'
+
+x-test-users-00101-00200: &test_users_00101_00200
+  - '^test_user_(0010[1-9]|001[1-9][0-9]|00200)$'
+
+x-stress-code-host: &stress_code_host
+  kind: OTHER
+  displayName: 'OTHER #1'
+  url: http://src-serve-git:3434/
+
+x-test-repos-00001-01000: &test_repos_00001_01000
+  - '^test-repo-(00[0-9]{3}|01000)$'
+
+x-test-repos-49001-49100: &test_repos_49001_49100
+  - '^test-repo-(4900[1-9]|490[1-9][0-9]|49100)$'
+
+x-test-repos-49051-49150: &test_repos_49051_49150
+  - '^test-repo-(4905[1-9]|490[6-9][0-9]|491[0-4][0-9]|49150)$'
+
+x-test-repos-all-50000: &test_repos_all_50000
+  - '^test-repo-[0-4][0-9]{4}$'
+  - '^test-repo-50000$'
+
+maps:
+
+- name: MEMORY phase1 rectangle 10k users to first 1000 test repos
+  users:
+    usernameRegexes: *test_users_all
+  repos:
+    codeHostConnection: *stress_code_host
+    nameRegexes: *test_repos_00001_01000
+
+- name: MEMORY overlap A first 100 users to repos 49001-49100
+  users:
+    usernameRegexes: *test_users_00001_00100
+  repos:
+    codeHostConnection: *stress_code_host
+    nameRegexes: *test_repos_49001_49100
+
+- name: MEMORY overlap B next 100 users to repos 49051-49150
+  users:
+    usernameRegexes: *test_users_00101_00200
+  repos:
+    codeHostConnection: *stress_code_host
+    nameRegexes: *test_repos_49051_49150
+
+# Deliberate heavy stress profile; uncomment as the only active map for a
+# 500M-grant planning run. Expect very large dry-run artifact files.
+#
+# - name: MEMORY max rectangle 10k users to all 50000 test repos
+#   users:
+#     usernameRegexes: *test_users_all
+#   repos:
+#     codeHostConnection: *stress_code_host
+#     nameRegexes: *test_repos_all_50000
