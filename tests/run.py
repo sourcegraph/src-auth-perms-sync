@@ -81,6 +81,11 @@ LIVE_MAPS_SEED_PATH = ROOT / "tests" / "live-maps-seed.yaml"
 # valid AWS SSO session). check_database_connectivity() probes the pod when
 # any of these is selected and skips them up front when it is unreachable.
 DATABASE_BACKED_LIVE_CHECKS = ("live: perms follow saml group change",)
+# When the pod is unreachable and the run is interactive, the harness offers
+# to refresh AWS SSO, then re-probes on this cadence until it succeeds.
+AWS_SSO_LOGIN_TIMEOUT_SECONDS = 300
+DATABASE_PROBE_RETRY_INTERVAL_SECONDS = 10
+DATABASE_PROBE_RETRY_TIMEOUT_SECONDS = 600
 TEST_LOGS_DIR = ROOT / "logs"
 LOG_PATH_PATTERN = re.compile(r"Writing log events to (.+?/log\.json)\.")
 STRUCTURED_EVENT_LINE_PATTERN = re.compile(r"^[.]*event=\S+\s*$")
@@ -1465,30 +1470,91 @@ class TestSuite:
 
         Only DB-backed live tests need the pod (via `kubectl exec` against
         EKS, which requires a valid AWS SSO session), so the probe is skipped
-        when none of them are selected. On failure, DB-backed tests skip
+        when none of them are selected. When the probe fails on an interactive
+        run, the harness refreshes AWS SSO and re-probes (see
+        recover_database_access). On unrecovered failure, DB-backed tests skip
         themselves and the run still exits non-zero via this recorded failure.
         """
         label = "live: database connectivity"
         if not self.test_selected(label, *DATABASE_BACKED_LIVE_CHECKS):
             return
         started = time.monotonic()
+        error = self.probe_database()
+        if error is not None and sys.stdin.isatty():
+            error = self.recover_database_access(error)
+        if error is None:
+            self.database_available = True
+            self.record(label, "live", True, time.monotonic() - started)
+        else:
+            self.database_available = False
+            self.record(
+                label, "live", False, time.monotonic() - started, database_error_detail(error)
+            )
+
+    def probe_database(self) -> str | None:
+        """Run `SELECT 1` on the pgsql pod; return None on success, else the error."""
         from tests import setup as instance_setup
 
         try:
             kubectl_config = cast("dict[str, Any]", load_setup_config()["kubectl"])
             instance_setup.run_sql(kubectl_config, "SELECT 1;", timeout_seconds=30)
         except Exception as exception:
-            self.database_available = False
-            self.record(
-                label,
-                "live",
-                False,
-                time.monotonic() - started,
-                database_error_detail(str(exception)),
+            return str(exception)
+        return None
+
+    def recover_database_access(self, error: str) -> str | None:
+        """Refresh AWS SSO interactively, then re-probe until the pod responds.
+
+        Runs `aws sso login` once, then retries the probe every 10s for up to
+        10 minutes. Returns None once the pod is reachable, or the latest
+        error if SSO login could not run or the pod stayed unreachable.
+        """
+        log.warning("Database probe failed: %s", database_error_detail(error))
+        if not self.run_aws_sso_login():
+            return error
+        deadline = time.monotonic() + DATABASE_PROBE_RETRY_TIMEOUT_SECONDS
+        while True:
+            probe_error = self.probe_database()
+            if probe_error is None:
+                log.info("Database reachable after AWS SSO refresh.")
+                return None
+            if time.monotonic() >= deadline:
+                return probe_error
+            log.info(
+                "Database still unreachable; retrying in %ds (up to 10 min total)...",
+                DATABASE_PROBE_RETRY_INTERVAL_SECONDS,
             )
-            return
-        self.database_available = True
-        self.record(label, "live", True, time.monotonic() - started)
+            time.sleep(DATABASE_PROBE_RETRY_INTERVAL_SECONDS)
+
+    def resolve_aws_profile(self) -> str | None:
+        """AWS profile for SSO login: AWS_PROFILE, then setup.yaml
+        kubectl.awsProfile, else None (the default profile)."""
+        profile = os.environ.get("AWS_PROFILE")
+        if profile:
+            return profile
+        kubectl_config = cast("dict[str, Any]", load_setup_config().get("kubectl") or {})
+        configured = kubectl_config.get("awsProfile")
+        return str(configured) if configured else None
+
+    def run_aws_sso_login(self) -> bool:
+        """Run `aws sso login` for the resolved profile; return True if it ran ok."""
+        command = ["aws", "sso", "login"]
+        profile = self.resolve_aws_profile()
+        if profile:
+            command += ["--profile", profile]
+        log.warning("Running `%s` - complete the browser prompt to continue...", " ".join(command))
+        try:
+            completed = subprocess.run(command, timeout=AWS_SSO_LOGIN_TIMEOUT_SECONDS, check=False)
+        except FileNotFoundError:
+            log.error("aws CLI not found; cannot refresh AWS SSO automatically")
+            return False
+        except subprocess.TimeoutExpired:
+            log.error("`aws sso login` timed out after %ds", AWS_SSO_LOGIN_TIMEOUT_SECONDS)
+            return False
+        if completed.returncode != 0:
+            log.error("`aws sso login` failed (exit %d)", completed.returncode)
+            return False
+        return True
 
     def skip_if_database_unavailable(self, label: str) -> bool:
         """Log and return True when a DB-backed test must skip the pgsql pod."""

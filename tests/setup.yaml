@@ -11,6 +11,10 @@ kubectl:
   databaseUser: sg
   database: sg
   tenantID: 1
+  # Optional. AWS SSO profile the live harness refreshes when the pgsql pod
+  # is unreachable on an interactive run. Precedence: AWS_PROFILE env var,
+  # then this key, then the default profile. Omit to use the default.
+  # awsProfile: my-sso-profile
 
 users:
   # Synthetic users are pre-provisioned in bulk; setup verifies the count
