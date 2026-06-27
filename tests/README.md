@@ -132,7 +132,7 @@ Live cases declare their identity preconditions in tests.yaml:
 a pointer to setup.py on drift) and `live.temporaryUsers` (the harness
 creates the named users fresh via `createUser` - `created_at` = now - and
 hard-deletes them afterwards; `{today}` in a cliCommand resolves to the
-run's UTC date, which makes positive `--created-after` selection
+run's UTC date, which makes positive `--users-created-after` selection
 deterministic against the long-pre-existing synthetic users).
 
 ## PyPI install smoke (`--install`)

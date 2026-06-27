@@ -188,7 +188,7 @@ cases:
     description: dates must match YYYY-MM-DD before any network call.
     modes:
       - local
-    cliCommand: get --created-after 2026-1-01
+    cliCommand: get --users-created-after 2026-1-01
     expectedExitCode: 2
     expectedOutput:
       - string_pattern_mismatch
@@ -305,7 +305,7 @@ cases:
     cliCommand: set
     expectedExitCode: 2
     expectedOutput:
-      - set requires one of --full
+      - "set requires an explicit scope: pass --full"
 
   reject-set-full-and-users:
     # scope:
@@ -339,7 +339,7 @@ cases:
     expectedOutput:
       - choose only one of --users
 
-  reject-set-full-and-created-after:
+  reject-set-full-and-users-created-after:
     # scope:
     #   users: 0
     #   repos: 0
@@ -350,10 +350,10 @@ cases:
     description: full overwrite cannot be combined with the additive date filter.
     modes:
       - local
-    cliCommand: set --full --created-after 2099-01-01
+    cliCommand: set --full --users-created-after 2099-01-01
     expectedExitCode: 2
     expectedOutput:
-      - "--full cannot be combined with --created-after"
+      - "--full cannot be combined with --users-created-after"
 
   reject-set-restore-path:
     # scope:
@@ -453,7 +453,7 @@ cases:
     expectedOutput:
       - >-
         sync-saml-orgs requires one of --full, --users,
-        --users-without-explicit-perms, or --created-after
+        --users-without-explicit-perms, or --users-created-after
 
   reject-sync-saml-orgs-full-and-users:
     # scope:
@@ -471,7 +471,7 @@ cases:
     expectedOutput:
       - "choose at most one of --full, --users"
 
-  reject-sync-saml-orgs-full-and-created-after:
+  reject-sync-saml-orgs-full-and-users-created-after:
     # scope:
     #   users: 0
     #   repos: 0
@@ -479,13 +479,13 @@ cases:
     # cost:
     #   bigO: O(1)
     #   note: parse-only -- no instance reads or writes
-    description: "--full means all users; combining it with --created-after is contradictory."
+    description: "--full means all users; combining it with --users-created-after is contradictory."
     modes:
       - local
-    cliCommand: sync-saml-orgs --full --created-after 2099-01-01
+    cliCommand: sync-saml-orgs --full --users-created-after 2099-01-01
     expectedExitCode: 2
     expectedOutput:
-      - "--full cannot be combined with --created-after"
+      - "--full cannot be combined with --users-created-after"
 
   reject-sync-saml-orgs-repos:
     # scope:
@@ -649,7 +649,7 @@ cases:
       no_backup: true
     expectedMutations: 2
 
-  set-created-after-temp-user:
+  set-users-created-after-temp-user:
     # scope:
     #   users: 1
     #   repos: 1
@@ -663,9 +663,9 @@ cases:
     #   writes: 1 mutation
     #   note: server-side date filter selects only the temp user
     description: >-
-      POSITIVE created-after selection on the real instance: the harness
+      POSITIVE users-created-after selection on the real instance: the harness
       creates a fresh temporary user (created today), so
-      --created-after {today} selects exactly that user out of 10k
+      --users-created-after {today} selects exactly that user out of 10k
       pre-existing ones; the mapped grant lands and the canary repo stays
       empty. The temp user is hard-deleted afterwards.
     modes:
@@ -677,7 +677,7 @@ cases:
         - test-repo-49912
     args:
       command: set
-      created_after: "{today}"
+      users_created_after: "{today}"
       apply: true
       no_backup: true
     expectedMutations: 1
@@ -696,13 +696,13 @@ cases:
     #   writes: 4 mutations
     #   note: server-side date filter
     description: >-
-      createdAfter mode additively grants mapped repos to users created
+      users-created-after mode additively grants mapped repos to users created
       on/after the date, preserving existing grants.
     modes:
       - local
     args:
       command: set
-      created_after: "2026-02-01"
+      users_created_after: "2026-02-01"
       apply: true
       no_backup: true
 
@@ -1127,7 +1127,7 @@ cases:
     expectedErrors:
       - unknown users field 'userNames'
 
-  invalid-set-created-after-date:
+  invalid-set-users-created-after-date:
     # scope:
     #   users: 0
     #   repos: 0
@@ -1143,10 +1143,10 @@ cases:
       - live
     args:
       command: set
-      created_after: "2026-02-31"
+      users_created_after: "2026-02-31"
     expectedMutations: 0
     expectedErrors:
-      - "--created-after must use YYYY-MM-DD"
+      - "--users-created-after must use YYYY-MM-DD"
 
   invalid-set-repos-created-after-date:
     # scope:
@@ -1470,7 +1470,7 @@ cases:
     expectedMutations: 1
 
   # -- Live only: real-instance validation and organization sync --
-  invalid-created-after-date:
+  invalid-users-created-after-date:
     # scope:
     #   users: 0
     #   repos: 0
@@ -1485,9 +1485,9 @@ cases:
       - live
     args:
       command: get
-      created_after: "2026-02-31"
+      users_created_after: "2026-02-31"
     expectedErrors:
-      - "--created-after must use YYYY-MM-DD"
+      - "--users-created-after must use YYYY-MM-DD"
 
   invalid-missing-maps-file:
     # scope:
@@ -1511,7 +1511,7 @@ cases:
     expectedErrors:
       - set input file does not exist
 
-  get-created-after-future:
+  get-users-created-after-future:
     # scope:
     #   users: 0
     #   repos: 0
@@ -1523,15 +1523,15 @@ cases:
     #     userPermScans: 0
     #   note: server-side date filter selects nobody
     description: >-
-      A far-future --created-after selects no users on the real instance.
+      A far-future --users-created-after selects no users on the real instance.
     modes:
       - live
-    cliCommand: get --created-after 2099-01-01
+    cliCommand: get --users-created-after 2099-01-01
     expectedExitCode: 0
     expectedOutput:
       - Selected 0 user(s) for get output.
 
-  get-user-created-after-future:
+  get-named-user-users-created-after-future:
     # scope:
     #   users: 0
     #   repos: 0
@@ -1543,16 +1543,16 @@ cases:
     #     userPermScans: 0
     #   note: the user is filtered out by date
     description: >-
-      --users combined with a far-future --created-after filters the named
+      --users combined with a far-future --users-created-after filters the named
       user out of the selection.
     modes:
       - live
-    cliCommand: get --users {user} --created-after 2099-01-01
+    cliCommand: get --users {user} --users-created-after 2099-01-01
     expectedExitCode: 0
     expectedOutput:
       - no user metadata selected
 
-  get-users-without-perms-created-after-future:
+  get-users-without-perms-users-created-after-future:
     # scope:
     #   users: 0
     #   repos: 0
@@ -1565,10 +1565,10 @@ cases:
     #   note: filtered candidate query selects nobody
     description: >-
       --users-without-explicit-perms combined with a far-future
-      --created-after selects no users.
+      --users-created-after selects no users.
     modes:
       - live
-    cliCommand: get --users-without-explicit-perms --created-after 2099-01-01
+    cliCommand: get --users-without-explicit-perms --users-created-after 2099-01-01
     expectedExitCode: 0
     expectedOutput:
       - Selected 0 user(s) for get output.
@@ -1631,14 +1631,14 @@ cases:
     #     users: 0
     #   note: server-side date filter selects nobody -- exits before the repo scan
     description: >-
-      A far-future --created-after selects no users on the real instance:
+      A far-future --users-created-after selects no users on the real instance:
       zero mutations, seeded state untouched.
     modes:
       - live
       - performance
     args:
       command: set
-      created_after: "2099-01-01"
+      users_created_after: "2099-01-01"
       apply: true
       no_backup: true
     expectedMutations: 0
@@ -1736,7 +1736,7 @@ cases:
     expectedOutput:
       - Dry run complete
 
-  set-created-after-sync-saml-orgs-dry-run:
+  set-users-created-after-sync-saml-orgs-dry-run:
     # scope:
     #   users: 0
     #   repos: 0
@@ -1748,11 +1748,11 @@ cases:
     #   writes: none
     #   note: perm phase selects nobody; org phase streams all users
     description: >-
-      Combined permission + organization sync dispatch, created-after mode
+      Combined permission + organization sync dispatch, users-created-after mode
       (far-future date selects no users), dry run only.
     modes:
       - live
-    cliCommand: set --created-after 2099-01-01 --sync-saml-orgs
+    cliCommand: set --users-created-after 2099-01-01 --sync-saml-orgs
     expectedExitCode: 0
     expectedOutput:
       - Dry run complete

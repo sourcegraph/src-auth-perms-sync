@@ -262,14 +262,16 @@ def get_users_by_ids(
 
 def list_site_user_candidates(
     client: src.SourcegraphClient,
-    created_after: str | None,
+    users_created_after: str | None,
     *,
     parallelism: int = 1,
     worker_pool: ThreadPoolExecutor | None = None,
 ) -> list[shared_types.SiteUserCandidate]:
     """Return non-deleted site users, optionally filtered by creation time."""
-    created_filter = {"gte": created_after} if created_after is not None else None
-    created_filter_label = f" created on or after {created_after}" if created_after else ""
+    created_filter = {"gte": users_created_after} if users_created_after is not None else None
+    created_filter_label = (
+        f" created on or after {users_created_after}" if users_created_after else ""
+    )
     log.info("Querying active Sourcegraph user candidates%s ...", created_filter_label)
     started = time.perf_counter()
     first_page, total_count = _site_user_candidate_page(
@@ -322,7 +324,7 @@ def list_site_user_candidates(
 
 def list_site_user_candidates_without_explicit_repos(
     client: src.SourcegraphClient,
-    created_after: str | None,
+    users_created_after: str | None,
     *,
     batch_size: int,
     parallelism: int,
@@ -337,8 +339,10 @@ def list_site_user_candidates_without_explicit_repos(
     if batch_size < 1:
         raise ValueError("batch_size must be at least 1")
 
-    created_filter = {"gte": created_after} if created_after is not None else None
-    created_filter_label = f" created on or after {created_after}" if created_after else ""
+    created_filter = {"gte": users_created_after} if users_created_after is not None else None
+    created_filter_label = (
+        f" created on or after {users_created_after}" if users_created_after else ""
+    )
     log.info("Querying active Sourcegraph user candidates%s ...", created_filter_label)
     started = time.perf_counter()
     first_page, total_count = _site_user_candidate_page(

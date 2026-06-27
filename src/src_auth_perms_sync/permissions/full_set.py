@@ -180,7 +180,7 @@ def _filter_full_set_users_by_created_at(
     users: list[shared_types.User],
     user_created_after: str | None,
 ) -> list[shared_types.User]:
-    """Apply the optional created-after user filter."""
+    """Apply the optional users-created-after user filter."""
     if user_created_after is None:
         return users
 

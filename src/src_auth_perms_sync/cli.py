@@ -39,55 +39,47 @@ COMMON_CONFIG_FIELDS_BEFORE = src.config_field_names(
     src.SourcegraphClientConfig,
 )
 COMMON_CONFIG_FIELDS_AFTER = src.config_field_names(
-    src.LoggingConfig,
-    src.OpenTelemetryConfig,
+    "artifacts_dir",
+    "no_backup",
+    "no_files",
     "parallelism",
+    "explicit_permissions_batch_size",
     "http_timeout_seconds",
     "max_attempts",
     "sample_interval",
     "fetch_sg_traces",
+    src.LoggingConfig,
+    src.OpenTelemetryConfig,
 )
 GET_CONFIG_FIELDS = src.config_field_names(
     *COMMON_CONFIG_FIELDS_BEFORE,
-    "maps_path",
     "users",
+    "users_created_after",
     "users_without_explicit_perms",
-    "created_after",
     "repos",
-    "repos_without_explicit_perms",
     "repos_created_after",
-    "no_backup",
-    "artifacts_dir",
-    "no_files",
-    "explicit_permissions_batch_size",
+    "repos_without_explicit_perms",
+    "maps_path",
     *COMMON_CONFIG_FIELDS_AFTER,
 )
 SET_CONFIG_FIELDS = src.config_field_names(
     *COMMON_CONFIG_FIELDS_BEFORE,
-    "maps_path",
     "full",
     "users",
+    "users_created_after",
     "users_without_explicit_perms",
-    "created_after",
     "repos",
-    "repos_without_explicit_perms",
     "repos_created_after",
+    "repos_without_explicit_perms",
     "sync_saml_orgs",
     "apply",
-    "no_backup",
-    "artifacts_dir",
-    "no_files",
-    "explicit_permissions_batch_size",
+    "maps_path",
     *COMMON_CONFIG_FIELDS_AFTER,
 )
 RESTORE_CONFIG_FIELDS = src.config_field_names(
     *COMMON_CONFIG_FIELDS_BEFORE,
     "restore_path",
     "apply",
-    "no_backup",
-    "artifacts_dir",
-    "no_files",
-    "explicit_permissions_batch_size",
     *COMMON_CONFIG_FIELDS_AFTER,
 )
 SYNC_SAML_ORGS_CONFIG_FIELDS = src.config_field_names(
@@ -95,13 +87,8 @@ SYNC_SAML_ORGS_CONFIG_FIELDS = src.config_field_names(
     "full",
     "users",
     "users_without_explicit_perms",
-    "created_after",
+    "users_created_after",
     "apply",
-    "no_backup",
-    "artifacts_dir",
-    "no_files",
-    "explicit_permissions_batch_size",
-    "parallelism",
     *COMMON_CONFIG_FIELDS_AFTER,
 )
 LogCommandName: TypeAlias = Literal[
@@ -109,7 +96,7 @@ LogCommandName: TypeAlias = Literal[
     "set_full",
     "set_users",
     "set_users_without_explicit_perms",
-    "set_created_after",
+    "set_users_created_after",
     "set_repos",
     "set_repos_without_explicit_perms",
     "set_repos_created_after",
@@ -118,7 +105,7 @@ LogCommandName: TypeAlias = Literal[
     "set_full_sync_saml_orgs",
     "set_users_sync_saml_orgs",
     "set_users_without_explicit_perms_sync_saml_orgs",
-    "set_created_after_sync_saml_orgs",
+    "set_users_created_after_sync_saml_orgs",
     "set_repos_sync_saml_orgs",
     "set_repos_without_explicit_perms_sync_saml_orgs",
     "set_repos_created_after_sync_saml_orgs",
@@ -128,7 +115,7 @@ SET_COMMAND_LOG_NAMES: dict[permission_types.SetCommandMode, LogCommandName] = {
     "full": "set_full",
     "users": "set_users",
     "users_without_explicit_perms": "set_users_without_explicit_perms",
-    "created_after": "set_created_after",
+    "users_created_after": "set_users_created_after",
     "repos": "set_repos",
     "repos_without_explicit_perms": "set_repos_without_explicit_perms",
     "repos_created_after": "set_repos_created_after",
@@ -137,7 +124,7 @@ SET_COMMAND_ARTIFACT_NAMES: dict[permission_types.SetCommandMode, str] = {
     "full": "set-{run_mode}",
     "users": "set-add-users-{run_mode}",
     "users_without_explicit_perms": "set-add-users-without-explicit-perms-{run_mode}",
-    "created_after": "set-add-users-created-after-{run_mode}",
+    "users_created_after": "set-add-users-created-after-{run_mode}",
     "repos": "set-repos-{run_mode}",
     "repos_without_explicit_perms": "set-repos-without-explicit-perms-{run_mode}",
     "repos_created_after": "set-repos-created-after-{run_mode}",
@@ -146,7 +133,7 @@ SYNC_SET_COMMAND_LOG_NAMES: dict[permission_types.SetCommandMode, LogCommandName
     "full": "set_full_sync_saml_orgs",
     "users": "set_users_sync_saml_orgs",
     "users_without_explicit_perms": "set_users_without_explicit_perms_sync_saml_orgs",
-    "created_after": "set_created_after_sync_saml_orgs",
+    "users_created_after": "set_users_created_after_sync_saml_orgs",
     "repos": "set_repos_sync_saml_orgs",
     "repos_without_explicit_perms": "set_repos_without_explicit_perms_sync_saml_orgs",
     "repos_created_after": "set_repos_created_after_sync_saml_orgs",
@@ -155,7 +142,7 @@ SYNC_SAML_ORGS_ARTIFACT_NAMES: dict[str, str] = {
     "full": "sync-saml-orgs-full-{run_mode}",
     "users": "sync-saml-orgs-users-{run_mode}",
     "users_without_explicit_perms": "sync-saml-orgs-users-without-explicit-perms-{run_mode}",
-    "created_after": "sync-saml-orgs-created-after-{run_mode}",
+    "users_created_after": "sync-saml-orgs-users-created-after-{run_mode}",
 }
 SYNC_SET_COMMAND_ARTIFACT_NAMES: dict[permission_types.SetCommandMode, str] = {
     "full": "set-sync-saml-orgs-{run_mode}",
@@ -163,7 +150,7 @@ SYNC_SET_COMMAND_ARTIFACT_NAMES: dict[permission_types.SetCommandMode, str] = {
     "users_without_explicit_perms": (
         "set-add-users-without-explicit-perms-sync-saml-orgs-{run_mode}"
     ),
-    "created_after": "set-add-users-created-after-sync-saml-orgs-{run_mode}",
+    "users_created_after": "set-add-users-created-after-sync-saml-orgs-{run_mode}",
     "repos": "set-repos-sync-saml-orgs-{run_mode}",
     "repos_without_explicit_perms": ("set-repos-without-explicit-perms-sync-saml-orgs-{run_mode}"),
     "repos_created_after": "set-repos-created-after-sync-saml-orgs-{run_mode}",
@@ -220,7 +207,7 @@ class Config(src.SourcegraphClientConfig, src.LoggingConfig, src.OpenTelemetryCo
             "(default: <artifacts-dir>/<src-endpoint>/maps.yaml)\n"
             "Relative paths are resolved from the current working directory"
         ),
-        help_group="Permission sync",
+        help_group="Files",
     )
     artifacts_dir: Path | None = src.config_field(
         default=None,
@@ -230,9 +217,18 @@ class Config(src.SourcegraphClientConfig, src.LoggingConfig, src.OpenTelemetryCo
         help=(
             "Directory containing per-endpoint artifact directories\n"
             "(default: ./src-auth-perms-sync-runs)\n"
+            "Can set to /tmp/src-auth-perms-sync-runs, so the OS cleans up these files\n"
             "Relative paths are resolved from the current working directory"
         ),
-        help_group="Artifacts",
+        help_group="Files",
+    )
+    no_backup: bool = src.config_field(
+        default=False,
+        env_var="SRC_AUTH_PERMS_SYNC_NO_BACKUP",
+        cli_flag="--no-backup",
+        cli_action="store_true",
+        help="Skip before/after snapshot artifacts and validation",
+        help_group="Files",
     )
     no_files: bool = src.config_field(
         default=False,
@@ -241,9 +237,9 @@ class Config(src.SourcegraphClientConfig, src.LoggingConfig, src.OpenTelemetryCo
         cli_action="store_true",
         help=(
             "Write nothing to disk: no generated YAML, snapshots, or log file\n"
-            "With --apply, also requires --no-backup (explicitly giving up restore)"
+            "With --apply, also requires --no-backup (explicitly sacrificing restore capabilities)"
         ),
-        help_group="Artifacts",
+        help_group="Files",
     )
     restore_path: Path | None = src.config_field(
         default=None,
@@ -262,51 +258,53 @@ class Config(src.SourcegraphClientConfig, src.LoggingConfig, src.OpenTelemetryCo
         cli_flag="--full",
         cli_action="store_true",
         help=(
-            "Full overwrite of all explicit perms for the repos in scope\n"
-            "Must be passed explicitly when no user or repo filter args are provided"
+            "Full overwrite mode: process every mapped user and repo\n"
+            "Use this for initial sync, and to remove perms now out of scope\n"
+            "NOTE: This can be CPU intensive on the database server,\n"
+            "Reduce --parallelism if instance performance is impacted"
         ),
-        help_group="Permission sync",
+        help_group="Set scope (required: pass --full or filters)",
     )
     users: tuple[str, ...] = src.config_field(
         default=(),
         env_var="SRC_AUTH_PERMS_SYNC_USERS",
         cli_flag="--users",
         metavar="USERS",
-        help="Process a comma-delimited list of Sourcegraph usernames and/or email addresses",
-        help_group="User filters",
+        help="Add perms for a comma-delimited list of Sourcegraph usernames and/or email addresses",
+        help_group="Set scope (required: pass --full or filters)",
     )
     users_without_explicit_perms: bool = src.config_field(
         default=False,
         env_var="SRC_AUTH_PERMS_SYNC_USERS_WITHOUT_EXPLICIT_PERMS",
         cli_flag="--users-without-explicit-perms",
         cli_action="store_true",
-        help="Process Sourcegraph users without explicit permissions",
-        help_group="User filters",
+        help="Add perms for Sourcegraph users without explicit permissions",
+        help_group="Set scope (required: pass --full or filters)",
     )
-    created_after: str | None = src.config_field(
+    users_created_after: str | None = src.config_field(
         default=None,
-        env_var="SRC_AUTH_PERMS_SYNC_CREATED_AFTER",
-        cli_flag="--created-after",
+        env_var="SRC_AUTH_PERMS_SYNC_USERS_CREATED_AFTER",
+        cli_flag="--users-created-after",
         metavar="YYYY-MM-DD",
         pattern=r"^\d{4}-\d{2}-\d{2}$",
-        help="Process Sourcegraph users created on or after this date",
-        help_group="User filters",
+        help="Add perms for Sourcegraph users created on or after this date",
+        help_group="Set scope (required: pass --full or filters)",
     )
     repos: tuple[str, ...] = src.config_field(
         default=(),
         env_var="SRC_AUTH_PERMS_SYNC_REPOS",
         cli_flag="--repos",
         metavar="REPOS",
-        help="Process a comma-delimited list of Sourcegraph repository names",
-        help_group="Repo filters",
+        help="Add perms for a comma-delimited list of Sourcegraph repository names",
+        help_group="Set scope (required: pass --full or filters)",
     )
     repos_without_explicit_perms: bool = src.config_field(
         default=False,
         env_var="SRC_AUTH_PERMS_SYNC_REPOS_WITHOUT_EXPLICIT_PERMS",
         cli_flag="--repos-without-explicit-perms",
         cli_action="store_true",
-        help="Process repositories without explicit permissions",
-        help_group="Repo filters",
+        help="Add perms for repositories without explicit permissions",
+        help_group="Set scope (required: pass --full or filters)",
     )
     repos_created_after: str | None = src.config_field(
         default=None,
@@ -314,8 +312,8 @@ class Config(src.SourcegraphClientConfig, src.LoggingConfig, src.OpenTelemetryCo
         cli_flag="--repos-created-after",
         metavar="YYYY-MM-DD",
         pattern=r"^\d{4}-\d{2}-\d{2}$",
-        help="Process repositories cloned to the Sourcegraph instance on or after this date",
-        help_group="Repo filters",
+        help="Add perms for repositories cloned to the Sourcegraph instance on or after this date",
+        help_group="Set scope (required: pass --full or filters)",
     )
     sync_saml_orgs: bool = src.config_field(
         default=False,
@@ -338,8 +336,8 @@ class Config(src.SourcegraphClientConfig, src.LoggingConfig, src.OpenTelemetryCo
         env_var="SRC_AUTH_PERMS_SYNC_NO_BACKUP",
         cli_flag="--no-backup",
         cli_action="store_true",
-        help="Skip before/after snapshot artifacts and validation where supported",
-        help_group="Mutation",
+        help="Skip before/after snapshot artifacts and validation",
+        help_group="Files",
     )
     parallelism: int = src.config_field(
         default=16,
@@ -347,8 +345,11 @@ class Config(src.SourcegraphClientConfig, src.LoggingConfig, src.OpenTelemetryCo
         cli_flag="--parallelism",
         metavar="N",
         ge=1,
-        help="Concurrent Sourcegraph API worker threads (default: 16)",
-        help_group="Performance",
+        help=(
+            "Concurrent worker threads (default: 16)\n"
+            "Reduce this number to reduce the CPU load on the pgsql database"
+        ),
+        help_group="Performance tuning",
     )
     explicit_permissions_batch_size: int = src.config_field(
         default=25,
@@ -359,7 +360,7 @@ class Config(src.SourcegraphClientConfig, src.LoggingConfig, src.OpenTelemetryCo
         help=(
             "Users per GraphQL request when capturing explicit repository permissions (default: 25)"
         ),
-        help_group="Performance",
+        help_group="Performance tuning",
     )
     max_attempts: int = src.config_field(
         default=5,
@@ -367,8 +368,8 @@ class Config(src.SourcegraphClientConfig, src.LoggingConfig, src.OpenTelemetryCo
         cli_flag="--max-attempts",
         metavar="N",
         ge=1,
-        help="Max attempts per HTTP request before giving up (default: 5)",
-        help_group="Performance",
+        help="Max retries per HTTP request before giving up (default: 5)",
+        help_group="Performance tuning",
     )
     http_timeout_seconds: float = src.config_field(
         default=300.0,
@@ -377,7 +378,7 @@ class Config(src.SourcegraphClientConfig, src.LoggingConfig, src.OpenTelemetryCo
         metavar="SECONDS",
         gt=0,
         help="HTTP read timeout per request in seconds (default: 300)",
-        help_group="Performance",
+        help_group="Performance tuning",
     )
     sample_interval: float = src.config_field(
         default=10.0,
@@ -386,7 +387,7 @@ class Config(src.SourcegraphClientConfig, src.LoggingConfig, src.OpenTelemetryCo
         metavar="SECONDS",
         ge=0,
         help="Seconds between logging compute resource samples; set 0 to disable (default: 10)",
-        help_group="Performance",
+        help_group="Performance measurement",
     )
     fetch_sg_traces: bool = src.config_field(
         default=False,
@@ -394,7 +395,7 @@ class Config(src.SourcegraphClientConfig, src.LoggingConfig, src.OpenTelemetryCo
         cli_flag="--fetch-sg-traces",
         cli_action="store_true",
         help="Ask Sourcegraph to retain GraphQL traces and return debug trace metadata",
-        help_group="Performance",
+        help_group="Performance measurement",
     )
 
 
@@ -471,11 +472,11 @@ def validate_user_filter_selection(command_name: CommandName, config: Config) ->
     if user_scope_filter_count > 1:
         config_error("choose only one of --users or --users-without-explicit-perms")
 
-    user_filter_selected = user_scope_filter_count > 0 or config.created_after is not None
+    user_filter_selected = user_scope_filter_count > 0 or config.users_created_after is not None
     user_filter_allowed = command_name in {"get", "set", "sync_saml_orgs"}
     if user_filter_selected and not user_filter_allowed:
         config_error(
-            "--users, --users-without-explicit-perms, and --created-after "
+            "--users, --users-without-explicit-perms, and --users-created-after "
             "require get, set, or sync-saml-orgs"
         )
 
@@ -502,7 +503,11 @@ def validate_repository_filter_selection(command_name: CommandName, config: Conf
         )
 
     user_filter_selected = any(
-        (bool(config.users), config.users_without_explicit_perms, config.created_after is not None)
+        (
+            bool(config.users),
+            config.users_without_explicit_perms,
+            config.users_created_after is not None,
+        )
     )
     if repository_filter_selected and user_filter_selected:
         config_error("choose either user filters or repo filters, not both")
@@ -513,9 +518,10 @@ def validate_sync_saml_orgs_mode_selection(command_name: CommandName, config: Co
     if command_name != "sync_saml_orgs":
         return
 
-    if config.full and config.created_after is not None:
+    if config.full and config.users_created_after is not None:
         config_error(
-            "--full cannot be combined with --created-after; full mode already syncs every user"
+            "--full cannot be combined with --users-created-after; "
+            "full mode already syncs every user"
         )
     if config.full and (config.users or config.users_without_explicit_perms):
         config_error(
@@ -527,13 +533,13 @@ def validate_sync_saml_orgs_mode_selection(command_name: CommandName, config: Co
             config.full,
             bool(config.users),
             config.users_without_explicit_perms,
-            config.created_after is not None,
+            config.users_created_after is not None,
         )
     )
     if not mode_selected:
         config_error(
             "sync-saml-orgs requires one of --full, --users, "
-            "--users-without-explicit-perms, or --created-after"
+            "--users-without-explicit-perms, or --users-created-after"
         )
 
 
@@ -545,9 +551,9 @@ def validate_set_mode_selection(command_name: CommandName, config: Config) -> No
     if command_name != "set":
         return
 
-    if config.full and config.created_after is not None:
+    if config.full and config.users_created_after is not None:
         config_error(
-            "--full cannot be combined with --created-after because full mode "
+            "--full cannot be combined with --users-created-after because full mode "
             "overwrites mapped repos; omit --full to add grants for new users"
         )
 
@@ -575,7 +581,7 @@ def validate_set_mode_selection(command_name: CommandName, config: Config) -> No
             config.full,
             bool(config.users),
             config.users_without_explicit_perms,
-            config.created_after is not None,
+            config.users_created_after is not None,
             bool(config.repos),
             config.repos_without_explicit_perms,
             config.repos_created_after is not None,
@@ -583,9 +589,10 @@ def validate_set_mode_selection(command_name: CommandName, config: Config) -> No
     )
     if not set_mode_selected:
         config_error(
-            "set requires one of --full, --users, --users-without-explicit-perms, "
-            "--created-after, --repos, --repos-without-explicit-perms, or "
-            "--repos-created-after"
+            "set requires an explicit scope: pass --full for a full overwrite, "
+            "or pass a user/repo filter: --users, --users-without-explicit-perms, "
+            "--users-created-after, --repos, "
+            "--repos-without-explicit-perms, or --repos-created-after"
         )
 
 
@@ -595,17 +602,17 @@ def set_command_options(config: Config) -> permission_types.SetCommandOptions:
         return permission_types.SetCommandOptions(
             mode="users",
             user_identifiers=config.users,
-            user_created_after=config.created_after,
+            user_created_after=config.users_created_after,
         )
     if config.users_without_explicit_perms:
         return permission_types.SetCommandOptions(
             mode="users_without_explicit_perms",
-            user_created_after=config.created_after,
+            user_created_after=config.users_created_after,
         )
-    if config.created_after is not None:
+    if config.users_created_after is not None:
         return permission_types.SetCommandOptions(
-            mode="created_after",
-            user_created_after=config.created_after,
+            mode="users_created_after",
+            user_created_after=config.users_created_after,
         )
     if config.repos:
         return permission_types.SetCommandOptions(
@@ -655,8 +662,8 @@ def sync_saml_orgs_mode(config: Config) -> str:
         return "users"
     if config.users_without_explicit_perms:
         return "users_without_explicit_perms"
-    if config.created_after is not None:
-        return "created_after"
+    if config.users_created_after is not None:
+        return "users_created_after"
     return "full"
 
 
@@ -776,8 +783,8 @@ def run_fields(
         fields["set_mode"] = command.set_mode
     if command.sync_saml_orgs:
         fields["sync_saml_orgs"] = True
-    if config.created_after is not None:
-        fields["created_after"] = config.created_after
+    if config.users_created_after is not None:
+        fields["users_created_after"] = config.users_created_after
     if config.repos:
         fields["repos"] = config.repos
     if config.repos_without_explicit_perms:
@@ -959,7 +966,7 @@ def run_sync_saml_orgs(
         command_data=command_data,
         user_identifiers=config.users if standalone else (),
         users_without_explicit_perms=(config.users_without_explicit_perms if standalone else False),
-        user_created_after=config.created_after if standalone else None,
+        user_created_after=config.users_created_after if standalone else None,
         explicit_permissions_batch_size=config.explicit_permissions_batch_size,
         worker_pool=worker_pool,
     )
@@ -988,7 +995,7 @@ def run_get(
         run_paths,
         user_identifiers=config.users,
         users_without_explicit_perms=config.users_without_explicit_perms,
-        user_created_after=config.created_after,
+        user_created_after=config.users_created_after,
         repository_names=config.repos,
         repositories_without_explicit_perms=config.repos_without_explicit_perms,
         repository_created_after=config.repos_created_after,

@@ -255,7 +255,7 @@ def cmd_get(
     if users_without_explicit_perms:
         cmd_fields["users_without_explicit_perms"] = True
     if user_created_after is not None:
-        cmd_fields["created_after"] = user_created_after
+        cmd_fields["users_created_after"] = user_created_after
     if repository_names:
         cmd_fields["repositories"] = repository_names
     if repositories_without_explicit_perms:
@@ -438,7 +438,7 @@ def load_selected_users(
         created_after_filter: str | None = None
         if user_created_after is not None:
             created_after_filter = sourcegraph_datetime_filter(
-                parse_cli_date(user_created_after, "--created-after")
+                parse_cli_date(user_created_after, "--users-created-after")
             )
         if users_without_explicit_perms:
             candidate_selection = (
@@ -749,9 +749,9 @@ def cmd_set(
             worker_pool=worker_pool,
             mapping_rules=mapping_rules,
         )
-    if options.mode == "created_after":
+    if options.mode == "users_created_after":
         assert options.user_created_after is not None
-        return cmd_set_additive_created_after(
+        return cmd_set_additive_users_created_after(
             client,
             run_paths,
             options.user_created_after,
@@ -912,7 +912,7 @@ def cmd_set_additive_users_without_explicit_perms(
     created_after_filter: str | None = None
     if user_created_after is not None:
         created_after_filter = sourcegraph_datetime_filter(
-            parse_cli_date(user_created_after, "--created-after")
+            parse_cli_date(user_created_after, "--users-created-after")
         )
     with src.span(
         "cmd_set_additive_users_without_explicit_perms",
@@ -1074,7 +1074,7 @@ def cmd_set_additive_users_without_explicit_perms(
         return _additive_command_data(context, users, retain_saml_group_users)
 
 
-def cmd_set_additive_created_after(
+def cmd_set_additive_users_created_after(
     client: src.SourcegraphClient,
     run_paths: backups.RunPaths,
     user_created_after: str,
@@ -1089,10 +1089,10 @@ def cmd_set_additive_created_after(
 ) -> run_context.CommandData:
     """Add missing mapped permissions for users created on or after a date."""
     created_after_filter = sourcegraph_datetime_filter(
-        parse_cli_date(user_created_after, "--created-after")
+        parse_cli_date(user_created_after, "--users-created-after")
     )
     with src.span(
-        "cmd_set_additive_created_after",
+        "cmd_set_additive_users_created_after",
         input_path=str(run_paths.maps_path),
         user_created_after=user_created_after,
         dry_run=dry_run,

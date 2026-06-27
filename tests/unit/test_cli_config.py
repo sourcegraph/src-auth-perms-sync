@@ -209,16 +209,16 @@ class CliConfigTests(unittest.TestCase):
             make_config(
                 maps_path=Path("maps.yaml"),
                 users_without_explicit_perms=True,
-                created_after="2026-01-01",
+                users_created_after="2026-01-01",
             )
         )
         self.assertEqual("users_without_explicit_perms", users_without_permissions.mode)
         self.assertEqual("2026-01-01", users_without_permissions.user_created_after)
-        created_after = cli.set_command_options(
-            make_config(maps_path=Path("maps.yaml"), created_after="2026-01-01")
+        users_created_after = cli.set_command_options(
+            make_config(maps_path=Path("maps.yaml"), users_created_after="2026-01-01")
         )
-        self.assertEqual("created_after", created_after.mode)
-        self.assertEqual("2026-01-01", created_after.user_created_after)
+        self.assertEqual("users_created_after", users_created_after.mode)
+        self.assertEqual("2026-01-01", users_created_after.user_created_after)
         repos = cli.set_command_options(
             make_config(
                 maps_path=Path("maps.yaml"),
@@ -246,9 +246,9 @@ class CliConfigTests(unittest.TestCase):
             "set",
             make_config(maps_path=Path("maps.yaml"), full=True),
         )
-        created_after_command = cli.resolve_command(
+        users_created_after_command = cli.resolve_command(
             "set",
-            make_config(maps_path=Path("maps.yaml"), created_after="2026-01-01"),
+            make_config(maps_path=Path("maps.yaml"), users_created_after="2026-01-01"),
         )
         repos_command = cli.resolve_command(
             "set",
@@ -263,12 +263,12 @@ class CliConfigTests(unittest.TestCase):
         self.assertEqual("users", users_command.set_mode)
         self.assertEqual("set_full", full_command.log_name)
         self.assertEqual("set-dry-run", full_command.artifact_name)
-        self.assertEqual("set_created_after", created_after_command.log_name)
+        self.assertEqual("set_users_created_after", users_created_after_command.log_name)
         self.assertEqual(
             "set-add-users-created-after-dry-run",
-            created_after_command.artifact_name,
+            users_created_after_command.artifact_name,
         )
-        self.assertEqual("created_after", created_after_command.set_mode)
+        self.assertEqual("users_created_after", users_created_after_command.set_mode)
         self.assertEqual("set_repos", repos_command.log_name)
         self.assertEqual("set-repos-dry-run", repos_command.artifact_name)
         self.assertEqual("repos", repos_command.set_mode)
@@ -447,7 +447,7 @@ class CliConfigTests(unittest.TestCase):
     def test_validate_config_allows_get_user_filters_without_set(self) -> None:
         cli.validate_config("get", make_config(users=("alice", "bob@example.com")))
         cli.validate_config("get", make_config(users_without_explicit_perms=True))
-        cli.validate_config("get", make_config(created_after="2026-01-01"))
+        cli.validate_config("get", make_config(users_created_after="2026-01-01"))
 
     def test_validate_config_allows_get_repo_filters_without_set(self) -> None:
         cli.validate_config("get", make_config(repos=("github.com/sourcegraph/one",)))
@@ -497,7 +497,7 @@ class CliConfigTests(unittest.TestCase):
         self.assert_config_error(
             "set",
             make_config(maps_path=Path("maps.yaml")),
-            "set requires one of --full",
+            "set requires an explicit scope: pass --full",
         )
 
     def test_validate_config_rejects_sync_saml_orgs_without_explicit_mode(self) -> None:
@@ -515,15 +515,15 @@ class CliConfigTests(unittest.TestCase):
         )
         self.assert_config_error(
             "sync_saml_orgs",
-            make_config(full=True, created_after="2099-01-01"),
-            "--full cannot be combined with --created-after",
+            make_config(full=True, users_created_after="2099-01-01"),
+            "--full cannot be combined with --users-created-after",
         )
 
     def test_validate_config_allows_sync_saml_orgs_modes(self) -> None:
         cli.validate_config("sync_saml_orgs", make_config(full=True))
         cli.validate_config("sync_saml_orgs", make_config(users=("alice",)))
         cli.validate_config("sync_saml_orgs", make_config(users_without_explicit_perms=True))
-        cli.validate_config("sync_saml_orgs", make_config(created_after="2026-01-01"))
+        cli.validate_config("sync_saml_orgs", make_config(users_created_after="2026-01-01"))
 
     def test_resolve_command_names_sync_saml_orgs_artifacts_by_mode(self) -> None:
         self.assertEqual(
@@ -537,33 +537,33 @@ class CliConfigTests(unittest.TestCase):
             ).artifact_name,
         )
         self.assertEqual(
-            "sync-saml-orgs-created-after-dry-run",
+            "sync-saml-orgs-users-created-after-dry-run",
             cli.resolve_command(
-                "sync_saml_orgs", make_config(created_after="2026-01-01")
+                "sync_saml_orgs", make_config(users_created_after="2026-01-01")
             ).artifact_name,
         )
 
-    def test_created_after_config_accepts_yyyy_mm_dd_date_arguments(self) -> None:
-        config = load_config_from_env(SRC_AUTH_PERMS_SYNC_CREATED_AFTER="2026-01-01")
+    def test_users_created_after_config_accepts_yyyy_mm_dd_date_arguments(self) -> None:
+        config = load_config_from_env(SRC_AUTH_PERMS_SYNC_USERS_CREATED_AFTER="2026-01-01")
 
-        self.assertEqual("2026-01-01", config.created_after)
-        cli.validate_config("get", make_config(created_after="2026-01-01"))
+        self.assertEqual("2026-01-01", config.users_created_after)
+        cli.validate_config("get", make_config(users_created_after="2026-01-01"))
         cli.validate_config(
             "set",
             make_config(
                 maps_path=Path("maps.yaml"),
                 users=("alice",),
-                created_after="2026-01-01",
+                users_created_after="2026-01-01",
             ),
         )
 
-    def test_created_after_config_rejects_values_outside_yyyy_mm_dd_shape(self) -> None:
+    def test_users_created_after_config_rejects_values_outside_yyyy_mm_dd_shape(self) -> None:
         for invalid_value in ("2026-1-01", "2026-01-01T00:00:00Z"):
             with (
                 self.subTest(invalid_value=invalid_value),
                 self.assertRaisesRegex(shared_config.ConfigError, "String should match pattern"),
             ):
-                load_config_from_env(SRC_AUTH_PERMS_SYNC_CREATED_AFTER=invalid_value)
+                load_config_from_env(SRC_AUTH_PERMS_SYNC_USERS_CREATED_AFTER=invalid_value)
 
     def test_explicit_permissions_batch_size_config_is_loaded_from_env(self) -> None:
         config = load_config_from_env(SRC_AUTH_PERMS_SYNC_EXPLICIT_PERMISSIONS_BATCH_SIZE="50")
@@ -661,11 +661,11 @@ class CliConfigTests(unittest.TestCase):
             "choose at most one",
         )
 
-    def test_validate_config_rejects_full_created_after(self) -> None:
+    def test_validate_config_rejects_full_users_created_after(self) -> None:
         self.assert_config_error(
             "set",
-            make_config(maps_path=Path("maps.yaml"), full=True, created_after="2026-01-01"),
-            "--full cannot be combined with --created-after",
+            make_config(maps_path=Path("maps.yaml"), full=True, users_created_after="2026-01-01"),
+            "--full cannot be combined with --users-created-after",
         )
 
     def test_require_set_input_file_reports_missing_maps_file(self) -> None:
@@ -727,7 +727,7 @@ class CliConfigTests(unittest.TestCase):
         self.assertNotIn("no_backup", fields)
         self.assertNotIn("set_mode", fields)
         self.assertNotIn("sync_saml_orgs", fields)
-        self.assertNotIn("created_after", fields)
+        self.assertNotIn("users_created_after", fields)
 
     def test_run_fields_include_no_backup_only_when_set(self) -> None:
         configuration = make_config(no_backup=True)

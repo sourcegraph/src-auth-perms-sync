@@ -536,15 +536,15 @@ class FakeSourcegraphClient:
 
     def _site_users(self, variables: dict[str, object]) -> dict[str, Any]:
         created_at_filter = variables.get("createdAt")
-        created_after: str | None = None
+        users_created_after: str | None = None
         if isinstance(created_at_filter, dict):
             created_after_value = cast(dict[str, object], created_at_filter).get("gte")
             if isinstance(created_after_value, str):
-                created_after = created_after_value
+                users_created_after = created_after_value
         candidates = [
             user
             for user in self._users
-            if created_after is None or user["createdAt"] >= created_after
+            if users_created_after is None or user["createdAt"] >= users_created_after
         ]
         offset = self._integer_variable(variables, "offset")
         # Serve pages no wider than SITE_USERS_PAGE_CAP regardless of the
