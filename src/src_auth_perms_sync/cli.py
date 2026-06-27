@@ -39,17 +39,17 @@ COMMON_CONFIG_FIELDS_BEFORE = src.config_field_names(
     src.SourcegraphClientConfig,
 )
 COMMON_CONFIG_FIELDS_AFTER = src.config_field_names(
-    src.LoggingConfig,
-    src.OpenTelemetryConfig,
     "artifacts_dir",
     "no_backup",
     "no_files",
-    "explicit_permissions_batch_size",
     "parallelism",
+    "explicit_permissions_batch_size",
     "http_timeout_seconds",
     "max_attempts",
     "sample_interval",
     "fetch_sg_traces",
+    src.LoggingConfig,
+    src.OpenTelemetryConfig,
 )
 GET_CONFIG_FIELDS = src.config_field_names(
     *COMMON_CONFIG_FIELDS_BEFORE,
@@ -217,6 +217,7 @@ class Config(src.SourcegraphClientConfig, src.LoggingConfig, src.OpenTelemetryCo
         help=(
             "Directory containing per-endpoint artifact directories\n"
             "(default: ./src-auth-perms-sync-runs)\n"
+            "Can set to /tmp/src-auth-perms-sync-runs, so the OS cleans up these files\n"
             "Relative paths are resolved from the current working directory"
         ),
         help_group="Files",
@@ -236,7 +237,7 @@ class Config(src.SourcegraphClientConfig, src.LoggingConfig, src.OpenTelemetryCo
         cli_action="store_true",
         help=(
             "Write nothing to disk: no generated YAML, snapshots, or log file\n"
-            "With --apply, also requires --no-backup (explicitly giving up restore)"
+            "With --apply, also requires --no-backup (explicitly sacrificing restore capabilities)"
         ),
         help_group="Files",
     )
@@ -258,7 +259,9 @@ class Config(src.SourcegraphClientConfig, src.LoggingConfig, src.OpenTelemetryCo
         cli_action="store_true",
         help=(
             "Full overwrite mode: process every mapped user and repo\n"
-            "Use this for initial sync, and to remove perms now out of scope"
+            "Use this for initial sync, and to remove perms now out of scope\n"
+            "NOTE: This can be CPU intensive on the database server,\n"
+            "Reduce --parallelism if instance performance is impacted"
         ),
         help_group="Set scope (required: pass --full or filters)",
     )
@@ -346,7 +349,7 @@ class Config(src.SourcegraphClientConfig, src.LoggingConfig, src.OpenTelemetryCo
             "Concurrent worker threads (default: 16)\n"
             "Reduce this number to reduce the CPU load on the pgsql database"
         ),
-        help_group="Performance",
+        help_group="Performance tuning",
     )
     explicit_permissions_batch_size: int = src.config_field(
         default=25,
@@ -357,7 +360,7 @@ class Config(src.SourcegraphClientConfig, src.LoggingConfig, src.OpenTelemetryCo
         help=(
             "Users per GraphQL request when capturing explicit repository permissions (default: 25)"
         ),
-        help_group="Performance",
+        help_group="Performance tuning",
     )
     max_attempts: int = src.config_field(
         default=5,
@@ -366,7 +369,7 @@ class Config(src.SourcegraphClientConfig, src.LoggingConfig, src.OpenTelemetryCo
         metavar="N",
         ge=1,
         help="Max retries per HTTP request before giving up (default: 5)",
-        help_group="Performance",
+        help_group="Performance tuning",
     )
     http_timeout_seconds: float = src.config_field(
         default=300.0,
@@ -375,7 +378,7 @@ class Config(src.SourcegraphClientConfig, src.LoggingConfig, src.OpenTelemetryCo
         metavar="SECONDS",
         gt=0,
         help="HTTP read timeout per request in seconds (default: 300)",
-        help_group="Performance",
+        help_group="Performance tuning",
     )
     sample_interval: float = src.config_field(
         default=10.0,
@@ -384,7 +387,7 @@ class Config(src.SourcegraphClientConfig, src.LoggingConfig, src.OpenTelemetryCo
         metavar="SECONDS",
         ge=0,
         help="Seconds between logging compute resource samples; set 0 to disable (default: 10)",
-        help_group="Performance",
+        help_group="Performance measurement",
     )
     fetch_sg_traces: bool = src.config_field(
         default=False,
@@ -392,7 +395,7 @@ class Config(src.SourcegraphClientConfig, src.LoggingConfig, src.OpenTelemetryCo
         cli_flag="--fetch-sg-traces",
         cli_action="store_true",
         help="Ask Sourcegraph to retain GraphQL traces and return debug trace metadata",
-        help_group="Performance",
+        help_group="Performance measurement",
     )
 
 
