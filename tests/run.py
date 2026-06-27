@@ -77,6 +77,10 @@ FIXTURES_DIR = ROOT / "tests" / "e2e" / "fixtures"
 # worktree's endpoint runs directory so the mutating permission cycles have a
 # valid maps file to apply. See ensure_live_maps_seed().
 LIVE_MAPS_SEED_PATH = ROOT / "tests" / "live-maps-seed.yaml"
+# Live checks that reach the pgsql pod over `kubectl exec` (and so need a
+# valid AWS SSO session). check_database_connectivity() probes the pod when
+# any of these is selected and skips them up front when it is unreachable.
+DATABASE_BACKED_LIVE_CHECKS = ("live: perms follow saml group change",)
 TEST_LOGS_DIR = ROOT / "logs"
 LOG_PATH_PATTERN = re.compile(r"Writing log events to (.+?/log\.json)\.")
 STRUCTURED_EVENT_LINE_PATTERN = re.compile(r"^[.]*event=\S+\s*$")
@@ -884,6 +888,10 @@ class TestSuite:
     test_user: str = ""
     skipped_check_names: list[str] = field(default_factory=list[str])
     filter_matched_count: int = 0
+    # Set by check_database_connectivity(); None until the pgsql pod is probed.
+    # False means DB-backed live tests are skipped (the recorded probe failure
+    # still makes the run exit non-zero).
+    database_available: bool | None = None
 
     # -- bookkeeping --------------------------------------------------------
 
@@ -1440,6 +1448,7 @@ class TestSuite:
             return
         self.record("live prerequisites", "live", True, 0.0)
 
+        self.check_database_connectivity()
         self.check_live_hygiene()
         if self.select("wheel install smoke"):
             self.run_wheel_install_smoke()
@@ -1448,6 +1457,49 @@ class TestSuite:
         self.run_saml_group_change_check(environment)
         self.run_live_permission_cycles(environment)
         self.check_live_hygiene()
+
+    def check_database_connectivity(self) -> None:
+        """Probe the pgsql pod once, up front, so an expired AWS SSO session
+        is reported as a single early failure instead of crashing a later
+        DB-backed test mid-run.
+
+        Only DB-backed live tests need the pod (via `kubectl exec` against
+        EKS, which requires a valid AWS SSO session), so the probe is skipped
+        when none of them are selected. On failure, DB-backed tests skip
+        themselves and the run still exits non-zero via this recorded failure.
+        """
+        label = "live: database connectivity"
+        if not self.test_selected(label, *DATABASE_BACKED_LIVE_CHECKS):
+            return
+        started = time.monotonic()
+        from tests import setup as instance_setup
+
+        try:
+            kubectl_config = cast("dict[str, Any]", load_setup_config()["kubectl"])
+            instance_setup.run_sql(kubectl_config, "SELECT 1;", timeout_seconds=30)
+        except Exception as exception:
+            self.database_available = False
+            self.record(
+                label,
+                "live",
+                False,
+                time.monotonic() - started,
+                database_error_detail(str(exception)),
+            )
+            return
+        self.database_available = True
+        self.record(label, "live", True, time.monotonic() - started)
+
+    def skip_if_database_unavailable(self, label: str) -> bool:
+        """Log and return True when a DB-backed test must skip the pgsql pod."""
+        if self.database_available is False:
+            log.warning(
+                "SKIP [live] %s - database unavailable "
+                "(see 'live: database connectivity'); run `aws sso login`",
+                label,
+            )
+            return True
+        return False
 
     def check_live_hygiene(self) -> None:
         """Cheap small-state guard: no pending bindIDs should ever persist.
@@ -2181,6 +2233,8 @@ class TestSuite:
         """
         label = "live: perms follow saml group change"
         if not self.select(label):
+            return
+        if self.skip_if_database_unavailable(label):
             return
         log.info("\n--- Live: permissions follow a SAML group change ---")
         import yaml
@@ -3586,6 +3640,15 @@ def load_setup_config() -> dict[str, Any]:
     import yaml
 
     return cast("dict[str, Any]", yaml.safe_load(SETUP_CONFIG_PATH.read_text(encoding="utf-8")))
+
+
+def database_error_detail(error: str) -> str:
+    """Summarize a pgsql/kubectl failure, calling out expired AWS SSO."""
+    lowered = error.lower()
+    if "sso session" in lowered and ("expired" in lowered or "invalid" in lowered):
+        return "pgsql pod unreachable: AWS SSO session expired - run `aws sso login`"
+    first_line = next((line for line in error.splitlines() if line.strip()), "unknown error")
+    return f"pgsql pod unreachable: {first_line.strip()}"
 
 
 def maps_file_has_usable_rule(path: Path) -> bool:
