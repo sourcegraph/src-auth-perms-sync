@@ -24,7 +24,7 @@ defaults:
 jobs:
   changes:
     name: Detect changed paths
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     outputs:
       github_actions: ${{ steps.changed_paths.outputs.github_actions }}
       markdown: ${{ steps.changed_paths.outputs.markdown }}
@@ -92,7 +92,7 @@ jobs:
     name: Lint GitHub Actions
     needs: changes
     if: needs.changes.outputs.github_actions == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     env:
       ACTIONLINT_VERSION: "1.7.12"
 
@@ -124,7 +124,7 @@ jobs:
     name: Lint Markdown
     needs: changes
     if: needs.changes.outputs.markdown == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     env:
       MARKDOWNLINT_CLI2_VERSION: "0.22.1"
       MARKDOWNLINT_RELATIVE_LINKS_VERSION: "5.1.0"
@@ -153,7 +153,7 @@ jobs:
     name: Validate Python
     needs: changes
     if: needs.changes.outputs.python == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     env:
       PYTHON_VERSION: "3.11"
       UV_VERSION: "0.11.7"
@@ -207,7 +207,7 @@ jobs:
     name: Build and smoke-test package
     needs: changes
     if: inputs.build-package && needs.changes.outputs.package == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     env:
       PACKAGE_NAME: src-auth-perms-sync
       PYTHON_VERSION: "3.11"
@@ -252,7 +252,7 @@ jobs:
     name: Validate package
     needs: [changes, github_actions, markdown, python, package_build]
     if: always()
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
 
     steps:
       - name: Confirm validation results
