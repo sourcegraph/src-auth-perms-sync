@@ -30,7 +30,7 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    "json5>=0.15.0",
+    "json5>=0.17.3",
     "pyyaml>=6.0.3",
     "src-py-lib[otel]==0.3.2",
 ]
