@@ -6,6 +6,6 @@
   },
   "devDependencies": {
     "markdownlint-cli2": "0.24.0",
-    "markdownlint-rule-relative-links": "5.1.2"
+    "markdownlint-rule-relative-links": "5.1.4"
   }
 }
