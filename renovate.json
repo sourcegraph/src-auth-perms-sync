@@ -1,8 +1,16 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": [
-    "local>sourcegraph/renovate-config"
+    "local>sourcegraph/renovate-config",
+    "customManagers:githubActionsVersions"
   ],
+  "lockFileMaintenance": {
+    "enabled": true,
+    "schedule": [
+      "before 4am"
+    ]
+  },
+  "osvVulnerabilityAlerts": true,
   "packageRules": [
     {
       "matchPackageNames": [
