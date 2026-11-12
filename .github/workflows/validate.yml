@@ -61,6 +61,15 @@ jobs:
                   ;;
               esac
 
+              # Workflows define every job, so a workflow change runs them all.
+              case "${changed_file}" in
+                .github/workflows/*)
+                  markdown_changed=true
+                  python_changed=true
+                  package_changed=true
+                  ;;
+              esac
+
               case "${changed_file}" in
                 *.md|.markdownlint-cli2.yaml|package.json|package-lock.json)
                   markdown_changed=true
