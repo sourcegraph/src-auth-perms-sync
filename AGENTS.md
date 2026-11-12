@@ -241,6 +241,10 @@ Business workflows live in packages:
 - `uv run pyright` must be clean. No `# type: ignore` to silence -
   fix the underlying type.
 - Local tests use stdlib `unittest`: `uv run python -m unittest discover -s tests`.
+- Dependencies wait 3 days after release: `minimumReleaseAge` in
+  `renovate.json` (`src-py-lib` is exempt), `min-release-age` in `.npmrc`, and
+  `--uploaded-prior-to P3D` where workflows `pip install` uv. pip reports a
+  younger pin as `No matching distribution found`.
 - For Sourcegraph mutation-path changes, also verify by dry-running `--get` /
   `--set` / `--restore` against a real instance and diffing. If the expected
   changes look right, run `--apply` against a scratch instance and inspect
