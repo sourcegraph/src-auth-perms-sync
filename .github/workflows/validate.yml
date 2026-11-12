@@ -62,7 +62,7 @@ jobs:
               esac
 
               case "${changed_file}" in
-                *.md|.markdownlint-cli2.yaml)
+                *.md|.markdownlint-cli2.yaml|package.json|package-lock.json)
                   markdown_changed=true
                   ;;
               esac
@@ -74,7 +74,7 @@ jobs:
               esac
 
               case "${changed_file}" in
-                .python-version|LICENSE|README.md|maps-example.yaml|pyproject.toml|uv.lock|src/*)
+                .python-version|LICENSE|README.md|build-requirements.txt|maps-example.yaml|pyproject.toml|uv.lock|src/*)
                   package_changed=true
                   ;;
               esac
@@ -126,11 +126,6 @@ jobs:
     needs: changes
     if: needs.changes.outputs.markdown == 'true'
     runs-on: ubuntu-24.04
-    env:
-      # renovate: datasource=npm depName=markdownlint-cli2
-      MARKDOWNLINT_CLI2_VERSION: "0.22.1"
-      # renovate: datasource=npm depName=markdownlint-rule-relative-links
-      MARKDOWNLINT_RELATIVE_LINKS_VERSION: "5.1.0"
 
     steps:
       - name: Check out code
@@ -143,14 +138,13 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.npm
-          key: npm-${{ runner.os }}-markdownlint-cli2-${{ env.MARKDOWNLINT_CLI2_VERSION }}-relative-links-${{ env.MARKDOWNLINT_RELATIVE_LINKS_VERSION }}
+          key: npm-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+
+      - name: Install markdownlint
+        run: npm ci --ignore-scripts
 
       - name: Lint Markdown
-        run: >
-          npx --yes
-          -p "markdownlint-cli2@${MARKDOWNLINT_CLI2_VERSION}"
-          -p "markdownlint-rule-relative-links@${MARKDOWNLINT_RELATIVE_LINKS_VERSION}"
-          markdownlint-cli2
+        run: npm run lint:markdown
 
   python:
     name: Validate Python
@@ -243,7 +237,9 @@ jobs:
         run: python -m pip install "uv==${UV_VERSION}"
 
       - name: Build distributions
-        run: uv build --wheel --sdist --out-dir dist --no-create-gitignore
+        run: |
+          uv build --wheel --sdist --out-dir dist --no-create-gitignore \
+            --build-constraints build-requirements.txt --require-hashes
 
       - name: Smoke test installed wheel
         run: |
