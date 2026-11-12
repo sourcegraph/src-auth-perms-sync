@@ -80,6 +80,10 @@ uv run tests/run.py --update-golden
 - The release workflow builds from the tag and checks that wheel and source
   distribution filenames match the tag version before publishing.
 - Do not make the release workflow edit `pyproject.toml` or `uv.lock`.
+- The release workflow fails when `uv.lock` is behind the latest releases
+  `pyproject.toml` allows. Before tagging, merge open Renovate PRs. If the
+  freshness check below lists updates, tick the lock file maintenance box on
+  the Dependency Dashboard issue and merge that PR first.
 - Validate the remote head of `main` before tagging it:
 
 ```bash
@@ -95,6 +99,7 @@ git pull --ff-only
 test "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)"
 
 uv lock --check
+uv lock --upgrade --refresh --dry-run 2>&1 | tee /dev/stderr | grep "No lockfile changes detected"
 actionlint
 uv run ruff check src/src_auth_perms_sync/ tests/
 uv run ruff format --check src/src_auth_perms_sync/ tests/

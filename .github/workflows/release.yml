@@ -132,6 +132,16 @@ jobs:
           echo "tag=${release_tag}" >> "${GITHUB_OUTPUT}"
           echo "version=${release_tag#v}" >> "${GITHUB_OUTPUT}"
 
+      - name: Validate lockfile freshness
+        run: |
+          upgrade_plan="$(uv lock --upgrade --refresh --dry-run 2>&1)" || true
+          echo "${upgrade_plan}"
+          if ! grep -q "No lockfile changes detected" <<<"${upgrade_plan}"; then
+            echo "::error title=Lockfile freshness::uv did not confirm that uv.lock is on the latest releases pyproject.toml allows."
+            echo "::error::If updates are listed above, merge the Renovate lock file maintenance PR, then tag the new main commit."
+            exit 1
+          fi
+
       - name: Validate runner architecture
         run: |
           actual_machine=$(uv run --frozen python - <<'PY'
