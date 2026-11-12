@@ -128,7 +128,7 @@ jobs:
     runs-on: ubuntu-24.04
     env:
       # renovate: datasource=npm depName=markdownlint-cli2
-      MARKDOWNLINT_CLI2_VERSION: "0.22.1"
+      MARKDOWNLINT_CLI2_VERSION: "0.24.1"
       # renovate: datasource=npm depName=markdownlint-rule-relative-links
       MARKDOWNLINT_RELATIVE_LINKS_VERSION: "5.1.0"
 
