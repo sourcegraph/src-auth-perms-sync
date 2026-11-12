@@ -79,6 +79,7 @@ jobs:
       PACKAGE_NAME: src-auth-perms-sync
       PYTHON_VERSION: "3.11"
       TARGET_DESCRIPTION: ${{ matrix.target_description }}
+      # renovate: datasource=pypi depName=uv
       UV_VERSION: "0.11.7"
 
     steps:
