@@ -80,7 +80,7 @@ jobs:
       PYTHON_VERSION: "3.11"
       TARGET_DESCRIPTION: ${{ matrix.target_description }}
       # renovate: datasource=pypi depName=uv
-      UV_VERSION: "0.11.7"
+      UV_VERSION: "0.13.4"
 
     steps:
       - name: Check out release ref
