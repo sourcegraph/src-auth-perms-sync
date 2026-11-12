@@ -56,7 +56,7 @@ jobs:
 
             while IFS= read -r changed_file; do
               case "${changed_file}" in
-                .github/workflows/*)
+                .github/actionlint.yml|.github/workflows/*)
                   github_actions_changed=true
                   ;;
               esac
