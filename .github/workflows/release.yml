@@ -154,6 +154,10 @@ jobs:
           dist_dir="build/release/dist"
           requirements_file="build/release/requirements.txt"
           runtime_requirements_file="build/release/runtime-requirements.txt"
+          unversioned_sbom_file="build/release/unversioned-sbom.cdx.json"
+          sbom_name="${PACKAGE_NAME}.cdx.json"
+          sbom_path="${dist_dir}/${sbom_name}"
+          sbom_checksum_path="${sbom_path}.sha256"
           asset_path="build/release/${ASSET_BASENAME}.tar.gz"
           checksum_path="${asset_path}.sha256"
 
@@ -213,10 +217,27 @@ jobs:
               --no-header \
               --no-annotate \
               --output-file "${requirements_file}"
+            uv export \
+              --no-sources \
+              --no-dev \
+              --preview-features sbom-export \
+              --format cyclonedx1.5 \
+              --output-file "${unversioned_sbom_file}"
           )
 
           cp "${dependency_metadata_dir}/${requirements_file}" "${requirements_file}"
           cp "${requirements_file}" "${runtime_requirements_file}"
+          # uv leaves the version off projects whose version comes from Git tags.
+          jq --arg version "${release_version}" \
+            '.metadata.component.version = $version
+              | .metadata.component.purl = "pkg:pypi/\(.metadata.component.name)@\($version)"' \
+            "${dependency_metadata_dir}/${unversioned_sbom_file}" > "${sbom_path}"
+          if ! diff \
+            <(sed 's/ ;.*//' "${runtime_requirements_file}" | sort) \
+            <(jq --raw-output '.components[] | "\(.name)==\(.version)"' "${sbom_path}" | sort); then
+            echo "::error title=SBOM mismatch::SBOM components differ from the wheelhouse runtime requirements."
+            exit 1
+          fi
           if grep -Eq '(^-e[[:space:]]|^(\.\.?/)|(^|[[:space:]])file:| @ (\.\.?/|file:))' "${runtime_requirements_file}"; then
             echo "::error title=Unexpected local dependency::Runtime requirements must resolve from PyPI."
             cat "${runtime_requirements_file}"
@@ -273,6 +294,7 @@ jobs:
             cd "$(dirname "${project_wheel_path}")"
             shasum -a 256 "${project_wheel_name}" > "$(basename "${project_wheel_checksum_path}")"
             shasum -a 256 "${project_source_distribution_name}" > "$(basename "${project_source_distribution_checksum_path}")"
+            shasum -a 256 "${sbom_name}" > "$(basename "${sbom_checksum_path}")"
           )
 
           tar -C "${release_dir}" -czf "${asset_path}" wheelhouse
@@ -290,6 +312,8 @@ jobs:
             echo "project_source_distribution_name=${project_source_distribution_name}"
             echo "project_wheel_checksum_path=${project_wheel_checksum_path}"
             echo "project_source_distribution_checksum_path=${project_source_distribution_checksum_path}"
+            echo "sbom_path=${sbom_path}"
+            echo "sbom_checksum_path=${sbom_checksum_path}"
           } >> "${GITHUB_OUTPUT}"
 
       - name: Validate offline install from tarball
@@ -347,6 +371,8 @@ jobs:
           Verify the tarball downloads with the matching \`.sha256\` files.
           The GitHub release also includes the same \`${project_wheel_name}\` and
           \`${project_source_distribution_name}\` files uploaded to PyPI, plus matching checksums.
+          \`${PACKAGE_NAME}.cdx.json\` is a CycloneDX 1.5 SBOM (software bill of materials)
+          listing this project and every runtime wheel in the tarballs.
 
           ### Connected PyPI install
 
@@ -380,6 +406,8 @@ jobs:
             ${{ steps.build.outputs.project_source_distribution_path }}
             ${{ steps.build.outputs.project_wheel_checksum_path }}
             ${{ steps.build.outputs.project_source_distribution_checksum_path }}
+            ${{ steps.build.outputs.sbom_path }}
+            ${{ steps.build.outputs.sbom_checksum_path }}
 
       - name: Upload release notes artifact
         if: matrix.platform == 'linux-x86_64'
