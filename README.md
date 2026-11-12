@@ -186,7 +186,7 @@ To receive structured wide events programmatically, pass an event sink:
 
 ```python
 events = src.InMemoryEventSink()
-src.Get(config, event_sink=events)   # or src.CallbackEventSink(my_function)
+src.Get(config, event_sink=events)  # or src.CallbackEventSink(my_function)
 ```
 
 To run fully disk-free (no generated YAML, snapshots, or log file), set
