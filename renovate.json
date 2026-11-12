@@ -10,6 +10,7 @@
       "before 4am"
     ]
   },
+  "minimumReleaseAge": "3 days",
   "osvVulnerabilityAlerts": true,
   "packageRules": [
     {
@@ -17,6 +18,13 @@
         "build-requirements.txt"
       ],
       "groupName": "build requirements"
+    },
+    {
+      "description": "First-party package, no cooldown",
+      "matchPackageNames": [
+        "src-py-lib"
+      ],
+      "minimumReleaseAge": null
     },
     {
       "matchPackageNames": [
