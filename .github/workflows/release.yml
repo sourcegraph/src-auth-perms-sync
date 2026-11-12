@@ -176,7 +176,8 @@ jobs:
           mkdir -p "${wheelhouse_dir}" "${dist_dir}"
           shopt -s nullglob
 
-          uv build --wheel --sdist --out-dir "${dist_dir}" --no-create-gitignore
+          uv build --wheel --sdist --out-dir "${dist_dir}" --no-create-gitignore \
+            --build-constraints build-requirements.txt --require-hashes
           project_wheels=("${dist_dir}"/*.whl)
           if [[ "${#project_wheels[@]}" -ne 1 ]]; then
             echo "::error title=Unexpected wheel count::Expected one project wheel, found ${#project_wheels[@]}."
@@ -224,7 +225,6 @@ jobs:
               --no-sources \
               --no-dev \
               --no-emit-project \
-              --no-hashes \
               --no-header \
               --no-annotate \
               --output-file "${requirements_file}"
@@ -244,7 +244,7 @@ jobs:
               | .metadata.component.purl = "pkg:pypi/\(.metadata.component.name)@\($version)"' \
             "${dependency_metadata_dir}/${unversioned_sbom_file}" > "${sbom_path}"
           if ! diff \
-            <(sed 's/ ;.*//' "${runtime_requirements_file}" | sort) \
+            <(grep --only-matching '^[^ ]*==[^ ]*' "${runtime_requirements_file}" | sort) \
             <(jq --raw-output '.components[] | "\(.name)==\(.version)"' "${sbom_path}" | sort); then
             echo "::error title=SBOM mismatch::SBOM components differ from the wheelhouse runtime requirements."
             exit 1
@@ -257,6 +257,7 @@ jobs:
 
           python -m pip wheel \
             --only-binary=:all: \
+            --require-hashes \
             --wheel-dir "${wheelhouse_dir}" \
             --requirement "${runtime_requirements_file}"
 

@@ -12,7 +12,7 @@
 actionlint
 
 ### Markdown files
-npx --yes -p markdownlint-cli2@0.22.1 -p markdownlint-rule-relative-links@5.1.0 markdownlint-cli2
+npm ci --ignore-scripts && npm run lint:markdown
 
 ### Non-ASCII characters in tracked text files
 uv run python tests/unicode_scan.py
@@ -80,6 +80,9 @@ uv run tests/run.py --update-golden
 - The release workflow builds from the tag and checks that wheel and source
   distribution filenames match the tag version before publishing.
 - Do not make the release workflow edit `pyproject.toml` or `uv.lock`.
+- `build-requirements.txt` pins the build backend and everything it installs
+  to hashes. `uv build` fails on any build requirement missing from it, so a
+  new entry in `build-system.requires` needs the file regenerated.
 - The release workflow fails when `uv.lock` is behind the latest releases
   `pyproject.toml` allows. Before tagging, merge open Renovate PRs. If the
   freshness check below lists updates, tick the lock file maintenance box on
@@ -106,8 +109,9 @@ uv run ruff format --check src/src_auth_perms_sync/ tests/
 uv run pyright
 uv run python -m unittest discover -s tests
 uv run src-auth-perms-sync --help
-npx --yes -p markdownlint-cli2@0.22.1 -p markdownlint-rule-relative-links@5.1.0 markdownlint-cli2
-uv build --wheel --sdist --out-dir /tmp/src-auth-perms-sync-release-check --no-create-gitignore
+npm ci --ignore-scripts && npm run lint:markdown
+uv build --wheel --sdist --out-dir /tmp/src-auth-perms-sync-release-check --no-create-gitignore \
+  --build-constraints build-requirements.txt --require-hashes
 rm -rf /tmp/src-auth-perms-sync-release-check
 ```
 
