@@ -163,7 +163,7 @@ jobs:
     env:
       PYTHON_VERSION: "3.11"
       # renovate: datasource=pypi depName=uv
-      UV_VERSION: "0.13.4"
+      UV_VERSION: "0.13.7"
 
     steps:
       - name: Check out code
@@ -219,7 +219,7 @@ jobs:
       PACKAGE_NAME: src-auth-perms-sync
       PYTHON_VERSION: "3.11"
       # renovate: datasource=pypi depName=uv
-      UV_VERSION: "0.13.4"
+      UV_VERSION: "0.13.7"
 
     steps:
       - name: Check out code
