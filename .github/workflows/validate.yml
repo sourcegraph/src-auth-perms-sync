@@ -130,7 +130,7 @@ jobs:
       # renovate: datasource=npm depName=markdownlint-cli2
       MARKDOWNLINT_CLI2_VERSION: "0.22.1"
       # renovate: datasource=npm depName=markdownlint-rule-relative-links
-      MARKDOWNLINT_RELATIVE_LINKS_VERSION: "5.1.0"
+      MARKDOWNLINT_RELATIVE_LINKS_VERSION: "5.1.4"
 
     steps:
       - name: Check out code
