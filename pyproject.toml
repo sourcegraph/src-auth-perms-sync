@@ -6,7 +6,7 @@ build-backend = "hatchling.build"
 dev = [
     "pyright>=1.1.414",
     "ruff>=0.17.5",
-    "types-pyyaml>=6.0.12.20261111",
+    "types-pyyaml>=6.0.12.20261113",
 ]
 
 [project]
