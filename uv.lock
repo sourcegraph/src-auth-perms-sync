@@ -694,7 +694,7 @@ dev = [
 requires-dist = [
     { name = "json5", specifier = ">=0.17.3" },
     { name = "pyyaml", specifier = ">=6.0.3" },
-    { name = "src-py-lib", extras = ["otel"], specifier = "==0.3.3" },
+    { name = "src-py-lib", extras = ["otel"], specifier = "==0.3.4" },
 ]
 
 [package.metadata.requires-dev]
@@ -707,7 +707,7 @@ dev = [
 
 [[package]]
 name = "src-py-lib"
-version = "0.3.3"
+version = "0.3.4"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "httpx" },
@@ -715,9 +715,9 @@ dependencies = [
     { name = "pydantic" },
     { name = "python-dotenv" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/c7/cf/7319326af9b7f25f88e0a16726dc5d295e8add2de0c19bedf2a51413ee20/src_py_lib-0.3.3.tar.gz", hash = "sha256:4bd923907543a66e05d748cacb5ed8a46fb0a0a120bce816a2a01e67f0bd5f63", size = 102000, upload-time = "2026-11-11T10:59:10.362Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/bd/76/dea2b7a708b8916efa45c1d053ea8791531688b4733711358533cad57bf9/src_py_lib-0.3.4.tar.gz", hash = "sha256:36c98fd1e49c8bc55ef35beb02c2ced1b3057935b5226ab35d3a52ccba3d9d8b", size = 104944, upload-time = "2026-11-23T20:41:26.691Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/32/f0/34b6f1c3edf5c2be3c274969170730a9dd9604321b6dbbcf729644b1a63d/src_py_lib-0.3.3-py3-none-any.whl", hash = "sha256:90db7591e85e94f052285d32fb494e2d30f12c9cdda008cae2ee84df4e25e679", size = 54431, upload-time = "2026-11-11T10:59:08.988Z" },
+    { url = "https://files.pythonhosted.org/packages/99/db/c55c4b77cd40563d666f89fde0995488601db023316b12078917fcd98cf5/src_py_lib-0.3.4-py3-none-any.whl", hash = "sha256:c8195ef30cf2d02a22cc9da4d9cd7054f793223c50cc9de353ec3b0d59883773", size = 54423, upload-time = "2026-11-23T20:41:25.631Z" },
 ]
 
 [package.optional-dependencies]
