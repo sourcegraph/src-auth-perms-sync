@@ -12,7 +12,7 @@
 actionlint
 
 ### Markdown files
-npm ci --ignore-scripts && npm run lint:markdown
+uv run rumdl check .
 
 ### Non-ASCII characters in tracked text files
 uv run python tests/unicode_scan.py
@@ -79,14 +79,14 @@ uv run tests/run.py --update-golden
   from `origin/main`.
 - The release workflow builds from the tag and checks that wheel and source
   distribution filenames match the tag version before publishing.
-- Do not make the release workflow edit `pyproject.toml` or `uv.lock`.
+- The release workflow upgrades every dependency to its latest release that
+  `pyproject.toml` allows (`uv lock --upgrade`), validates and builds the
+  wheelhouse with that lockfile, and does not commit it.
+- Keep the checkout that builds the distributions unmodified: `hatch-vcs`
+  gives a modified checkout a development version.
 - `build-requirements.txt` pins the build backend and everything it installs
   to hashes. `uv build` fails on any build requirement missing from it, so a
   new entry in `build-system.requires` needs the file regenerated.
-- The release workflow fails when `uv.lock` is behind the latest releases
-  `pyproject.toml` allows. Before tagging, merge open Renovate PRs. If the
-  freshness check below lists updates, tick the lock file maintenance box on
-  the Dependency Dashboard issue and merge that PR first.
 - Validate the remote head of `main` before tagging it:
 
 ```bash
@@ -102,14 +102,13 @@ git pull --ff-only
 test "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)"
 
 uv lock --check
-uv lock --upgrade --refresh --dry-run 2>&1 | tee /dev/stderr | grep "No lockfile changes detected"
 actionlint
 uv run ruff check src/src_auth_perms_sync/ tests/
 uv run ruff format --check src/src_auth_perms_sync/ tests/
 uv run pyright
 uv run python -m unittest discover -s tests
 uv run src-auth-perms-sync --help
-npm ci --ignore-scripts && npm run lint:markdown
+uv run rumdl check .
 uv build --wheel --sdist --out-dir /tmp/src-auth-perms-sync-release-check --no-create-gitignore \
   --build-constraints build-requirements.txt --require-hashes
 rm -rf /tmp/src-auth-perms-sync-release-check
@@ -241,10 +240,18 @@ Business workflows live in packages:
 - `uv run pyright` must be clean. No `# type: ignore` to silence -
   fix the underlying type.
 - Local tests use stdlib `unittest`: `uv run python -m unittest discover -s tests`.
-- Dependencies wait 3 days after release: `minimumReleaseAge` in
-  `renovate.json` (`src-py-lib` is exempt), `min-release-age` in `.npmrc`, and
-  `--uploaded-prior-to P3D` where workflows `pip install` uv. pip reports a
-  younger pin as `No matching distribution found`.
+- Dependencies wait 3 days after release (`src-py-lib` is exempt):
+  `exclude-newer` in `pyproject.toml`, `minimumReleaseAge` in `renovate.json`,
+  and `--uploaded-prior-to P3D` where workflows `pip install` uv. pip reports
+  a younger pin as `No matching distribution found`.
+- To take a release younger than 3 days, add its name to
+  `exclude-newer-package` under `[tool.uv]`, run
+  `uv lock --upgrade-package <name>`, and remove it once the release is 3 days
+  old. A young release that requires another young release needs both names.
+- Renovate merges its own pull requests when the checks pass, major updates
+  included. It opens one grouped pull request for minor and patch updates and
+  one lock file maintenance pull request a week, one pull request per major
+  update, and security fixes and `src-py-lib` at any time.
 - For Sourcegraph mutation-path changes, also verify by dry-running `--get` /
   `--set` / `--restore` against a real instance and diffing. If the expected
   changes look right, run `--apply` against a scratch instance and inspect

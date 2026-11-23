@@ -6,6 +6,7 @@ build-backend = "hatchling.build"
 dev = [
     "pyright>=1.1.414",
     "ruff>=0.17.5",
+    "rumdl>=0.3.4",
     "types-pyyaml>=6.0.12.20261111",
 ]
 
@@ -66,5 +67,14 @@ extend-exclude = ["src-auth-perms-sync-runs"]
 # tests/unicode_scan.py bans non-ASCII characters in tracked text files.
 select = ["E", "F", "I", "B", "UP", "SIM", "RUF001", "RUF002", "RUF003"]
 
+[tool.rumdl]
+# MD076 (list item spacing) is not a markdownlint rule, and would reflow README.md.
+disable = ["MD076"]
+line-length = 100
+
 [tool.uv]
+# Resolve only releases that are at least 3 days old. To take a younger release
+# of one package, add its name to `exclude-newer-package`.
+exclude-newer = "3 days"
+exclude-newer-package = { src-py-lib = false }
 package = true

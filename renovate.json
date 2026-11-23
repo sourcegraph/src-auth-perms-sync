@@ -2,13 +2,14 @@
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": [
     "local>sourcegraph/renovate-config",
-    "customManagers:githubActionsVersions"
+    "customManagers:githubActionsVersions",
+    "group:allNonMajor",
+    "schedule:weekly"
   ],
+  "automerge": true,
   "lockFileMaintenance": {
     "enabled": true,
-    "schedule": [
-      "before 4am"
-    ]
+    "minimumReleaseAge": null
   },
   "minimumReleaseAge": "3 days",
   "osvVulnerabilityAlerts": true,
@@ -20,11 +21,15 @@
       "groupName": "build requirements"
     },
     {
-      "description": "First-party package, no cooldown",
+      "description": "First-party package: no cooldown, its own pull request at any time",
       "matchPackageNames": [
         "src-py-lib"
       ],
-      "minimumReleaseAge": null
+      "minimumReleaseAge": null,
+      "groupName": null,
+      "schedule": [
+        "at any time"
+      ]
     },
     {
       "matchPackageNames": [
@@ -42,7 +47,6 @@
       "enabled": false
     }
   ],
-  "schedule": [
-    "at any time"
-  ]
+  "platformAutomerge": false,
+  "rangeStrategy": "replace"
 }
