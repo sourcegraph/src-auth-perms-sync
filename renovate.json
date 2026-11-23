@@ -45,13 +45,6 @@
         "patch"
       ],
       "enabled": false
-    },
-    {
-      "description": "Major updates wait for a human",
-      "matchUpdateTypes": [
-        "major"
-      ],
-      "automerge": false
     }
   ],
   "platformAutomerge": false,

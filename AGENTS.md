@@ -248,9 +248,10 @@ Business workflows live in packages:
   `exclude-newer-package` under `[tool.uv]`, run
   `uv lock --upgrade-package <name>`, and remove it once the release is 3 days
   old. A young release that requires another young release needs both names.
-- Renovate merges its own pull requests when the checks pass, except major
-  updates. It opens one grouped pull request and one lock file maintenance
-  pull request a week, and security fixes and `src-py-lib` at any time.
+- Renovate merges its own pull requests when the checks pass, major updates
+  included. It opens one grouped pull request for minor and patch updates and
+  one lock file maintenance pull request a week, one pull request per major
+  update, and security fixes and `src-py-lib` at any time.
 - For Sourcegraph mutation-path changes, also verify by dry-running `--get` /
   `--set` / `--restore` against a real instance and diffing. If the expected
   changes look right, run `--apply` against a scratch instance and inspect
